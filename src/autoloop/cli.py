@@ -162,12 +162,15 @@ def _show_status():
     else:
         print("Ready issues: (could not query)")
 
-    timer_result = subprocess.run(
-        ["systemctl", "--user", "list-timers"],
-        capture_output=True,
-        text=True,
-    )
-    if timer_result.returncode == 0 and "autoloop" in timer_result.stdout:
+    try:
+        timer_result = subprocess.run(
+            ["systemctl", "--user", "list-timers"],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        timer_result = None
+    if timer_result and timer_result.returncode == 0 and "autoloop" in timer_result.stdout:
         for line in timer_result.stdout.splitlines():
             if "autoloop" in line:
                 print(f"Timer: {line.strip()}")
