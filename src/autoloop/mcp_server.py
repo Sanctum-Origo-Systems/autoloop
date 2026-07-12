@@ -27,11 +27,14 @@ def _read_last_run() -> dict | None:
 
 def _get_timer_info() -> dict[str, str]:
     """Parse systemd timer state for autoloop timers."""
-    result = subprocess.run(
-        ["systemctl", "--user", "list-timers"],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "list-timers"],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        return {}
     if result.returncode != 0:
         return {}
     timers = {}
