@@ -116,7 +116,7 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install autoloop
-        run: pip install git+https://github.com/Sanctum-Origo-Systems/autoloop@v0.1.0
+        run: pip install git+https://github.com/Sanctum-Origo-Systems/autoloop@v{version}
       - name: Auto-close parent issue
         env:
           GH_TOKEN: ${{{{ secrets.GITHUB_TOKEN }}}}
@@ -136,12 +136,14 @@ def write_toml(target: Path, repo: str, reviewer: str, verify_cmd: str) -> None:
 
 
 def write_workflow(target: Path) -> None:
+    from autoloop import __version__
+
     path = target / ".github" / "workflows" / "autoloop-cleanup.yml"
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
         print("  workflow already exists, skipping (delete to regenerate)")
         return
-    path.write_text(WORKFLOW_TEMPLATE)
+    path.write_text(WORKFLOW_TEMPLATE.format(version=__version__))
     print("  created .github/workflows/autoloop-cleanup.yml")
 
 
