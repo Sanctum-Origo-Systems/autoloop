@@ -1,0 +1,54 @@
+name: Autoloop Cleanup
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  issues: write
+  contents: write
+  pull-requests: read
+
+jobs:
+  cleanup:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Remove autoloop labels from linked issues
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const labels = [
+              'ready', 'rejected', 'needs-decomposition',
+              'in-progress', 'in-review', 'needs-human',
+              'p0', 'p1', 'p2'
+            ];
+            const body = context.payload.pull_request.body || '';
+            const matches = body.match(/Closes #(\d+)/g) || [];
+            for (const match of matches) {
+              const issueNumber = parseInt(match.replace('Closes #', ''));
+              for (const label of labels) {
+                try {
+                  await github.rest.issues.removeLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issueNumber,
+                    name: label
+                  });
+                } catch (e) {}
+              }
+            }
+
+  auto-close-parent:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install autoloop
+        run: pip install git+https://github.com/Sanctum-Origo-Systems/autoloop@v0.1.0
+      - name: Auto-close parent issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: autoloop auto-close-parent "${{ github.event.pull_request.number }}"
