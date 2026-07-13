@@ -6,10 +6,10 @@ Config-driven AI pipeline for triaging and implementing GitHub issues.
 
 ```bash
 # Recommended (uv)
-uv tool install git+https://github.com/Sanctum-Origo-Systems/autoloop@v0.1.0
+uv tool install git+https://github.com/Sanctum-Origo-Systems/autoloop@v0.1.4
 
 # Alternative (pip)
-pip install git+https://github.com/Sanctum-Origo-Systems/autoloop@v0.1.0
+pip install git+https://github.com/Sanctum-Origo-Systems/autoloop@v0.1.4
 ```
 
 ## Quick Start
@@ -31,6 +31,7 @@ autoloop implement --issue 42
 | `autoloop triage` | Triage untriaged issues |
 | `autoloop implement` | Implement top ready issue |
 | `autoloop status` | Show last run, ready issues, timers |
+| `autoloop fix-pr` | Fix a PR by rebasing and resolving conflicts |
 | `autoloop auto-close-parent` | Close parent when all sub-issues done |
 | `autoloop version` | Print installed version |
 
