@@ -153,14 +153,37 @@ def close_parent_with_comment(gh: GhClient, parent_num: int, sibling_count: int)
     )
 
 
+def close_parent_chain(gh: GhClient, issue_number: int, max_depth: int = 5) -> list[int]:
+    """Walk up the parent chain, closing each parent whose sub-issues are all done.
+
+    Returns a list of closed parent issue numbers (innermost first).
+    """
+    closed = []
+    current = issue_number
+    seen = set()
+    for _ in range(max_depth):
+        parent_num = parse_parent_ref(gh.get_issue_body(current))
+        if parent_num is None or parent_num in seen:
+            break
+        seen.add(parent_num)
+        if not all_siblings_closed(gh, parent_num):
+            break
+        close_parent_with_comment(gh, parent_num, count_subissues(gh, parent_num))
+        closed.append(parent_num)
+        current = parent_num
+    return closed
+
+
 def check_and_close_parent(
     pr_number: int,
     gh: GhClient | None = None,
     cfg: _HasRepo | None = None,
 ) -> int | None:
-    """Close a parent issue when a merged PR completes its last open sub-issue.
+    """Close parent issues when a merged PR completes its last open sub-issue.
 
-    Returns the closed parent number, or None when nothing was modified.
+    Walks up the parent chain: if closing parent A reveals that A's parent B
+    also has all sub-issues closed, B is closed too. Returns the first closed
+    parent number, or None when nothing was modified.
     """
     if gh is None:
         if cfg is None:
@@ -171,15 +194,8 @@ def check_and_close_parent(
     if closed_issue is None:
         return None
 
-    parent_num = parse_parent_ref(gh.get_issue_body(closed_issue))
-    if parent_num is None:
-        return None
-
-    if not all_siblings_closed(gh, parent_num):
-        return None
-
-    close_parent_with_comment(gh, parent_num, count_subissues(gh, parent_num))
-    return parent_num
+    closed = close_parent_chain(gh, closed_issue)
+    return closed[0] if closed else None
 
 
 def main():

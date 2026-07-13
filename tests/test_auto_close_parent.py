@@ -8,6 +8,7 @@ from autoloop.auto_close_parent import (
     GhClient,
     all_siblings_closed,
     check_and_close_parent,
+    close_parent_chain,
     close_parent_with_comment,
     count_subissues,
     parse_closes_ref,
@@ -265,3 +266,123 @@ def test_check_and_close_parent_gh_takes_precedence_over_cfg():
     with patch("autoloop.auto_close_parent.GhClient") as MockGhClient:
         check_and_close_parent(1, gh=gh, cfg=fake_cfg)
         MockGhClient.assert_not_called()
+
+
+# --- close_parent_chain: recursive chain walking ---
+
+
+def test_close_parent_chain_single_level():
+    gh = MagicMock()
+    gh.get_issue_body.return_value = "Parent issue: #10"
+    gh.list_open_issues.return_value = []
+    gh.list_all_issues.return_value = [
+        {"number": 20, "body": "Parent issue: #10"},
+        {"number": 21, "body": "Parent issue: #10"},
+    ]
+
+    closed = close_parent_chain(gh, 20)
+    assert closed == [10]
+    gh.close_issue.assert_called_once_with(10)
+
+
+def test_close_parent_chain_two_levels():
+    """#30 → parent #20 → parent #10. Both should close."""
+    bodies = {30: "Parent issue: #20", 20: "Parent issue: #10", 10: ""}
+
+    gh = MagicMock()
+    gh.get_issue_body.side_effect = lambda n: bodies.get(n, "")
+    gh.list_open_issues.return_value = []
+    gh.list_all_issues.return_value = [
+        {"number": 30, "body": "Parent issue: #20"},
+        {"number": 20, "body": "Parent issue: #10"},
+    ]
+
+    closed = close_parent_chain(gh, 30)
+    assert closed == [20, 10]
+    assert gh.close_issue.call_count == 2
+
+
+def test_close_parent_chain_stops_when_sibling_open():
+    """#30 → parent #20 → parent #10. #20 has an open sibling, so #10 stays open."""
+    bodies = {30: "Parent issue: #20", 20: "Parent issue: #10"}
+
+    gh = MagicMock()
+    gh.get_issue_body.side_effect = lambda n: bodies.get(n, "")
+    gh.list_open_issues.return_value = [{"number": 31, "body": "Parent issue: #20"}]
+    gh.list_all_issues.return_value = []
+
+    closed = close_parent_chain(gh, 30)
+    assert closed == []
+    gh.close_issue.assert_not_called()
+
+
+def test_close_parent_chain_stops_when_no_parent():
+    gh = MagicMock()
+    gh.get_issue_body.return_value = "No parent reference here"
+
+    closed = close_parent_chain(gh, 50)
+    assert closed == []
+
+
+def test_close_parent_chain_respects_max_depth():
+    """Chain of 10 levels, but max_depth=3 stops after 3."""
+    gh = MagicMock()
+    gh.get_issue_body.side_effect = lambda n: f"Parent issue: #{n - 1}"
+    gh.list_open_issues.return_value = []
+    gh.list_all_issues.return_value = [{"number": 99, "body": "Parent issue: #1"}]
+
+    closed = close_parent_chain(gh, 10, max_depth=3)
+    assert len(closed) == 3
+
+
+def test_close_parent_chain_partial_close():
+    """#30 → parent #20 (all closed) → parent #10 (sibling open). Only #20 closes."""
+    bodies = {30: "Parent issue: #20", 20: "Parent issue: #10"}
+    open_siblings_of = {20: [], 10: [{"number": 21, "body": "Parent issue: #10"}]}
+
+    gh = MagicMock()
+    gh.get_issue_body.side_effect = lambda n: bodies.get(n, "")
+    gh.list_open_issues.side_effect = lambda: open_siblings_of.get(
+        parse_parent_ref(gh.get_issue_body.call_args[0][0]), []
+    )
+
+    call_count = [0]
+    original_get_body = gh.get_issue_body.side_effect
+
+    def tracking_get_body(n):
+        return original_get_body(n)
+
+    gh.get_issue_body.side_effect = tracking_get_body
+
+    def list_open_for_parent():
+        call_count[0] += 1
+        if call_count[0] <= 1:
+            return []
+        return [{"number": 21, "body": "Parent issue: #10"}]
+
+    gh.list_open_issues.side_effect = list_open_for_parent
+    gh.list_all_issues.return_value = [{"number": 30, "body": "Parent issue: #20"}]
+
+    closed = close_parent_chain(gh, 30)
+    assert closed == [20]
+
+
+# --- check_and_close_parent with chain ---
+
+
+def test_check_and_close_parent_walks_chain():
+    """Merged PR closes #30, which has parent #20, which has parent #10. All close."""
+    bodies = {30: "Parent issue: #20", 20: "Parent issue: #10", 10: ""}
+
+    gh = MagicMock()
+    gh.get_pr_body.return_value = "Closes #30"
+    gh.get_issue_body.side_effect = lambda n: bodies.get(n, "")
+    gh.list_open_issues.return_value = []
+    gh.list_all_issues.return_value = [
+        {"number": 30, "body": "Parent issue: #20"},
+        {"number": 20, "body": "Parent issue: #10"},
+    ]
+
+    result = check_and_close_parent(42, gh)
+    assert result == 20
+    assert gh.close_issue.call_count == 2
