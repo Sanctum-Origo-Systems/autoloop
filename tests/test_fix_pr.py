@@ -6,8 +6,11 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from autoloop.fix_pr import (
+    _get_unmerged_files,
+    _parse_conflicting_files,
     abort_rebase,
     checkout_branch,
+    continue_rebase,
     fix_pr,
     force_push,
     get_pr_branch,
@@ -122,6 +125,53 @@ def test_update_main_fetches_origin():
     assert calls[0] == ["git", "fetch", "origin", "main"]
 
 
+# --- _parse_conflicting_files ---
+
+
+def test_parse_conflicting_files_merge_conflict():
+    output = "CONFLICT (content): Merge conflict in src/main.py\nauto-merging src/ok.py\n"
+    assert _parse_conflicting_files(output) == ["src/main.py"]
+
+
+def test_parse_conflicting_files_multiple():
+    output = (
+        "CONFLICT (content): Merge conflict in src/a.py\n"
+        "CONFLICT (content): Merge conflict in src/b.py\n"
+    )
+    assert _parse_conflicting_files(output) == ["src/a.py", "src/b.py"]
+
+
+def test_parse_conflicting_files_no_conflicts():
+    assert _parse_conflicting_files("Successfully rebased") == []
+
+
+# --- _get_unmerged_files ---
+
+
+def test_get_unmerged_files_finds_uu():
+    def fake_run(cmd, **kwargs):
+        return _ok(stdout="UU src/conflict.py\nM  src/clean.py\n")
+
+    with patch("autoloop.fix_pr.subprocess.run", fake_run):
+        assert _get_unmerged_files() == ["src/conflict.py"]
+
+
+def test_get_unmerged_files_finds_aa():
+    def fake_run(cmd, **kwargs):
+        return _ok(stdout="AA src/both_added.py\n")
+
+    with patch("autoloop.fix_pr.subprocess.run", fake_run):
+        assert _get_unmerged_files() == ["src/both_added.py"]
+
+
+def test_get_unmerged_files_empty():
+    def fake_run(cmd, **kwargs):
+        return _ok(stdout="M  src/clean.py\n")
+
+    with patch("autoloop.fix_pr.subprocess.run", fake_run):
+        assert _get_unmerged_files() == []
+
+
 # --- rebase_on_main ---
 
 
@@ -136,29 +186,43 @@ def test_rebase_clean():
     assert files == []
 
 
-def test_rebase_with_conflicts():
-    calls = [0]
-
+def test_rebase_with_conflicts_from_stderr():
     def fake_run(cmd, **kwargs):
-        calls[0] += 1
-        if calls[0] == 1:
-            return _ok(returncode=1, stdout="CONFLICT")
-        return _ok(stdout="src/main.py\nsrc/utils.py\n")
+        if cmd[:2] == ["git", "rebase"]:
+            return _ok(
+                returncode=1,
+                stdout="CONFLICT (content): Merge conflict in src/main.py\n",
+            )
+        return _ok(stdout="")
 
     with patch("autoloop.fix_pr.subprocess.run", fake_run):
         clean, files = rebase_on_main()
 
     assert clean is False
-    assert files == ["src/main.py", "src/utils.py"]
+    assert files == ["src/main.py"]
 
 
-def test_rebase_with_conflicts_no_files():
-    calls = [0]
-
+def test_rebase_falls_back_to_unmerged_files():
     def fake_run(cmd, **kwargs):
-        calls[0] += 1
-        if calls[0] == 1:
-            return _ok(returncode=1)
+        if cmd[:2] == ["git", "rebase"]:
+            return _ok(returncode=1, stdout="error: could not apply\n")
+        if cmd[:2] == ["git", "status"]:
+            return _ok(stdout="UU src/conflict.py\n")
+        return _ok(stdout="")
+
+    with patch("autoloop.fix_pr.subprocess.run", fake_run):
+        clean, files = rebase_on_main()
+
+    assert clean is False
+    assert files == ["src/conflict.py"]
+
+
+def test_rebase_no_conflicts_detected():
+    def fake_run(cmd, **kwargs):
+        if cmd[:2] == ["git", "rebase"]:
+            return _ok(returncode=1, stdout="error\n")
+        if cmd[:2] == ["git", "status"]:
+            return _ok(stdout="M  src/clean.py\n")
         return _ok(stdout="")
 
     with patch("autoloop.fix_pr.subprocess.run", fake_run):
@@ -166,6 +230,45 @@ def test_rebase_with_conflicts_no_files():
 
     assert clean is False
     assert files == []
+
+
+# --- continue_rebase ---
+
+
+def test_continue_rebase_succeeds():
+    def fake_run(cmd, **kwargs):
+        return _ok()
+
+    with patch("autoloop.fix_pr.subprocess.run", fake_run):
+        assert continue_rebase() is True
+
+
+def test_continue_rebase_fails_with_unresolved():
+    def fake_run(cmd, **kwargs):
+        if cmd[:3] == ["git", "rebase", "--continue"]:
+            return _ok(returncode=1)
+        if cmd[:2] == ["git", "status"]:
+            return _ok(stdout="UU src/conflict.py\n")
+        return _ok()
+
+    with patch("autoloop.fix_pr.subprocess.run", fake_run):
+        assert continue_rebase() is False
+
+
+def test_continue_rebase_respects_max_rounds(tmp_path):
+    def fake_run(cmd, **kwargs):
+        if cmd[:3] == ["git", "rebase", "--continue"]:
+            return _ok(returncode=1)
+        if cmd[:2] == ["git", "status"]:
+            return _ok(stdout="")
+        return _ok()
+
+    with (
+        patch("autoloop.fix_pr.subprocess.run", fake_run),
+        patch("autoloop.fix_pr.REPO_DIR", tmp_path),
+    ):
+        (tmp_path / ".git" / "rebase-merge").mkdir(parents=True)
+        assert continue_rebase(max_rounds=3) is False
 
 
 # --- verify ---
@@ -341,21 +444,20 @@ def test_fix_pr_returns_false_when_verification_fails(capsys):
 
 def test_fix_pr_with_conflicts_resolved(capsys):
     cfg = _cfg()
-    rebase_calls = [0]
 
     def fake_run(cmd, **kwargs):
         if isinstance(cmd, list) and cmd[0] == "gh" and "view" in cmd:
             return _ok(stdout='{"headRefName": "autoloop/42-fix"}')
         if isinstance(cmd, list) and cmd[:2] == ["git", "rebase"]:
-            if "--abort" in cmd or "--continue" in cmd:
+            if "--abort" in cmd:
                 return _ok()
-            rebase_calls[0] += 1
-            if rebase_calls[0] == 1:
-                return _ok(returncode=1)
-            return _ok()
-        if isinstance(cmd, list) and "diff" in cmd and "--diff-filter=U" in cmd:
-            if rebase_calls[0] <= 1:
-                return _ok(stdout="src/conflict.py\n")
+            if "--continue" in cmd:
+                return _ok()
+            return _ok(
+                returncode=1,
+                stdout="CONFLICT (content): Merge conflict in src/conflict.py\n",
+            )
+        if isinstance(cmd, list) and cmd[:2] == ["git", "status"]:
             return _ok(stdout="")
         if isinstance(cmd, str):
             return _ok(stdout="tests passed")
@@ -385,9 +487,12 @@ def test_fix_pr_aborts_when_claude_fails(capsys):
         if isinstance(cmd, list) and cmd[:2] == ["git", "rebase"]:
             if "--abort" in cmd:
                 return _ok()
-            return _ok(returncode=1)
-        if isinstance(cmd, list) and "diff" in cmd and "--diff-filter=U" in cmd:
-            return _ok(stdout="src/conflict.py\n")
+            return _ok(
+                returncode=1,
+                stdout="CONFLICT (content): Merge conflict in src/conflict.py\n",
+            )
+        if isinstance(cmd, list) and cmd[:2] == ["git", "status"]:
+            return _ok(stdout="UU src/conflict.py\n")
         return _ok()
 
     def fake_resolve(files, cfg):
@@ -402,6 +507,28 @@ def test_fix_pr_aborts_when_claude_fails(capsys):
     assert result is False
     out = capsys.readouterr().out
     assert "could not resolve" in out
+
+
+def test_fix_pr_aborts_when_no_conflicts_detected(capsys):
+    cfg = _cfg()
+
+    def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list) and cmd[0] == "gh" and "view" in cmd:
+            return _ok(stdout='{"headRefName": "autoloop/42-fix"}')
+        if isinstance(cmd, list) and cmd[:2] == ["git", "rebase"]:
+            if "--abort" in cmd:
+                return _ok()
+            return _ok(returncode=1, stdout="error\n")
+        if isinstance(cmd, list) and cmd[:2] == ["git", "status"]:
+            return _ok(stdout="")
+        return _ok()
+
+    with patch("autoloop.fix_pr.subprocess.run", fake_run):
+        result = fix_pr(42, cfg)
+
+    assert result is False
+    out = capsys.readouterr().out
+    assert "no conflicting files detected" in out
 
 
 def test_fix_pr_returns_false_when_push_fails(capsys):
