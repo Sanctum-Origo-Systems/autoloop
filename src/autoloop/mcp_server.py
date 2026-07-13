@@ -52,6 +52,19 @@ def _get_timer_info() -> dict[str, str]:
     return timers
 
 
+def _is_process_running(name: str) -> bool:
+    """Check if a process matching the given command name is running."""
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", name],
+            capture_output=True,
+            text=True,
+        )
+        return result.returncode == 0
+    except FileNotFoundError:
+        return False
+
+
 def main():
     try:
         from mcp.server.fastmcp import FastMCP
@@ -62,6 +75,16 @@ def main():
 
     server = FastMCP("autoloop-mcp")
 
+    def _spawn(cmd: list[str]) -> None:
+        """Fully detach a subprocess so it doesn't block the MCP connection."""
+        subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
     @server.tool()
     def autoloop_implement(issue: int | None = None, max_issues: int = 1) -> str:
         """Trigger autoloop implementation. Starts async, returns immediately."""
@@ -70,7 +93,7 @@ def main():
             cmd.extend(["--issue", str(issue)])
         cmd.extend(["--max-issues", str(max_issues)])
 
-        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        _spawn(cmd)
 
         if issue:
             return f"Started implementation of issue #{issue}."
@@ -79,11 +102,7 @@ def main():
     @server.tool()
     def autoloop_triage() -> str:
         """Trigger autoloop triage of untriaged issues."""
-        subprocess.Popen(
-            ["autoloop", "triage"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        _spawn(["autoloop", "triage"])
         return "Started triage run."
 
     @server.tool()
@@ -105,10 +124,12 @@ def main():
             parts.append("Last run: no history")
 
         lockfile = Path.cwd() / ".autoloop.lock"
+        active = []
         if lockfile.exists():
-            parts.append("Active: implementation running")
-        else:
-            parts.append("Active: idle")
+            active.append("implementation")
+        if _is_process_running("autoloop triage"):
+            active.append("triage")
+        parts.append(f"Active: {', '.join(active)}" if active else "Active: idle")
 
         result = subprocess.run(
             [
