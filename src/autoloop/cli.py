@@ -162,6 +162,7 @@ def _show_status():
     else:
         print("Ready issues: (could not query)")
 
+    prefix = cfg.timer_prefix
     try:
         timer_result = subprocess.run(
             ["systemctl", "--user", "list-timers"],
@@ -170,9 +171,9 @@ def _show_status():
         )
     except FileNotFoundError:
         timer_result = None
-    if timer_result and timer_result.returncode == 0 and "autoloop" in timer_result.stdout:
+    if timer_result and timer_result.returncode == 0 and prefix in timer_result.stdout:
         for line in timer_result.stdout.splitlines():
-            if "autoloop" in line:
+            if prefix in line:
                 print(f"Timer: {line.strip()}")
     else:
         print("Scheduled timers: none found")

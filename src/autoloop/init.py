@@ -55,6 +55,12 @@ spec_truncation = 4000
 # Paths the builder must never modify — issues targeting these get needs-human
 protected_paths = ["autoloop.toml"]
 
+# Scheduling: autoloop uses systemd user timers for scheduled runs.
+# The timer_prefix controls which timers `autoloop status` looks for.
+# E.g. if your timers are named patina-triage.timer / patina-implement.timer,
+# set timer_prefix = "patina".
+# timer_prefix = "autoloop"
+
 # Labels that indicate an issue has already been triaged.
 triage_labels = [
     "ready",
