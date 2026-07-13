@@ -54,6 +54,12 @@ def main():
     # status
     subparsers.add_parser("status", help="Show last run, ready issues, next scheduled timers")
 
+    # fix-pr
+    fix_parser = subparsers.add_parser(
+        "fix-pr", help="Fix a PR by rebasing on main and resolving conflicts"
+    )
+    fix_parser.add_argument("pr_number", type=int, help="PR number to fix")
+
     # auto-close-parent
     acp_parser = subparsers.add_parser(
         "auto-close-parent", help="Close parent issue when all sub-issues are done"
@@ -100,6 +106,15 @@ def main():
 
     elif args.command == "status":
         _show_status()
+
+    elif args.command == "fix-pr":
+        from autoloop.config import load_config
+        from autoloop.fix_pr import fix_pr
+
+        cfg = load_config()
+        success = fix_pr(args.pr_number, cfg)
+        if not success:
+            sys.exit(1)
 
     elif args.command == "auto-close-parent":
         from autoloop.auto_close_parent import check_and_close_parent
