@@ -106,6 +106,12 @@ def main():
         return "Started triage run."
 
     @server.tool()
+    def autoloop_fix_pr(pr_number: int) -> str:
+        """Fix a PR by rebasing on main and resolving any merge conflicts."""
+        _spawn(["autoloop", "fix-pr", str(pr_number)])
+        return f"Started fix-pr for PR #{pr_number}."
+
+    @server.tool()
     def autoloop_status() -> str:
         """Check last run result, active runs, ready issue count, and next scheduled runs."""
         from autoloop.config import load_config
