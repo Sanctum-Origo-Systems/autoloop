@@ -25,8 +25,8 @@ def _read_last_run() -> dict | None:
     return json.loads(lines[-1])
 
 
-def _get_timer_info() -> dict[str, str]:
-    """Parse systemd timer state for autoloop timers."""
+def _get_timer_info(prefix: str = "autoloop") -> dict[str, str]:
+    """Parse systemd timer state for timers matching the given prefix."""
     try:
         result = subprocess.run(
             ["systemctl", "--user", "list-timers"],
@@ -39,12 +39,12 @@ def _get_timer_info() -> dict[str, str]:
         return {}
     timers = {}
     for line in result.stdout.splitlines():
-        if "autoloop-triage" in line:
+        if f"{prefix}-triage" in line:
             parts = line.split()
             left_idx = next((i for i, p in enumerate(parts) if "left" in p.lower()), None)
             if left_idx and left_idx >= 2:
                 timers["triage"] = f"in {parts[left_idx - 2]} {parts[left_idx - 1]}"
-        elif "autoloop-implement" in line:
+        elif f"{prefix}-implement" in line:
             parts = line.split()
             left_idx = next((i for i, p in enumerate(parts) if "left" in p.lower()), None)
             if left_idx and left_idx >= 2:
@@ -152,7 +152,7 @@ def main():
             count = len(json.loads(result.stdout))
             parts.append(f"Ready issues: {count}")
 
-        timers = _get_timer_info()
+        timers = _get_timer_info(cfg.timer_prefix)
         if timers:
             timer_strs = [f"{k}: {v}" for k, v in timers.items()]
             parts.append(f"Next scheduled: {', '.join(timer_strs)}")
