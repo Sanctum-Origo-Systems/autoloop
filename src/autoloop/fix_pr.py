@@ -7,6 +7,8 @@ runs verification, and force-pushes the result.
 from __future__ import annotations
 
 import json
+import os
+import re
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -65,6 +67,31 @@ def update_main() -> None:
     subprocess.run(["git", "fetch", "origin", "main"], cwd=REPO_DIR, capture_output=True)
 
 
+def _parse_conflicting_files(rebase_output: str) -> list[str]:
+    """Extract conflicting file paths from rebase stderr/stdout."""
+    files = set()
+    for match in re.finditer(r"CONFLICT \([^)]+\): .* in (.+)", rebase_output):
+        files.add(match.group(1).strip())
+    for match in re.finditer(r"CONFLICT \([^)]+\): Merge conflict in (.+)", rebase_output):
+        files.add(match.group(1).strip())
+    return sorted(files)
+
+
+def _get_unmerged_files() -> list[str]:
+    """Get files with unresolved merge conflicts from git status."""
+    result = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=REPO_DIR,
+        capture_output=True,
+        text=True,
+    )
+    files = []
+    for line in result.stdout.splitlines():
+        if line[:2] in ("UU", "AA", "UD", "DU"):
+            files.append(line[3:].strip())
+    return files
+
+
 def rebase_on_main() -> tuple[bool, list[str]]:
     """Attempt to rebase on main. Returns (clean, conflicting_files)."""
     result = subprocess.run(
@@ -76,13 +103,10 @@ def rebase_on_main() -> tuple[bool, list[str]]:
     if result.returncode == 0:
         return True, []
 
-    diff_result = subprocess.run(
-        ["git", "diff", "--name-only", "--diff-filter=U"],
-        cwd=REPO_DIR,
-        capture_output=True,
-        text=True,
-    )
-    conflicting = [f for f in diff_result.stdout.strip().split("\n") if f]
+    combined = result.stdout + result.stderr
+    conflicting = _parse_conflicting_files(combined)
+    if not conflicting:
+        conflicting = _get_unmerged_files()
     return False, conflicting
 
 
@@ -95,35 +119,31 @@ def resolve_conflicts_with_claude(conflicting_files: list[str], cfg: AutoLoopCon
     if not result.success:
         return False
 
-    unresolved = subprocess.run(
-        ["git", "diff", "--name-only", "--diff-filter=U"],
-        cwd=REPO_DIR,
-        capture_output=True,
-        text=True,
-    )
-    return not unresolved.stdout.strip()
+    return not _get_unmerged_files()
 
 
-def continue_rebase() -> bool:
-    """Continue the rebase after conflict resolution."""
-    result = subprocess.run(
-        ["git", "rebase", "--continue"],
-        cwd=REPO_DIR,
-        capture_output=True,
-        text=True,
-        env={**__import__("os").environ, "GIT_EDITOR": "true"},
-    )
-    if result.returncode != 0:
-        unresolved = subprocess.run(
-            ["git", "diff", "--name-only", "--diff-filter=U"],
+def continue_rebase(max_rounds: int = 10) -> bool:
+    """Continue the rebase after conflict resolution.
+
+    Handles multi-commit rebases where each commit may need a continue.
+    Returns False if unresolved conflicts remain or max_rounds exceeded.
+    """
+    for _ in range(max_rounds):
+        result = subprocess.run(
+            ["git", "rebase", "--continue"],
             cwd=REPO_DIR,
             capture_output=True,
             text=True,
+            env={**os.environ, "GIT_EDITOR": "true"},
         )
-        if unresolved.stdout.strip():
+        if result.returncode == 0:
+            return True
+        if _get_unmerged_files():
             return False
-        return continue_rebase()
-    return True
+        rebase_dir = REPO_DIR / ".git" / "rebase-merge"
+        if not rebase_dir.exists():
+            return True
+    return False
 
 
 def verify(cfg: AutoLoopConfig) -> tuple[bool, str]:
@@ -184,6 +204,11 @@ def fix_pr(pr_number: int, cfg: AutoLoopConfig) -> bool:
 
     if clean:
         print("  Rebased cleanly (no conflicts).")
+    elif not conflicting_files:
+        print("  Rebase failed but no conflicting files detected. Aborting.")
+        abort_rebase()
+        restore_main()
+        return False
     else:
         print(f"  Conflicts in {len(conflicting_files)} file(s): {', '.join(conflicting_files)}")
         print("  Resolving with Claude...")
