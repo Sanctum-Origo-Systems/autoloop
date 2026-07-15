@@ -6,10 +6,10 @@ Config-driven AI pipeline for triaging and implementing GitHub issues.
 
 ```bash
 # Recommended (uv)
-uv tool install git+https://github.com/Sanctum-Origo-Systems/autoloop@v0.1.6
+uv tool install git+https://github.com/Sanctum-Origo-Systems/autoloop@v0.1.7
 
 # Alternative (pip)
-pip install git+https://github.com/Sanctum-Origo-Systems/autoloop@v0.1.6
+pip install git+https://github.com/Sanctum-Origo-Systems/autoloop@v0.1.7
 ```
 
 ## Quick Start
