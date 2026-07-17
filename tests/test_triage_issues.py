@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from autoloop.claude_runner import ClaudeResult
 from autoloop.triage_issues import (
+    _merge_steps,
     build_decomposition_comment,
     build_sub_issue_summary_comment,
     build_triage_prompt,
@@ -13,6 +14,7 @@ from autoloop.triage_issues import (
     parse_rewritten_body,
     parse_sub_issue_response,
     parse_triage_response,
+    validate_decomposition,
     validate_discovered_files,
 )
 
@@ -597,3 +599,360 @@ def test_log_run_writes_jsonl(tmp_path, monkeypatch):
     entry = json.loads(lines[0])
     assert entry["issue"] == 42
     assert entry["success"] is True
+
+
+# --- _merge_steps ---
+
+
+def test_merge_steps_combines_files():
+    a = {"order": 1, "title": "Add X", "points": 2, "files": ["src/a.py"], "why_first": "base"}
+    b = {"order": 3, "title": "Add Y", "points": 1, "files": ["src/b.py"], "why_after": "depends"}
+    merged = _merge_steps(a, b)
+    assert set(merged["files"]) == {"src/a.py", "src/b.py"}
+    assert merged["points"] == 3
+    assert merged["title"] == "Add X + Add Y"
+    assert merged["order"] == 1
+    assert merged["depends_on"] == []
+
+
+def test_merge_steps_deduplicates_shared_files():
+    a = {"order": 1, "title": "A", "points": 1, "files": ["f.py", "g.py"]}
+    b = {"order": 2, "title": "B", "points": 1, "files": ["f.py"]}
+    merged = _merge_steps(a, b)
+    assert merged["files"] == ["f.py", "g.py"]
+
+
+def test_merge_steps_combines_why():
+    a = {"order": 2, "title": "A", "points": 1, "files": [], "why_after": "reason A"}
+    b = {"order": 3, "title": "B", "points": 1, "files": [], "why_after": "reason B"}
+    merged = _merge_steps(a, b)
+    assert "reason A" in merged["why_after"]
+    assert "reason B" in merged["why_after"]
+
+
+# --- validate_decomposition ---
+
+
+def test_validate_decomposition_empty():
+    assert validate_decomposition([]) == []
+
+
+def test_validate_decomposition_single_step():
+    steps = [{"order": 1, "title": "Only step", "points": 3, "files": ["a.py"]}]
+    result = validate_decomposition(steps)
+    assert len(result) == 1
+    assert result[0]["title"] == "Only step"
+
+
+def test_validate_decomposition_merges_shared_files():
+    steps = [
+        {"order": 1, "title": "Add fixture", "points": 1, "files": ["tests/conftest.py"]},
+        {"order": 2, "title": "Add another fixture", "points": 1, "files": ["tests/conftest.py"]},
+        {"order": 3, "title": "Unrelated work", "points": 3, "files": ["src/main.py"]},
+    ]
+    result = validate_decomposition(steps)
+    assert len(result) == 2
+    conftest_step = [s for s in result if "tests/conftest.py" in s["files"]][0]
+    assert conftest_step["points"] == 2
+
+
+def test_validate_decomposition_merges_small_steps():
+    steps = [
+        {"order": 1, "title": "Tiny fix", "points": 1, "files": ["a.py"]},
+        {"order": 2, "title": "Normal work", "points": 3, "files": ["b.py"]},
+    ]
+    result = validate_decomposition(steps)
+    assert len(result) == 1
+    assert result[0]["points"] == 4
+
+
+def test_validate_decomposition_caps_at_max():
+    steps = [
+        {"order": i, "title": f"Step {i}", "points": 2, "files": [f"file{i}.py"]}
+        for i in range(1, 21)
+    ]
+    result = validate_decomposition(steps, max_sub_issues=12)
+    assert len(result) <= 12
+
+
+def test_validate_decomposition_renumbers_orders():
+    steps = [
+        {"order": 5, "title": "A", "points": 3, "files": ["a.py"], "depends_on": []},
+        {"order": 10, "title": "B", "points": 3, "files": ["b.py"], "depends_on": [5]},
+    ]
+    result = validate_decomposition(steps)
+    assert result[0]["order"] == 1
+    assert result[1]["order"] == 2
+    assert result[0]["depends_on"] == []
+    assert result[1]["depends_on"] == []
+
+
+def test_validate_decomposition_already_valid():
+    steps = [
+        {"order": 1, "title": "Core module", "points": 3, "files": ["src/core.py"]},
+        {"order": 2, "title": "API layer", "points": 3, "files": ["src/api.py"]},
+        {"order": 3, "title": "Tests", "points": 2, "files": ["tests/test_core.py"]},
+    ]
+    result = validate_decomposition(steps)
+    assert len(result) == 3
+    for i, step in enumerate(result, 1):
+        assert step["order"] == i
+
+
+def test_validate_decomposition_transitive_file_merge():
+    steps = [
+        {"order": 1, "title": "A", "points": 1, "files": ["x.py", "y.py"]},
+        {"order": 2, "title": "B", "points": 1, "files": ["y.py", "z.py"]},
+        {"order": 3, "title": "C", "points": 1, "files": ["z.py"]},
+    ]
+    result = validate_decomposition(steps)
+    assert len(result) == 1
+    assert set(result[0]["files"]) == {"x.py", "y.py", "z.py"}
+
+
+def test_validate_decomposition_regression_20_criteria():
+    """A 20-criterion spec with 5 logical components should produce 5-10 sub-issues."""
+    decomposition = [
+        # Component 1: Build system (3 criteria, 1 file)
+        {
+            "order": 1,
+            "title": "Add SDK dependency",
+            "points": 1,
+            "depends_on": [],
+            "files": ["pyproject.toml"],
+        },
+        {
+            "order": 2,
+            "title": "Update build config",
+            "points": 1,
+            "depends_on": [],
+            "files": ["pyproject.toml"],
+        },
+        {
+            "order": 3,
+            "title": "Add dev dependencies",
+            "points": 1,
+            "depends_on": [],
+            "files": ["pyproject.toml"],
+        },
+        # Component 2: New module (4 criteria, 1 file)
+        {
+            "order": 4,
+            "title": "Add create_agent function",
+            "points": 1,
+            "depends_on": [],
+            "files": ["src/agents.py"],
+        },
+        {
+            "order": 5,
+            "title": "Add run_agent function",
+            "points": 1,
+            "depends_on": [],
+            "files": ["src/agents.py"],
+        },
+        {
+            "order": 6,
+            "title": "Add stop_agent function",
+            "points": 1,
+            "depends_on": [],
+            "files": ["src/agents.py"],
+        },
+        {
+            "order": 7,
+            "title": "Add list_agents function",
+            "points": 1,
+            "depends_on": [],
+            "files": ["src/agents.py"],
+        },
+        # Component 3: Integration (2 criteria, 2 files with overlap)
+        {
+            "order": 8,
+            "title": "Wire agent pipeline",
+            "points": 1,
+            "depends_on": [],
+            "files": ["src/pipeline.py"],
+        },
+        {
+            "order": 9,
+            "title": "Add error handling",
+            "points": 1,
+            "depends_on": [],
+            "files": ["src/pipeline.py", "src/errors.py"],
+        },
+        # Component 4: Tests (8 criteria, 3 files)
+        {
+            "order": 10,
+            "title": "Add mock_agent fixture",
+            "points": 1,
+            "depends_on": [],
+            "files": ["tests/conftest.py"],
+        },
+        {
+            "order": 11,
+            "title": "Add mock_pipeline fixture",
+            "points": 1,
+            "depends_on": [],
+            "files": ["tests/conftest.py"],
+        },
+        {
+            "order": 12,
+            "title": "Test create_agent",
+            "points": 1,
+            "depends_on": [],
+            "files": ["tests/test_agents.py"],
+        },
+        {
+            "order": 13,
+            "title": "Test run_agent",
+            "points": 1,
+            "depends_on": [],
+            "files": ["tests/test_agents.py"],
+        },
+        {
+            "order": 14,
+            "title": "Test stop_agent",
+            "points": 1,
+            "depends_on": [],
+            "files": ["tests/test_agents.py"],
+        },
+        {
+            "order": 15,
+            "title": "Test list_agents",
+            "points": 1,
+            "depends_on": [],
+            "files": ["tests/test_agents.py"],
+        },
+        {
+            "order": 16,
+            "title": "Test pipeline wiring",
+            "points": 1,
+            "depends_on": [],
+            "files": ["tests/test_pipeline.py"],
+        },
+        {
+            "order": 17,
+            "title": "Test error handling",
+            "points": 1,
+            "depends_on": [],
+            "files": ["tests/test_pipeline.py"],
+        },
+        # Component 5: Cleanup (3 criteria, no shared files)
+        {
+            "order": 18,
+            "title": "Delete legacy agent module",
+            "points": 1,
+            "depends_on": [],
+            "files": ["src/old_agent.py"],
+        },
+        {
+            "order": 19,
+            "title": "Delete legacy pipeline",
+            "points": 1,
+            "depends_on": [],
+            "files": ["src/old_pipeline.py"],
+        },
+        {
+            "order": 20,
+            "title": "Update imports",
+            "points": 1,
+            "depends_on": [],
+            "files": ["src/main.py"],
+        },
+    ]
+    result = validate_decomposition(decomposition)
+    assert len(result) <= 10, f"Expected ≤10 sub-issues, got {len(result)}"
+    assert len(result) >= 5, f"Expected ≥5 sub-issues, got {len(result)}"
+    for step in result:
+        assert step["points"] >= 2, (
+            f"Sub-issue '{step['title']}' is too small ({step['points']} pts)"
+        )
+
+
+# --- Decomposition constraints in triage prompt ---
+
+
+def test_build_triage_prompt_includes_decomposition_constraints():
+    cfg = _cfg()
+    prompt = build_triage_prompt(cfg)
+    assert "DECOMPOSITION CONSTRAINTS" in prompt
+    assert "LOGICAL UNIT OF CHANGE" in prompt
+    assert "same file" in prompt
+    assert "12 sub-issues" in prompt
+    assert "2 story points" in prompt
+
+
+def test_build_triage_prompt_includes_size_calibration():
+    cfg = _cfg()
+    prompt = build_triage_prompt(cfg)
+    assert "Sub-issue size calibration" in prompt
+    assert "Too small" in prompt
+    assert "Minimum viable" in prompt
+
+
+def test_build_triage_prompt_includes_self_check():
+    cfg = _cfg()
+    prompt = build_triage_prompt(cfg)
+    assert "self-check" in prompt.lower()
+    assert "re-decompose" in prompt
+
+
+# --- decompose_issue uses validate_decomposition ---
+
+
+def test_decompose_issue_validates_decomposition(monkeypatch):
+    """decompose_issue should consolidate micro-issues before creating sub-issues."""
+    cfg = _cfg(repo="acme/widgets")
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+
+    created_titles = []
+    calls = []
+
+    class FakeResult:
+        returncode = 0
+        stdout = "https://github.com/acme/widgets/issues/99"
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        if cmd[1] == "issue" and cmd[2] == "create":
+            title_idx = cmd.index("--title") + 1
+            created_titles.append(cmd[title_idx])
+        return FakeResult()
+
+    result = {
+        "points": 5,
+        "decomposition": [
+            {
+                "order": 1,
+                "title": "Fix A",
+                "points": 1,
+                "depends_on": [],
+                "files": ["src/x.py"],
+                "why_first": "start",
+            },
+            {
+                "order": 2,
+                "title": "Fix B",
+                "points": 1,
+                "depends_on": [],
+                "files": ["src/x.py"],
+                "why_after": "same file",
+            },
+            {
+                "order": 3,
+                "title": "Fix C",
+                "points": 3,
+                "depends_on": [],
+                "files": ["src/y.py"],
+                "why_after": "separate",
+            },
+        ],
+    }
+
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import decompose_issue
+
+        decompose_issue(10, result, cfg, "parent summary")
+
+    assert len(created_titles) == 2
+    merged_title = [t for t in created_titles if "Fix A" in t and "Fix B" in t]
+    assert len(merged_title) == 1
