@@ -181,14 +181,12 @@ Detects and fixes:
 autoloop plan --from-spec path/to/spec.md
 ```
 
-Parses a markdown spec or PRD file for `## Enhancement N:` sections and creates a GitHub issue for each one.
-
-> **Note:** The parser currently uses `## Enhancement` as the section marker. This is a legacy naming convention — sections can describe features, bug fixes, refactors, or any task. A future version will support a more semantically correct marker like `## Task`.
+Parses a markdown spec or PRD file for `## Task N:` sections and creates a GitHub issue for each one. The legacy `## Enhancement` tag is also supported for backward compatibility.
 
 Example spec format:
 
 ```markdown
-## Enhancement 1: Add user authentication
+## Task 1: Add user authentication
 
 Add login and logout endpoints with session management.
 
@@ -196,7 +194,7 @@ Add login and logout endpoints with session management.
 
 **File:** `src/api/auth.py`
 
-## Enhancement 2: Add rate limiting
+## Task 2: Add rate limiting
 
 **Problem:** API allows unlimited requests.
 

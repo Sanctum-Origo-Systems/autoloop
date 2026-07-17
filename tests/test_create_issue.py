@@ -222,7 +222,7 @@ Some context here.
 
 ---
 
-## Enhancement 1: Feed Errors Back
+## Task 1: Feed Errors Back
 
 **Problem:** Errors are lost on retry.
 
@@ -232,13 +232,38 @@ Some context here.
 
 ---
 
-## Enhancement 2: Increase Timeout
+## Task 2: Increase Timeout
 
 **Problem:** Timeout too short.
 
 **File:** `autoloop/implement_issue.py` and `autoloop/triage_issues.py`
 
 **Change:** Make timeout configurable.
+
+---
+
+## Summary of Changes
+
+| Task | File |
+|------|------|
+"""
+
+SAMPLE_SPEC_LEGACY = """\
+# My Spec
+
+## Enhancement 1: Feed Errors Back
+
+**Problem:** Errors are lost on retry.
+
+**File:** `autoloop/implement_issue.py`
+
+---
+
+## Enhancement 2: Increase Timeout
+
+**Problem:** Timeout too short.
+
+**File:** `autoloop/implement_issue.py` and `autoloop/triage_issues.py`
 
 ---
 
@@ -498,7 +523,7 @@ def test_create_issues_from_spec_uses_cfg_repo(tmp_path, monkeypatch):
     cfg = _cfg(repo="acme/widgets")
     spec_file = tmp_path / "spec.md"
     spec_file.write_text(
-        "## Enhancement 1: Add feature\n\n**Problem:** Missing feature.\n\n**File:** `src/foo.py`\n"
+        "## Task 1: Add feature\n\n**Problem:** Missing feature.\n\n**File:** `src/foo.py`\n"
     )
 
     monkeypatch.setattr("shutil.which", lambda cmd: None)
@@ -602,3 +627,52 @@ def test_build_issue_bug_prompts_current_behavior(monkeypatch):
     monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
     title, body = build_issue(cfg)
     assert "## Current Behavior\nIt crashes with IndexError" in body
+
+
+# --- Backward compatibility: ## Enhancement still works ---
+
+
+def test_parse_spec_enhancements_legacy_tag(tmp_path):
+    spec_file = tmp_path / "spec.md"
+    spec_file.write_text(SAMPLE_SPEC_LEGACY)
+    enhancements = parse_spec_enhancements(str(spec_file))
+    assert len(enhancements) == 2
+    assert enhancements[0]["title"] == "Feed Errors Back"
+    assert enhancements[1]["title"] == "Increase Timeout"
+
+
+def test_parse_spec_enhancements_mixed_tags(tmp_path):
+    spec = "## Task 1: First Item\n\nBody one.\n\n## Enhancement 2: Second Item\n\nBody two.\n"
+    spec_file = tmp_path / "spec.md"
+    spec_file.write_text(spec)
+    enhancements = parse_spec_enhancements(str(spec_file))
+    assert len(enhancements) == 2
+    assert enhancements[0]["title"] == "First Item"
+    assert enhancements[1]["title"] == "Second Item"
+
+
+def test_parse_spec_enhancements_without_number(tmp_path):
+    spec = "## Task: Add auth\n\nBody here.\n"
+    spec_file = tmp_path / "spec.md"
+    spec_file.write_text(spec)
+    enhancements = parse_spec_enhancements(str(spec_file))
+    assert len(enhancements) == 1
+    assert enhancements[0]["title"] == "Add auth"
+
+
+def test_parse_spec_enhancements_legacy_prints_notice(tmp_path, capsys):
+    spec = "## Enhancement 1: Old Style\n\nBody.\n"
+    spec_file = tmp_path / "spec.md"
+    spec_file.write_text(spec)
+    parse_spec_enhancements(str(spec_file))
+    captured = capsys.readouterr()
+    assert "'## Enhancement' is supported but '## Task' is preferred" in captured.out
+
+
+def test_parse_spec_enhancements_task_no_notice(tmp_path, capsys):
+    spec = "## Task 1: New Style\n\nBody.\n"
+    spec_file = tmp_path / "spec.md"
+    spec_file.write_text(spec)
+    parse_spec_enhancements(str(spec_file))
+    captured = capsys.readouterr()
+    assert "Enhancement" not in captured.out
