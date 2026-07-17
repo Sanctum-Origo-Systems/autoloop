@@ -165,9 +165,9 @@ def suggest_fields(summary: str, issue_type: str, cfg: AutoLoopConfig) -> dict |
 
 
 SPEC_TO_ISSUE_PROMPT = """\
-Convert this spec enhancement into structured GitHub issue fields.
+Convert this spec task into structured GitHub issue fields.
 
-Enhancement spec:
+Task spec:
 {spec_text}
 
 Issue type: feature
@@ -192,15 +192,17 @@ Rules:
 
 
 def parse_spec_enhancements(spec_path: str) -> list[dict]:
-    """Parse a spec markdown file into enhancement sections."""
+    """Parse a spec markdown file into task/enhancement sections."""
     text = Path(spec_path).read_text()
     enhancements = []
     current_title = None
     current_lines = []
 
     for line in text.split("\n"):
-        match = re.match(r"^## Enhancement \d+:\s*(.+)", line)
+        match = re.match(r"^## (?:Task|Enhancement)\s*\d*[.:]\s*(.+)", line)
         if match:
+            if "## Enhancement" in line:
+                print("Note: '## Enhancement' is supported but '## Task' is preferred.")
             if current_title is not None:
                 enhancements.append(
                     {
@@ -211,7 +213,7 @@ def parse_spec_enhancements(spec_path: str) -> list[dict]:
             current_title = match.group(1).strip()
             current_lines = []
         elif current_title is not None:
-            if re.match(r"^## (Enhancement \d+|Summary|Critical Files)", line):
+            if re.match(r"^## ((?:Task|Enhancement)\s*\d+|Summary|Critical Files)", line):
                 enhancements.append(
                     {
                         "title": current_title,
@@ -298,17 +300,17 @@ def create_issues_from_spec(
     """Parse a spec file and create GitHub issues for each enhancement."""
     enhancements = parse_spec_enhancements(spec_path)
     if not enhancements:
-        print("No enhancements found in spec.")
+        print("No tasks found in spec.")
         return
 
-    print(f"Found {len(enhancements)} enhancement(s) in {spec_path}\n")
+    print(f"Found {len(enhancements)} task(s) in {spec_path}\n")
 
     for i, enh in enumerate(enhancements, 1):
         if i in skip:
-            print(f"  Skipping Enhancement {i}: {enh['title']}")
+            print(f"  Skipping Task {i}: {enh['title']}")
             continue
 
-        print(f"  Enhancement {i}: {enh['title']}")
+        print(f"  Task {i}: {enh['title']}")
 
         files = extract_files_from_spec(enh["body"])
         problem = extract_problem_from_spec(enh["body"])
@@ -337,13 +339,13 @@ def create_issues_from_spec(
             current_behavior="",
             expected=expected,
             extra_criteria=extra_criteria,
-            hints=f"See {spec_path} Enhancement {i} for the full spec.",
+            hints=f"See {spec_path} Task {i} for the full spec.",
             deps=deps,
             context=f"Source spec: {spec_path}",
         )
 
         if dry_run:
-            print(f"\n--- Enhancement {i}: {title} ---\n")
+            print(f"\n--- Task {i}: {title} ---\n")
             print(f"**Title:** {title}\n")
             print(body)
             print("\n**Implementation Detail comment would contain the full spec section.**\n")
@@ -688,13 +690,13 @@ def main():
         "--from-spec",
         metavar="PATH",
         default=None,
-        help="Create issues from a spec markdown file (one per ## Enhancement section)",
+        help="Create issues from a spec markdown file (one per ## Task section)",
     )
     parser.add_argument(
         "--skip",
         type=lambda s: [int(x) for x in s.split(",")],
         default=[],
-        help="Enhancement numbers to skip when using --from-spec (e.g. --skip 1,2)",
+        help="Task numbers to skip when using --from-spec (e.g. --skip 1,2)",
     )
     args = parser.parse_args()
 
