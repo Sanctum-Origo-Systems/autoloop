@@ -211,28 +211,56 @@ Each section becomes one issue. Triage then handles decomposition and dependency
 
 ### With systemd timers (Linux VPS)
 
+Create a service and timer for both triage and implement. Adjust `OnCalendar` to set the frequency:
+
 ```ini
-# ~/.config/systemd/user/autoloop-triage.service
+# ~/.config/systemd/user/myapp-triage.service
 [Service]
 Type=oneshot
 WorkingDirectory=/home/user/my-project
 ExecStart=/home/user/.local/bin/autoloop triage
 
-# ~/.config/systemd/user/autoloop-triage.timer
+# ~/.config/systemd/user/myapp-triage.timer
 [Timer]
-OnCalendar=*-*-* 00:00:00 UTC
+OnCalendar=*-*-* 00:00:00 UTC    # once daily at midnight
 Persistent=true
 
 [Install]
 WantedBy=timers.target
 ```
 
+```ini
+# ~/.config/systemd/user/myapp-implement.service
+[Service]
+Type=oneshot
+WorkingDirectory=/home/user/my-project
+ExecStart=/home/user/.local/bin/autoloop implement --max-issues 5
+TimeoutStartSec=7200
+
+# ~/.config/systemd/user/myapp-implement.timer
+[Timer]
+OnCalendar=*-*-* 02:00:00 UTC    # once daily at 2am
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+Common frequencies:
+- Daily: `OnCalendar=*-*-* 00:00:00 UTC`
+- Every 6 hours: `OnCalendar=*-*-* 00/6:00:00 UTC`
+- Every 2 hours: `OnCalendar=*-*-* 00/2:00:00 UTC`
+
 ```bash
 systemctl --user daemon-reload
-systemctl --user enable --now autoloop-triage.timer
+systemctl --user enable --now myapp-triage.timer
+systemctl --user enable --now myapp-implement.timer
 
 # Enable lingering so timers run when you're not logged in
 loginctl enable-linger $USER
+
+# Verify timers are active
+systemctl --user list-timers | grep myapp
 ```
 
 The `timer_prefix` in `autoloop.toml` controls which timers `autoloop status` looks for. Name your timers with your app's prefix — it doesn't have to be "autoloop":
