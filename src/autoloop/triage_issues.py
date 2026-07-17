@@ -59,6 +59,28 @@ PROJECT COMMANDS:
 - Test: {cfg.verify_cmd}
 - Lint: {cfg.lint_command}
 
+DECOMPOSITION CONSTRAINTS (for "needs-decomposition" verdict):
+1. Decompose by LOGICAL UNIT OF CHANGE, not by individual acceptance criterion.
+   Group related criteria that form a coherent PR (50-200 lines of change).
+2. Group acceptance criteria that modify the same file(s) into ONE sub-issue.
+3. Test files, fixtures, and related test helpers belong in ONE sub-issue.
+4. Never create a sub-issue smaller than 2 story points (~50 lines of code).
+   Merge anything smaller with a related sub-issue.
+5. Never produce more than 12 sub-issues from a single parent issue.
+6. If multiple criteria are trivial (< 10 lines each), group them by module or theme.
+
+Sub-issue size calibration:
+- 1 point (< 30 lines): Too small — MUST be merged with another sub-issue
+- 2 points (30-80 lines): Minimum viable sub-issue
+- 3 points (80-150 lines): Standard sub-issue
+- 5 points (150-300 lines): Large — only split if clearly separable
+- 8+ points (300+ lines): Must be further decomposed
+
+Before returning a decomposition, self-check:
+- Any sub-issue < 2 points? → merge it with a related neighbor
+- Multiple sub-issues targeting the same file? → merge them
+- More than 12 sub-issues? → re-decompose at a higher abstraction level
+
 VERDICT:
 - "ready" if template complete AND estimated ≤{cfg.max_story_points} points
 - "needs-decomposition" if template complete BUT >{cfg.max_story_points} points
@@ -205,6 +227,80 @@ def parse_rewritten_body(stdout: str) -> str | None:
     if "## " not in text:
         return None
     return text
+
+
+def _merge_steps(a: dict, b: dict) -> dict:
+    """Merge two decomposition steps into one consolidated step."""
+    files_a = a.get("files", [])
+    files_b = b.get("files", [])
+    merged_files = sorted(set(files_a) | set(files_b))
+    points = a.get("points", 1) + b.get("points", 1)
+    why_a = a.get("why_first") or a.get("why_after", "")
+    why_b = b.get("why_first") or b.get("why_after", "")
+    why = "; ".join(filter(None, [why_a, why_b]))
+    return {
+        "order": min(a.get("order", 1), b.get("order", 1)),
+        "title": a["title"] + " + " + b["title"],
+        "points": points,
+        "depends_on": [],
+        "files": merged_files,
+        "why_after": why,
+    }
+
+
+def validate_decomposition(decomposition: list[dict], max_sub_issues: int = 12) -> list[dict]:
+    """Consolidate over-decomposed sub-issues by merging shared-file and tiny steps."""
+    if len(decomposition) <= 1:
+        return list(decomposition)
+
+    steps = [dict(s) for s in decomposition]
+
+    # Pass 1: Merge steps that share any file
+    changed = True
+    while changed:
+        changed = False
+        i = 0
+        while i < len(steps):
+            files_i = set(steps[i].get("files", []))
+            if not files_i:
+                i += 1
+                continue
+            j = i + 1
+            while j < len(steps):
+                files_j = set(steps[j].get("files", []))
+                if files_i & files_j:
+                    steps[i] = _merge_steps(steps[i], steps[j])
+                    files_i = set(steps[i].get("files", []))
+                    del steps[j]
+                    changed = True
+                else:
+                    j += 1
+            i += 1
+
+    # Pass 2: Absorb steps with < 2 story points into nearest neighbor
+    changed = True
+    while changed and len(steps) > 1:
+        changed = False
+        for i, s in enumerate(steps):
+            if s.get("points", 0) < 2:
+                neighbor = i + 1 if i + 1 < len(steps) else i - 1
+                steps[neighbor] = _merge_steps(steps[neighbor], steps[i])
+                del steps[i]
+                changed = True
+                break
+
+    # Pass 3: Force-merge smallest pairs until at or below cap
+    while len(steps) > max_sub_issues:
+        min_idx = min(range(len(steps)), key=lambda i: steps[i].get("points", 0))
+        neighbor = min_idx + 1 if min_idx + 1 < len(steps) else min_idx - 1
+        steps[neighbor] = _merge_steps(steps[neighbor], steps[min_idx])
+        del steps[min_idx]
+
+    for i, step in enumerate(steps, 1):
+        step["order"] = i
+        step["depends_on"] = []
+
+    return steps
 
 
 def build_decomposition_comment(result: dict) -> str:
@@ -568,7 +664,9 @@ def decompose_issue(
             "needs-decomposition",
         ],
     )
-    comment = build_decomposition_comment(result)
+    validated = dict(result)
+    validated["decomposition"] = validate_decomposition(result.get("decomposition", []))
+    comment = build_decomposition_comment(validated)
     subprocess.run(
         [
             "gh",
@@ -581,7 +679,7 @@ def decompose_issue(
             comment,
         ],
     )
-    sub_issues = create_sub_issues(number, result, cfg, parent_summary)
+    sub_issues = create_sub_issues(number, validated, cfg, parent_summary)
     if sub_issues:
         subprocess.run(
             [
