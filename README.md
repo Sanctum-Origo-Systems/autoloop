@@ -230,6 +230,9 @@ WantedBy=timers.target
 ```bash
 systemctl --user daemon-reload
 systemctl --user enable --now autoloop-triage.timer
+
+# Enable lingering so timers run when you're not logged in
+loginctl enable-linger $USER
 ```
 
 The `timer_prefix` in `autoloop.toml` controls which timers `autoloop status` looks for. Name your timers with your app's prefix — it doesn't have to be "autoloop":
@@ -246,11 +249,46 @@ This supports multiple repos on the same VPS — each repo has its own `autoloop
 
 ### Mobile workflow
 
-With a Claude Code session running in tmux on your VPS:
-1. Review and merge a PR from your phone
-2. "Implement the next ready issue" — triggers `autoloop implement`
-3. "Check autoloop status" — see the new PR link
-4. "Fix PR 42" — rebases and resolves any issues
+Requires a Claude Code session running in tmux on your VPS. Start it once:
+
+```bash
+ssh your-vps
+cd ~/your-project
+tmux new -s claude
+claude
+# Detach: Ctrl+B then D
+```
+
+The session persists after you disconnect. Reconnect anytime with `tmux attach`.
+
+Configure the autoloop MCP server by adding to your project's `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "autoloop-mcp": {
+      "command": "autoloop-mcp",
+      "autoApprove": ["autoloop_status", "autoloop_triage", "autoloop_implement", "autoloop_fix_pr"]
+    }
+  }
+}
+```
+
+Install the MCP server on the VPS with `uv tool install "autoloop[mcp] @ git+https://github.com/Sanctum-Origo-Systems/autoloop@<tag>"`, then restart the Claude Code session.
+
+**Enable remote control:** In the Claude Code session on the VPS, run `/login` to authenticate, then enable remote connections in settings. This allows the Claude mobile app to send messages to the VPS session.
+
+Two mobile apps, two roles:
+
+- **GitHub mobile app** ([iOS](https://apps.apple.com/app/github/id1477376905) / [Android](https://play.google.com/store/apps/details?id=com.github.android)) — review diffs, approve, and merge PRs
+- **Claude mobile app** ([iOS](https://apps.apple.com/app/claude/id6473753684) / [Android](https://play.google.com/store/apps/details?id=com.anthropic.claude)) — tap **Code** at the bottom, select your VPS session from the list, and use the chat to invoke autoloop commands
+
+Example workflow from your phone:
+
+1. **GitHub app**: review and merge a PR
+2. **Claude app**: "Implement the next ready issue" — autoloop picks the top issue and starts working
+3. **Claude app**: "Check autoloop status" — see progress, ready issue count, next timer
+4. **Claude app**: "Fix PR 42" — rebases and resolves conflicts or failing checks
 
 ## Configuration Reference
 
