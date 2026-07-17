@@ -6,7 +6,7 @@ Config-driven AI pipeline that triages GitHub issues, implements them via Claude
 
 ### As a CLI tool (recommended)
 
-Replace `<tag>` with the latest version from the [releases page](https://github.com/Sanctum-Origo-Systems/autoloop/tags) (e.g. `v0.1.7`):
+Replace `<tag>` with the latest version from the [releases page](https://github.com/Sanctum-Origo-Systems/autoloop/tags) (e.g. `v0.1.8`):
 
 ```bash
 uv tool install git+https://github.com/Sanctum-Origo-Systems/autoloop@<tag>

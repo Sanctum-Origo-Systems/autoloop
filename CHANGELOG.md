@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.1.8
+
+- Validate decomposition: merge shared-file steps, absorb tiny sub-issues, cap at 12 per parent
+- Rename spec parser tag from `## Enhancement` to `## Task` with backward compatibility
+
 ## v0.1.7
 
 - Recursive auto-close walks nested parent chains
