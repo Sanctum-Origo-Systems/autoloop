@@ -6,6 +6,7 @@ via load_config().
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import logging
 import os
@@ -105,6 +106,7 @@ def collect_verification_errors(
     lint_rc: int,
     fmt_rc: int,
     changed_files: list[str],
+    test_pattern: str = "tests/*.py",
 ) -> list[str]:
     """Build error list from verification subprocess results."""
     errors = []
@@ -114,9 +116,10 @@ def collect_verification_errors(
         errors.append(f"Tests failed:\n{test_out[-500:]}")
     if lint_rc != 0 or fmt_rc != 0:
         errors.append("Lint or format check failed")
-    test_files = [f for f in changed_files if f.startswith("tests/") and f.endswith(".py")]
-    if not test_files:
-        errors.append("No test files were added or modified")
+    if test_pattern:
+        test_files = [f for f in changed_files if fnmatch.fnmatch(f, test_pattern)]
+        if not test_files:
+            errors.append("No test files were added or modified")
     return errors
 
 
@@ -621,6 +624,7 @@ def verify_implementation(branch: str) -> tuple[bool, str]:
         lint_rc=lint.returncode,
         fmt_rc=fmt.returncode,
         changed_files=changed,
+        test_pattern=cfg.test_pattern,
     )
     if errors:
         return False, "\n".join(errors)

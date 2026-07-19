@@ -29,6 +29,7 @@ class AutoLoopConfig:
     spec_truncation: int = 4000
     verify_cmd: str = "uv run pytest"
     lint_command: str = "uv run ruff check && uv run ruff format --check"
+    test_pattern: str = "tests/*.py"
     timer_prefix: str = "autoloop"
     protected_paths: list[str] = field(default_factory=lambda: ["autoloop/"])
     triage_labels: list[str] = field(
@@ -77,6 +78,7 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
         "verify_cmd",
         "lint_command",
         "timer_prefix",
+        "test_pattern",
     ):
         if key in data:
             setattr(config, key, data[key])
