@@ -68,9 +68,9 @@ class TestBuildSettingsAllowlist:
         assert "Edit" in allow
         assert "Write" in allow
         assert "Bash(git status)" in allow
-        assert "Bash(git add:*)" in allow
-        assert "Bash(git commit:*)" in allow
-        assert "Bash(gh:*)" in allow
+        assert "Bash(git add *)" in allow
+        assert "Bash(git commit *)" in allow
+        assert "Bash(gh *)" in allow
 
     def test_deny_list_present(self):
         settings = build_settings_allowlist("pytest")

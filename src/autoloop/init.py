@@ -204,14 +204,14 @@ BASE_ALLOWLIST = [
     "Edit",
     "Write",
     "Bash(git status)",
-    "Bash(git add:*)",
-    "Bash(git commit:*)",
-    "Bash(git checkout:*)",
-    "Bash(git branch:*)",
-    "Bash(git push:*)",
-    "Bash(git diff:*)",
-    "Bash(git log:*)",
-    "Bash(gh:*)",
+    "Bash(git add *)",
+    "Bash(git commit *)",
+    "Bash(git checkout *)",
+    "Bash(git branch *)",
+    "Bash(git push *)",
+    "Bash(git diff *)",
+    "Bash(git log *)",
+    "Bash(gh *)",
 ]
 
 DENY_LIST = [
