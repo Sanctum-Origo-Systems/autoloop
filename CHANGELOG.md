@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.2.0
+
+- `autoloop init` scaffolds `.claude/settings.json` with minimal permissions for headless runs
+- Detect active Claude Code session before implement; fail fast with actionable error
+- Empty-branch diagnostic: report probable causes instead of misleading lint/test failures
+- Cap decomposition depth at 2 levels; close parent issues after children are filed
+- README restructured with platform support (macOS/Linux), mode framing, and local-mode notes
+
 ## v0.1.8
 
 - Validate decomposition: merge shared-file steps, absorb tiny sub-issues, cap at 12 per parent
