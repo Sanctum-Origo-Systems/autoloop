@@ -2,6 +2,23 @@
 
 Config-driven AI pipeline that triages GitHub issues, implements them via Claude, and opens PRs — all from a single config file.
 
+## Platform Support
+
+- **macOS** — fully supported (local mode)
+- **Linux** — fully supported (local + unattended/VPS mode)
+- **Windows** — not supported
+
+## How It Works
+
+| | Local mode | Unattended mode |
+|---|---|---|
+| Where | Your machine | VPS / remote server |
+| Trigger | You run the command | systemd timer / cron |
+| Gate | You review + merge PRs | Same — you're still the human gate |
+| Best for | Evaluating autoloop, small projects | Trusted repos, overnight batch runs |
+
+Most users start local. Graduate to unattended when you trust it.
+
 ## Installation
 
 ### As a CLI tool (recommended)
@@ -56,7 +73,7 @@ Contributions are currently limited to collaborators. A public issue board for i
 - **Claude Code CLI (`claude`)** — [install](https://docs.anthropic.com/en/docs/claude-code/overview) (requires Claude Max or Pro subscription)
 - A GitHub repo with a test command (`pytest`, `npm test`, `make test`, etc.)
 
-## Quick Start
+## Quick Start (Local Mode)
 
 ### 1. Initialize your repo
 
@@ -82,6 +99,13 @@ git add autoloop.toml .github/workflows/autoloop-cleanup.yml .gitignore
 git commit -m "feat: add autoloop pipeline"
 git push
 ```
+
+### Local Mode Notes
+
+- `autoloop init` scaffolds the required `.claude/settings.json` permissions.
+  If you skipped init, create one manually (see template).
+- Do not run `autoloop implement` while a Claude Code session is open in the
+  same project directory. Close it or move the session to a parent folder.
 
 ### 2. Configure
 
@@ -206,6 +230,8 @@ The `**File:**` section is optional — include it if you know which files need 
 Each section becomes one issue. Triage then handles decomposition and dependency ordering if any issue is too large.
 
 ## Running Unattended
+
+Once you trust the pipeline, automate it with timers on a Linux VPS.
 
 ### With systemd timers (Linux VPS)
 
