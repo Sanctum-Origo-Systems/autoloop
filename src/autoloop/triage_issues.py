@@ -239,13 +239,16 @@ def _merge_steps(a: dict, b: dict) -> dict:
     why_a = a.get("why_first") or a.get("why_after", "")
     why_b = b.get("why_first") or b.get("why_after", "")
     why = "; ".join(filter(None, [why_a, why_b]))
+    merged_deps = list(set(a.get("depends_on", [])) | set(b.get("depends_on", [])))
+    original_orders = a.get("_original_orders", set()) | b.get("_original_orders", set())
     return {
         "order": min(a.get("order", 1), b.get("order", 1)),
         "title": a["title"] + " + " + b["title"],
         "points": points,
-        "depends_on": [],
+        "depends_on": merged_deps,
         "files": merged_files,
         "why_after": why,
+        "_original_orders": original_orders,
     }
 
 
@@ -255,6 +258,10 @@ def validate_decomposition(decomposition: list[dict], max_sub_issues: int = 12) 
         return list(decomposition)
 
     steps = [dict(s) for s in decomposition]
+
+    # Tag each step with its original order(s) for dependency remapping
+    for s in steps:
+        s.setdefault("_original_orders", {s.get("order", 0)})
 
     # Pass 1: Merge steps that share any file
     changed = True
@@ -297,9 +304,22 @@ def validate_decomposition(decomposition: list[dict], max_sub_issues: int = 12) 
         steps[neighbor] = _merge_steps(steps[neighbor], steps[min_idx])
         del steps[min_idx]
 
+    # Build mapping: original order -> new step index
+    order_mapping: dict[int, int] = {}
+    for i, step in enumerate(steps, 1):
+        for orig in step.get("_original_orders", set()):
+            order_mapping[orig] = i
+
+    # Renumber and remap depends_on
     for i, step in enumerate(steps, 1):
         step["order"] = i
-        step["depends_on"] = []
+        remapped = set()
+        for dep in step.get("depends_on", []):
+            new_idx = order_mapping.get(dep)
+            if new_idx and new_idx != i:
+                remapped.add(new_idx)
+        step["depends_on"] = sorted(remapped)
+        step.pop("_original_orders", None)
 
     return steps
 
