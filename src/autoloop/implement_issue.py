@@ -22,6 +22,14 @@ cfg = None
 LOCKFILE = REPO_DIR / ".autoloop.lock"
 LOG_FILE = REPO_DIR / "autoloop" / "run_history.jsonl"
 
+EMPTY_BRANCH_DIAGNOSTIC = """\
+No changes were produced by the implementation agent.
+This usually means the agent could not act, not that the code is wrong.
+Likely causes:
+ 1. Missing .claude/settings.json permissions (run: autoloop init to scaffold)
+ 2. An active Claude Code session in this directory (close it or run elsewhere)
+ 3. The inner claude invocation failed to start (check claude CLI auth)"""
+
 
 # --- Pure functions (testable without mocking) ---
 
@@ -472,6 +480,18 @@ def implement(issue: dict, previous_errors: str | None = None) -> ClaudeResult:
     return run_claude(prompt, cfg.impl_model, cfg.impl_timeout)
 
 
+def is_branch_empty(branch: str) -> bool:
+    """Return True if the branch has zero commits ahead of main."""
+    result = subprocess.run(
+        ["git", "rev-list", "--count", f"main..{branch}"],
+        capture_output=True,
+        text=True,
+        cwd=REPO_DIR,
+    )
+    count = result.stdout.strip() if result.returncode == 0 else ""
+    return count == "0" or count == ""
+
+
 def verify_implementation(branch: str) -> tuple[bool, str]:
     """Verify the agent actually produced valid work."""
     ahead = subprocess.run(
@@ -812,10 +832,17 @@ def implement_single_issue(issue: dict, require_design: bool = False) -> bool:
         print(f"  Branch: {branch}")
 
         last_errors = None
+        empty_branch_failure = False
         for attempt in range(1, cfg.max_retries + 1):
             print(f"  Attempt {attempt}/{cfg.max_retries}...")
             claude_results.append(implement(issue, previous_errors=last_errors))
             final_attempt = attempt
+
+            if is_branch_empty(branch):
+                print(f"  {EMPTY_BRANCH_DIAGNOSTIC}")
+                post_attempt_failure(issue["number"], attempt, EMPTY_BRANCH_DIAGNOSTIC)
+                empty_branch_failure = True
+                break
 
             valid, errors = verify_implementation(branch)
             if not valid:
@@ -843,7 +870,10 @@ def implement_single_issue(issue: dict, require_design: bool = False) -> bool:
         total_cache_read = sum(r.cache_read_tokens for r in claude_results)
 
         if not success:
-            print("  All retries exhausted. Labeling needs-human.")
+            if empty_branch_failure:
+                print("  Implementation produced no changes. Labeling needs-human.")
+            else:
+                print("  All retries exhausted. Labeling needs-human.")
             subprocess.run(
                 [
                     "gh",

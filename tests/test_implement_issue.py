@@ -8,6 +8,7 @@ import autoloop.implement_issue as implement_issue
 from autoloop.claude_runner import ClaudeResult
 from autoloop.config import AutoLoopConfig
 from autoloop.implement_issue import (
+    EMPTY_BRANCH_DIAGNOSTIC,
     acquire_lock,
     build_branch_name,
     build_pr_body,
@@ -26,6 +27,7 @@ from autoloop.implement_issue import (
     implement,
     implement_single_issue,
     implement_targeted_issue,
+    is_branch_empty,
     log_run,
     parent_issue_number,
     parse_and_strip_metric_targets,
@@ -681,15 +683,19 @@ def test_implement_single_issue_uses_cfg_max_retries(monkeypatch, tmp_path):
         attempt_count[0] += 1
         return _claude_result()
 
-    def fake_run(cmd, **kwargs):
-        if isinstance(cmd, list) and cmd[:3] == ["git", "rev-list", "--count"]:
-            return type("R", (), {"returncode": 0, "stdout": "0\n", "stderr": ""})()
-        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
-
-    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
     monkeypatch.setattr(implement_issue, "implement", fake_implement)
     monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
     monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
+    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: False)
+    monkeypatch.setattr(
+        implement_issue, "verify_implementation", lambda branch: (False, "Tests failed")
+    )
+    monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
 
     implement_single_issue(_FAKE_ISSUE)
     assert attempt_count[0] == 2
@@ -752,6 +758,7 @@ def test_implement_single_issue_logs_summed_token_totals(monkeypatch, tmp_path):
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: None)
     monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
     monkeypatch.setattr(implement_issue, "review_implementation", lambda issue, branch: (True, ""))
+    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: False)
 
     verify_calls = [0]
 
@@ -1126,3 +1133,135 @@ def test_label_in_review_uses_cfg_repo(monkeypatch):
     implement_issue.label_in_review(42)
 
     assert captured["cmd"][captured["cmd"].index("--repo") + 1] == "my-org/my-repo"
+
+
+# --- is_branch_empty tests ---
+
+
+def test_is_branch_empty_true_when_zero_commits(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 0, "stdout": "0\n", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    assert is_branch_empty("autoloop/42-feature") is True
+
+
+def test_is_branch_empty_true_when_command_fails(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": "error"})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    assert is_branch_empty("autoloop/42-feature") is True
+
+
+def test_is_branch_empty_false_when_commits_exist(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 0, "stdout": "3\n", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    assert is_branch_empty("autoloop/42-feature") is False
+
+
+# --- Empty branch short-circuit in implement_single_issue ---
+
+
+def test_implement_single_issue_empty_branch_no_retries(monkeypatch, tmp_path):
+    """Empty branch after attempt 1 short-circuits with no retries."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(max_retries=3))
+    log_path = tmp_path / "run_history.jsonl"
+    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+
+    attempt_count = [0]
+
+    def fake_implement(issue, previous_errors=None):
+        attempt_count[0] += 1
+        return _claude_result()
+
+    monkeypatch.setattr(implement_issue, "implement", fake_implement)
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
+    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
+    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: True)
+
+    posted_comments = []
+    monkeypatch.setattr(
+        implement_issue,
+        "post_attempt_failure",
+        lambda n, a, e: posted_comments.append(e),
+    )
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
+
+    result = implement_single_issue(_FAKE_ISSUE)
+    assert result is False
+    assert attempt_count[0] == 1
+    assert len(posted_comments) == 1
+    assert "No changes were produced" in posted_comments[0]
+    assert "Missing .claude/settings.json" in posted_comments[0]
+
+
+def test_implement_single_issue_empty_branch_posts_diagnostic(monkeypatch, tmp_path, capsys):
+    """Diagnostic message is printed and posted, not lint/test noise."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(max_retries=3))
+    log_path = tmp_path / "run_history.jsonl"
+    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+
+    monkeypatch.setattr(
+        implement_issue, "implement", lambda issue, previous_errors=None: _claude_result()
+    )
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
+    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
+    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: True)
+    monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
+
+    implement_single_issue(_FAKE_ISSUE)
+    output = capsys.readouterr().out
+    assert "No changes were produced" in output
+    assert "Implementation produced no changes" in output
+
+
+def test_implement_single_issue_nonempty_branch_still_retries(monkeypatch, tmp_path):
+    """Non-empty branch failures (real test/lint errors) retain retry behavior."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(max_retries=3))
+    log_path = tmp_path / "run_history.jsonl"
+    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+
+    attempt_count = [0]
+
+    def fake_implement(issue, previous_errors=None):
+        attempt_count[0] += 1
+        return _claude_result()
+
+    def fake_verify(branch):
+        return False, "Tests failed:\nsome test output"
+
+    monkeypatch.setattr(implement_issue, "implement", fake_implement)
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
+    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
+    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: False)
+    monkeypatch.setattr(implement_issue, "verify_implementation", fake_verify)
+    monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
+
+    result = implement_single_issue(_FAKE_ISSUE)
+    assert result is False
+    assert attempt_count[0] == 3
+
+
+def test_empty_branch_diagnostic_content():
+    """Verify the diagnostic lists all three probable causes."""
+    assert "No changes were produced" in EMPTY_BRANCH_DIAGNOSTIC
+    assert "Missing .claude/settings.json permissions" in EMPTY_BRANCH_DIAGNOSTIC
+    assert "active Claude Code session" in EMPTY_BRANCH_DIAGNOSTIC
+    assert "inner claude invocation failed to start" in EMPTY_BRANCH_DIAGNOSTIC
