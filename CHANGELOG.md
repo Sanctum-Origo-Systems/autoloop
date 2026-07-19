@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.3
+
+- Fix verification using hardcoded ruff commands instead of `lint_command` from config
+
 ## v0.2.2
 
 - Configurable `test_pattern` replaces hardcoded `tests/*.py` check; supports any language
