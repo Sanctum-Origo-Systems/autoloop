@@ -10,6 +10,8 @@ from autoloop.triage_issues import (
     build_decomposition_comment,
     build_sub_issue_summary_comment,
     build_triage_prompt,
+    fetch_issue_body,
+    get_decomposition_depth,
     parse_file_discovery_response,
     parse_rewritten_body,
     parse_sub_issue_response,
@@ -956,3 +958,312 @@ def test_decompose_issue_validates_decomposition(monkeypatch):
     assert len(created_titles) == 2
     merged_title = [t for t in created_titles if "Fix A" in t and "Fix B" in t]
     assert len(merged_title) == 1
+
+
+# --- fetch_issue_body ---
+
+
+def test_fetch_issue_body_success():
+    cfg = _cfg(repo="acme/widgets")
+
+    class FakeResult:
+        returncode = 0
+        stdout = json.dumps({"body": "Issue body text here"})
+
+    with patch("autoloop.triage_issues.subprocess.run", return_value=FakeResult()):
+        result = fetch_issue_body(42, cfg)
+
+    assert result == "Issue body text here"
+
+
+def test_fetch_issue_body_failure():
+    cfg = _cfg(repo="acme/widgets")
+
+    class FakeResult:
+        returncode = 1
+        stdout = ""
+
+    with patch("autoloop.triage_issues.subprocess.run", return_value=FakeResult()):
+        result = fetch_issue_body(42, cfg)
+
+    assert result == ""
+
+
+def test_fetch_issue_body_null_body():
+    cfg = _cfg(repo="acme/widgets")
+
+    class FakeResult:
+        returncode = 0
+        stdout = json.dumps({"body": None})
+
+    with patch("autoloop.triage_issues.subprocess.run", return_value=FakeResult()):
+        result = fetch_issue_body(42, cfg)
+
+    assert result == ""
+
+
+# --- get_decomposition_depth ---
+
+
+def test_get_decomposition_depth_root_issue():
+    cfg = _cfg()
+    issue = {"number": 1, "body": "Just a regular issue body."}
+    assert get_decomposition_depth(issue, cfg) == 0
+
+
+def test_get_decomposition_depth_direct_child():
+    cfg = _cfg()
+    issue = {"number": 2, "body": "Sub-issue of #1. Some details."}
+
+    class FakeResult:
+        returncode = 0
+        stdout = json.dumps({"body": "Root issue with no parent reference."})
+
+    with patch("autoloop.triage_issues.subprocess.run", return_value=FakeResult()):
+        assert get_decomposition_depth(issue, cfg) == 1
+
+
+def test_get_decomposition_depth_grandchild():
+    cfg = _cfg()
+    issue = {"number": 3, "body": "Sub-issue of #2. More details."}
+
+    class FakeResult:
+        returncode = 0
+        stdout = json.dumps({"body": "Sub-issue of #1. This is a child."})
+
+    with patch("autoloop.triage_issues.subprocess.run", return_value=FakeResult()):
+        assert get_decomposition_depth(issue, cfg) == 2
+
+
+def test_get_decomposition_depth_no_body():
+    cfg = _cfg()
+    issue = {"number": 1, "body": None}
+    assert get_decomposition_depth(issue, cfg) == 0
+
+
+# --- triage_issue caps depth ---
+
+
+def test_triage_issue_caps_depth_2_routes_to_ready(monkeypatch):
+    """A depth-2 sub-issue with needs-decomposition verdict should be approved instead."""
+    cfg = _cfg()
+
+    def fake_load():
+        return "src/module.py\n", "# CLAUDE.md"
+
+    monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
+
+    def fake_run_claude(prompt, model, timeout):
+        return ClaudeResult(
+            json.dumps(
+                {
+                    "verdict": "needs-decomposition",
+                    "points": 8,
+                    "priority": "p1",
+                    "reason": "large issue",
+                    "decomposition": [
+                        {"order": 1, "title": "Part A", "points": 4, "depends_on": [], "files": []},
+                        {"order": 2, "title": "Part B", "points": 4, "depends_on": [], "files": []},
+                    ],
+                }
+            ),
+            0.01,
+            100,
+            50,
+            0,
+            True,
+        )
+
+    monkeypatch.setattr("autoloop.triage_issues.run_claude", fake_run_claude)
+
+    def fake_get_depth(issue, cfg):
+        return 2
+
+    monkeypatch.setattr("autoloop.triage_issues.get_decomposition_depth", fake_get_depth)
+
+    calls: list[list[str]] = []
+
+    class FakeResult:
+        returncode = 0
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return FakeResult()
+
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import triage_issue
+
+        triage_issue({"number": 5, "title": "Test", "body": "Sub-issue of #3."}, cfg)
+
+    label_calls = [c for c in calls if "edit" in c and "--add-label" in c]
+    assert any("ready" in c[c.index("--add-label") + 1] for c in label_calls)
+    create_calls = [c for c in calls if "create" in c]
+    assert len(create_calls) == 0
+
+
+def test_triage_issue_caps_depth_1_small_points_routes_to_ready(monkeypatch):
+    """A depth-1 sub-issue with <=5 points should be approved instead of decomposed."""
+    cfg = _cfg()
+
+    def fake_load():
+        return "src/module.py\n", "# CLAUDE.md"
+
+    monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
+
+    def fake_run_claude(prompt, model, timeout):
+        return ClaudeResult(
+            json.dumps(
+                {
+                    "verdict": "needs-decomposition",
+                    "points": 5,
+                    "priority": "p1",
+                    "reason": "medium issue",
+                    "decomposition": [
+                        {"order": 1, "title": "Part A", "points": 3, "depends_on": [], "files": []},
+                        {"order": 2, "title": "Part B", "points": 2, "depends_on": [], "files": []},
+                    ],
+                }
+            ),
+            0.01,
+            100,
+            50,
+            0,
+            True,
+        )
+
+    monkeypatch.setattr("autoloop.triage_issues.run_claude", fake_run_claude)
+
+    def fake_get_depth(issue, cfg):
+        return 1
+
+    monkeypatch.setattr("autoloop.triage_issues.get_decomposition_depth", fake_get_depth)
+
+    calls: list[list[str]] = []
+
+    class FakeResult:
+        returncode = 0
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return FakeResult()
+
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import triage_issue
+
+        triage_issue({"number": 6, "title": "Test", "body": "Sub-issue of #1."}, cfg)
+
+    label_calls = [c for c in calls if "edit" in c and "--add-label" in c]
+    assert any("ready" in c[c.index("--add-label") + 1] for c in label_calls)
+    create_calls = [c for c in calls if "create" in c]
+    assert len(create_calls) == 0
+
+
+def test_triage_issue_allows_decomposition_depth_0(monkeypatch):
+    """A root issue (depth 0) should still be decomposed normally."""
+    cfg = _cfg()
+
+    def fake_load():
+        return "src/module.py\n", "# CLAUDE.md"
+
+    monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
+
+    def fake_run_claude(prompt, model, timeout):
+        return ClaudeResult(
+            json.dumps(
+                {
+                    "verdict": "needs-decomposition",
+                    "points": 8,
+                    "priority": "p1",
+                    "reason": "large issue",
+                    "decomposition": [
+                        {"order": 1, "title": "Part A", "points": 4, "depends_on": [], "files": []},
+                        {"order": 2, "title": "Part B", "points": 4, "depends_on": [], "files": []},
+                    ],
+                }
+            ),
+            0.01,
+            100,
+            50,
+            0,
+            True,
+        )
+
+    monkeypatch.setattr("autoloop.triage_issues.run_claude", fake_run_claude)
+
+    def fake_get_depth(issue, cfg):
+        return 0
+
+    monkeypatch.setattr("autoloop.triage_issues.get_decomposition_depth", fake_get_depth)
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+
+    calls: list[list[str]] = []
+
+    class FakeResult:
+        returncode = 0
+        stdout = "https://github.com/acme/widgets/issues/99"
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return FakeResult()
+
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import triage_issue
+
+        triage_issue({"number": 7, "title": "Test", "body": "Root issue."}, cfg)
+
+    label_calls = [c for c in calls if "edit" in c and "--add-label" in c]
+    assert any("needs-decomposition" in c[c.index("--add-label") + 1] for c in label_calls)
+
+
+# --- decompose_issue closes parent ---
+
+
+def test_decompose_issue_closes_parent_after_children(monkeypatch):
+    """decompose_issue should close the parent issue after filing sub-issues."""
+    cfg = _cfg(repo="acme/widgets")
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+
+    calls: list[list[str]] = []
+
+    class FakeResult:
+        returncode = 0
+        stdout = "https://github.com/acme/widgets/issues/99"
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return FakeResult()
+
+    result = {
+        "points": 5,
+        "decomposition": [
+            {
+                "order": 1,
+                "title": "Step 1",
+                "points": 3,
+                "depends_on": [],
+                "files": ["src/a.py"],
+            },
+            {
+                "order": 2,
+                "title": "Step 2",
+                "points": 2,
+                "depends_on": [],
+                "files": ["src/b.py"],
+            },
+        ],
+    }
+
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import decompose_issue
+
+        decompose_issue(10, result, cfg, "parent summary")
+
+    close_calls = [c for c in calls if c[0] == "gh" and "close" in c]
+    assert len(close_calls) == 1
+    close_cmd = close_calls[0]
+    assert "10" in close_cmd
+    assert "--repo" in close_cmd
+    assert close_cmd[close_cmd.index("--repo") + 1] == "acme/widgets"
+    comment_idx = close_cmd.index("--comment") + 1
+    assert "Decomposed into" in close_cmd[comment_idx]
+    assert "sub-issues" in close_cmd[comment_idx]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import time
@@ -693,6 +694,50 @@ def decompose_issue(
                 build_sub_issue_summary_comment(number, sub_issues),
             ],
         )
+        subprocess.run(
+            [
+                "gh",
+                "issue",
+                "close",
+                str(number),
+                "--repo",
+                cfg.repo,
+                "--comment",
+                f"Decomposed into {len(sub_issues)} sub-issues. "
+                "Closing parent — work continues in children.",
+            ],
+        )
+
+
+def fetch_issue_body(issue_number: int | str, cfg: AutoLoopConfig) -> str:
+    """Fetch a single issue's body text via gh."""
+    proc = subprocess.run(
+        ["gh", "issue", "view", str(issue_number), "--repo", cfg.repo, "--json", "body"],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        return ""
+    try:
+        return json.loads(proc.stdout).get("body") or ""
+    except (json.JSONDecodeError, AttributeError):
+        return ""
+
+
+def get_decomposition_depth(issue: dict, cfg: AutoLoopConfig) -> int:
+    """Determine how many levels of decomposition above this issue exist.
+
+    Returns 0 for root issues, 1 for direct children, 2+ for grandchildren.
+    """
+    body = issue.get("body") or ""
+    match = re.search(r"Sub-issue of #(\d+)", body)
+    if not match:
+        return 0
+    parent_num = match.group(1)
+    parent_body = fetch_issue_body(parent_num, cfg)
+    if re.search(r"Sub-issue of #(\d+)", parent_body):
+        return 2
+    return 1
 
 
 # --- Orchestration ---
@@ -757,7 +802,12 @@ def triage_issue(issue: dict, cfg: AutoLoopConfig, auto_fix: bool = True) -> lis
             return results
         approve_issue(issue["number"], verdict["priority"], verdict["reason"], cfg)
     elif verdict["verdict"] == "needs-decomposition":
-        decompose_issue(issue["number"], verdict, cfg, issue.get("body") or "")
+        depth = get_decomposition_depth(issue, cfg)
+        points = verdict.get("points", 0)
+        if depth >= 2 or (depth >= 1 and points <= 5):
+            approve_issue(issue["number"], verdict["priority"], verdict["reason"], cfg)
+        else:
+            decompose_issue(issue["number"], verdict, cfg, issue.get("body") or "")
 
     return results
 
