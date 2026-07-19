@@ -1,2 +1,3 @@
 __pycache__/
 autoloop/run_history.jsonl
+.claude/CLAUDE.local.md

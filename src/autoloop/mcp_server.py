@@ -14,9 +14,9 @@ import subprocess
 from pathlib import Path
 
 
-def _read_last_run() -> dict | None:
+def _read_last_run(base: Path | None = None) -> dict | None:
     """Read the last entry from run_history.jsonl."""
-    log_file = Path.cwd() / "autoloop" / "run_history.jsonl"
+    log_file = (base or Path.cwd()) / "autoloop" / "run_history.jsonl"
     if not log_file.exists():
         return None
     lines = log_file.read_text().strip().splitlines()
@@ -75,10 +75,11 @@ def main():
 
     server = FastMCP("autoloop-mcp")
 
-    def _spawn(cmd: list[str]) -> None:
+    def _spawn(cmd: list[str], cwd: str | None = None) -> None:
         """Fully detach a subprocess so it doesn't block the MCP connection."""
         subprocess.Popen(
             cmd,
+            cwd=cwd,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -86,40 +87,62 @@ def main():
         )
 
     @server.tool()
-    def autoloop_implement(issue: int | None = None, max_issues: int = 1) -> str:
-        """Trigger autoloop implementation. Starts async, returns immediately."""
+    def autoloop_implement(
+        issue: int | None = None, max_issues: int = 1, repo_dir: str | None = None
+    ) -> str:
+        """Trigger autoloop implementation. Starts async, returns immediately.
+
+        Args:
+            issue: Specific issue number to implement.
+            max_issues: Maximum number of issues to implement.
+            repo_dir: Target repository directory. Defaults to server's working directory.
+        """
         cmd = ["autoloop", "implement"]
         if issue is not None:
             cmd.extend(["--issue", str(issue)])
         cmd.extend(["--max-issues", str(max_issues)])
 
-        _spawn(cmd)
+        _spawn(cmd, cwd=repo_dir)
 
         if issue:
             return f"Started implementation of issue #{issue}."
         return f"Started implementation (max {max_issues} issue(s))."
 
     @server.tool()
-    def autoloop_triage() -> str:
-        """Trigger autoloop triage of untriaged issues."""
-        _spawn(["autoloop", "triage"])
+    def autoloop_triage(repo_dir: str | None = None) -> str:
+        """Trigger autoloop triage of untriaged issues.
+
+        Args:
+            repo_dir: Target repository directory. Defaults to server's working directory.
+        """
+        _spawn(["autoloop", "triage"], cwd=repo_dir)
         return "Started triage run."
 
     @server.tool()
-    def autoloop_fix_pr(pr_number: int) -> str:
-        """Fix a PR by rebasing on main and resolving any merge conflicts."""
-        _spawn(["autoloop", "fix-pr", str(pr_number)])
+    def autoloop_fix_pr(pr_number: int, repo_dir: str | None = None) -> str:
+        """Fix a PR by rebasing on main and resolving any merge conflicts.
+
+        Args:
+            pr_number: The PR number to fix.
+            repo_dir: Target repository directory. Defaults to server's working directory.
+        """
+        _spawn(["autoloop", "fix-pr", str(pr_number)], cwd=repo_dir)
         return f"Started fix-pr for PR #{pr_number}."
 
     @server.tool()
-    def autoloop_status() -> str:
-        """Check last run result, active runs, ready issue count, and next scheduled runs."""
+    def autoloop_status(repo_dir: str | None = None) -> str:
+        """Check last run result, active runs, ready issue count, and next scheduled runs.
+
+        Args:
+            repo_dir: Target repository directory. Defaults to server's working directory.
+        """
         from autoloop.config import load_config
 
+        base = Path(repo_dir) if repo_dir else Path.cwd()
         parts = []
-        cfg = load_config()
+        cfg = load_config(path=base / "autoloop.toml")
 
-        last = _read_last_run()
+        last = _read_last_run(base)
         if last:
             status = "success" if last["success"] else "failed"
             parts.append(
@@ -129,7 +152,7 @@ def main():
         else:
             parts.append("Last run: no history")
 
-        lockfile = Path.cwd() / ".autoloop.lock"
+        lockfile = base / ".autoloop.lock"
         active = []
         if lockfile.exists():
             active.append("implementation")
