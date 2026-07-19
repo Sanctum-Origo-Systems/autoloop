@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.1
+
+- MCP tools accept `repo_dir` parameter for multi-repo support from a single session
+- Fix `validate_decomposition` clearing dependency chains; now remaps references after merging
+
 ## v0.2.0
 
 - `autoloop init` scaffolds `.claude/settings.json` with minimal permissions for headless runs

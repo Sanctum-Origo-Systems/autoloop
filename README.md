@@ -23,7 +23,7 @@ Most users start local. Graduate to unattended when you trust it.
 
 ### As a CLI tool (recommended)
 
-Replace `<tag>` with the latest version from the [releases page](https://github.com/Sanctum-Origo-Systems/autoloop/tags) (e.g. `v0.2.0`):
+Replace `<tag>` with the latest version from the [releases page](https://github.com/Sanctum-Origo-Systems/autoloop/tags) (e.g. `v0.2.1`):
 
 ```bash
 uv tool install git+https://github.com/Sanctum-Origo-Systems/autoloop@<tag>
