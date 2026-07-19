@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.2.2
+
+- Configurable `test_pattern` replaces hardcoded `tests/*.py` check; supports any language
+- `autoloop init` infers `test_pattern` from `--verify-cmd` (empty for build-only projects)
+- Fix permission scaffold using invalid colon syntax (`Bash(git add:*)` → `Bash(git add *)`)
+
 ## v0.2.1
 
 - MCP tools accept `repo_dir` parameter for multi-repo support from a single session
