@@ -706,20 +706,29 @@ def test_implement_single_issue_returns_false_after_all_retries(monkeypatch, tmp
     log_path = tmp_path / "run_history.jsonl"
     monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
 
-    def fake_run(cmd, **kwargs):
-        if isinstance(cmd, list) and cmd[:3] == ["git", "rev-list", "--count"]:
-            return type("R", (), {"returncode": 0, "stdout": "0\n", "stderr": ""})()
-        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+    attempt_count = [0]
 
-    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    def fake_implement(issue, previous_errors=None):
+        attempt_count[0] += 1
+        return _claude_result()
+
     monkeypatch.setattr(
-        implement_issue, "implement", lambda issue, previous_errors=None: _claude_result()
+        implement_issue.subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
     )
+    monkeypatch.setattr(implement_issue, "implement", fake_implement)
     monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
     monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
+    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: False)
+    monkeypatch.setattr(
+        implement_issue, "verify_implementation", lambda branch: (False, "Tests failed")
+    )
+    monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
 
     result = implement_single_issue(_FAKE_ISSUE)
     assert result is False
+    assert attempt_count[0] == 3
 
 
 def test_implement_single_issue_catches_exception_returns_false(monkeypatch):
