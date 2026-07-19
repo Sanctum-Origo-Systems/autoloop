@@ -19,6 +19,7 @@ from autoloop.implement_issue import (
     design_gate,
     design_issue,
     design_required,
+    detect_active_claude_session,
     detect_issue_type,
     ensure_clean_main,
     get_issue_by_number,
@@ -1274,3 +1275,157 @@ def test_empty_branch_diagnostic_content():
     assert "Missing .claude/settings.json permissions" in EMPTY_BRANCH_DIAGNOSTIC
     assert "active Claude Code session" in EMPTY_BRANCH_DIAGNOSTIC
     assert "inner claude invocation failed to start" in EMPTY_BRANCH_DIAGNOSTIC
+
+
+# --- detect_active_claude_session tests ---
+
+
+def test_detect_active_claude_session_returns_none_when_pgrep_unavailable(monkeypatch):
+    """Detection is inconclusive when pgrep is not installed."""
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "pgrep":
+            raise FileNotFoundError("pgrep not found")
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    result = detect_active_claude_session("/some/project")
+    assert result is None
+
+
+def test_detect_active_claude_session_returns_false_when_no_claude_processes(monkeypatch):
+    """No claude processes running means no session detected."""
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "pgrep":
+            return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    result = detect_active_claude_session("/some/project")
+    assert result is False
+
+
+def test_detect_active_claude_session_returns_true_when_session_in_same_dir(monkeypatch):
+    """Detects a claude session when its cwd matches the project directory."""
+    monkeypatch.setattr(implement_issue.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(implement_issue.os.path, "realpath", lambda p: p)
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "pgrep":
+            return type("R", (), {"returncode": 0, "stdout": "12345 claude\n", "stderr": ""})()
+        if cmd[0] == "lsof":
+            return type(
+                "R", (), {"returncode": 0, "stdout": "p12345\nn/my/project\n", "stderr": ""}
+            )()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    result = detect_active_claude_session("/my/project")
+    assert result is True
+
+
+def test_detect_active_claude_session_returns_false_when_session_in_other_dir(monkeypatch):
+    """Claude running in a different directory does not trigger detection."""
+    monkeypatch.setattr(implement_issue.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(implement_issue.os.path, "realpath", lambda p: p)
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "pgrep":
+            return type("R", (), {"returncode": 0, "stdout": "12345 claude\n", "stderr": ""})()
+        if cmd[0] == "lsof":
+            return type(
+                "R", (), {"returncode": 0, "stdout": "p12345\nn/other/dir\n", "stderr": ""}
+            )()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    result = detect_active_claude_session("/my/project")
+    assert result is False
+
+
+def test_detect_active_claude_session_ignores_headless_processes(monkeypatch):
+    """Processes with --dangerously-skip-permissions are headless autoloop calls."""
+    monkeypatch.setattr(implement_issue.os.path, "realpath", lambda p: p)
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "pgrep":
+            return type(
+                "R",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": "12345 claude --dangerously-skip-permissions -p prompt\n",
+                    "stderr": "",
+                },
+            )()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    result = detect_active_claude_session("/my/project")
+    assert result is False
+
+
+def test_detect_active_claude_session_returns_none_when_lsof_unavailable(monkeypatch):
+    """Inconclusive when lsof is not available on macOS."""
+    monkeypatch.setattr(implement_issue.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(implement_issue.os.path, "realpath", lambda p: p)
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "pgrep":
+            return type("R", (), {"returncode": 0, "stdout": "12345 claude\n", "stderr": ""})()
+        if cmd[0] == "lsof":
+            raise FileNotFoundError("lsof not found")
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    result = detect_active_claude_session("/my/project")
+    assert result is None
+
+
+def test_detect_active_claude_session_linux_proc(monkeypatch, tmp_path):
+    """Linux path uses /proc/<pid>/cwd to resolve working directory."""
+    monkeypatch.setattr(implement_issue.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        implement_issue.os.path, "realpath", lambda p: "/my/project" if "proc" in p else p
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "pgrep":
+            return type("R", (), {"returncode": 0, "stdout": "12345 claude\n", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    result = detect_active_claude_session("/my/project")
+    assert result is True
+
+
+def test_main_aborts_when_active_session_detected(monkeypatch, tmp_path, capsys):
+    """main() aborts immediately when an active Claude session is detected."""
+    lock_path = tmp_path / ".autoloop.lock"
+    monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
+    monkeypatch.setattr(implement_issue, "load_config", lambda path=None: _test_cfg())
+    monkeypatch.setattr(implement_issue, "detect_active_claude_session", lambda: True)
+
+    implement_issue.cfg = None
+    implement_issue.main()
+    out = capsys.readouterr().out
+    assert "Active Claude Code session detected" in out
+    assert not lock_path.exists()
+
+
+def test_main_proceeds_when_session_detection_inconclusive(monkeypatch, tmp_path, capsys):
+    """main() proceeds normally when detection returns None (inconclusive)."""
+    lock_path = tmp_path / ".autoloop.lock"
+    monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
+    monkeypatch.setattr(implement_issue, "load_config", lambda path=None: _test_cfg())
+    monkeypatch.setattr(implement_issue, "detect_active_claude_session", lambda: None)
+    monkeypatch.setattr(implement_issue, "get_top_ready_issue", lambda: None)
+    monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
+    monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
+
+    implement_issue.cfg = None
+    implement_issue.main()
+    out = capsys.readouterr().out
+    assert "Active Claude Code session" not in out
+    assert "No more ready issues." in out
