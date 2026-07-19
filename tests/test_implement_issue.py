@@ -209,6 +209,45 @@ def test_verification_multiple_errors():
     assert len(errors) == 4
 
 
+def test_verification_default_pattern_matches_tests_py():
+    errors = collect_verification_errors(
+        ahead_count="1",
+        test_rc=0,
+        test_out="",
+        lint_rc=0,
+        fmt_rc=0,
+        changed_files=["src/app.py", "tests/test_foo.py"],
+        test_pattern="tests/*.py",
+    )
+    assert errors == []
+
+
+def test_verification_custom_pattern_matches():
+    errors = collect_verification_errors(
+        ahead_count="1",
+        test_rc=0,
+        test_out="",
+        lint_rc=0,
+        fmt_rc=0,
+        changed_files=["src/components/foo.test.ts", "src/app.ts"],
+        test_pattern="src/**/*.test.ts",
+    )
+    assert errors == []
+
+
+def test_verification_empty_pattern_skips_check():
+    errors = collect_verification_errors(
+        ahead_count="1",
+        test_rc=0,
+        test_out="",
+        lint_rc=0,
+        fmt_rc=0,
+        changed_files=["src/app.py"],
+        test_pattern="",
+    )
+    assert errors == []
+
+
 # --- Config-driven tests: build_pr_body uses cfg ---
 
 

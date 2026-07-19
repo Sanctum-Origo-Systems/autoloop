@@ -162,6 +162,39 @@ def test_touches_protected_path_multiple_protected():
     )
 
 
+def test_test_pattern_default():
+    config = AutoLoopConfig()
+    assert config.test_pattern == "tests/*.py"
+
+
+def test_test_pattern_loaded_from_toml(tmp_path, monkeypatch):
+    for var in (
+        "AUTOLOOP_TRIAGE_MODEL",
+        "AUTOLOOP_IMPL_MODEL",
+        "AUTOLOOP_TIMEOUT",
+        "AUTOLOOP_REVIEWER",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('test_pattern = "src/**/*.test.ts"\n')
+    config = load_config(toml_path)
+    assert config.test_pattern == "src/**/*.test.ts"
+
+
+def test_test_pattern_empty_from_toml(tmp_path, monkeypatch):
+    for var in (
+        "AUTOLOOP_TRIAGE_MODEL",
+        "AUTOLOOP_IMPL_MODEL",
+        "AUTOLOOP_TIMEOUT",
+        "AUTOLOOP_REVIEWER",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('test_pattern = ""\n')
+    config = load_config(toml_path)
+    assert config.test_pattern == ""
+
+
 def test_protected_paths_default():
     config = AutoLoopConfig()
     assert config.protected_paths == ["autoloop/"]
