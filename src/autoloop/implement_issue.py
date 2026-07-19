@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import platform
 import re
 import subprocess
 import time
@@ -165,6 +166,91 @@ def log_run(
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(LOG_FILE, "a") as f:
         f.write(json.dumps(entry) + "\n")
+
+
+# --- Active session detection ---
+
+
+def detect_active_claude_session(project_dir: str | None = None) -> bool | None:
+    """Check if an interactive Claude Code session is active in the project directory.
+
+    Returns True if a session is detected, False if none found, or None if
+    detection is inconclusive (tools unavailable).
+    """
+    if project_dir is None:
+        project_dir = str(REPO_DIR)
+
+    project_dir = os.path.realpath(project_dir)
+
+    try:
+        result = subprocess.run(
+            ["pgrep", "-af", "claude"],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        return None
+
+    if result.returncode != 0 or not result.stdout.strip():
+        return False
+
+    pids = []
+    for line in result.stdout.strip().splitlines():
+        parts = line.split(None, 1)
+        if not parts:
+            continue
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            continue
+        if len(parts) > 1 and "--dangerously-skip-permissions" not in parts[1]:
+            pids.append(pid)
+
+    if not pids:
+        return False
+
+    if platform.system() == "Darwin":
+        return _check_cwd_lsof(pids, project_dir)
+    return _check_cwd_proc(pids, project_dir)
+
+
+def _check_cwd_lsof(pids: list[int], project_dir: str) -> bool | None:
+    """Use lsof to check if any pid has cwd matching project_dir (macOS)."""
+    try:
+        result = subprocess.run(
+            ["lsof", "-a", "-d", "cwd", "-Fn"]
+            + [item for pid in pids for item in ("-p", str(pid))],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    for line in result.stdout.splitlines():
+        if line.startswith("n"):
+            cwd = os.path.realpath(line[1:])
+            if cwd == project_dir:
+                return True
+
+    return False
+
+
+def _check_cwd_proc(pids: list[int], project_dir: str) -> bool | None:
+    """Use /proc to check if any pid has cwd matching project_dir (Linux)."""
+    checked_any = False
+    for pid in pids:
+        try:
+            cwd = os.path.realpath(f"/proc/{pid}/cwd")
+            checked_any = True
+            if cwd == project_dir:
+                return True
+        except (OSError, PermissionError):
+            continue
+
+    return False if checked_any else None
 
 
 # --- Subprocess functions ---
@@ -961,6 +1047,14 @@ def main(issue=None, max_issues=1, require_design=False):
     global cfg
     if cfg is None:
         cfg = load_config()
+
+    session_detected = detect_active_claude_session()
+    if session_detected is True:
+        print(
+            "Active Claude Code session detected in this directory.\n"
+            "Close it, or move the Claude Code session to a parent folder."
+        )
+        return
 
     if not acquire_lock():
         print("Another implementation is running. Exiting.")
