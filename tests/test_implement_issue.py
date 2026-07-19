@@ -143,7 +143,6 @@ def test_verification_no_errors():
         test_rc=0,
         test_out="",
         lint_rc=0,
-        fmt_rc=0,
         changed_files=["tests/test_new.py", "src/x.py"],
     )
     assert errors == []
@@ -155,7 +154,6 @@ def test_verification_no_commits():
         test_rc=0,
         test_out="",
         lint_rc=0,
-        fmt_rc=0,
         changed_files=["tests/test_new.py"],
     )
     assert "No commits on branch" in errors
@@ -167,7 +165,6 @@ def test_verification_tests_failed():
         test_rc=1,
         test_out="FAILED test_x",
         lint_rc=0,
-        fmt_rc=0,
         changed_files=["tests/test_x.py"],
     )
     assert any("Tests failed" in e for e in errors)
@@ -179,7 +176,6 @@ def test_verification_lint_failed():
         test_rc=0,
         test_out="",
         lint_rc=1,
-        fmt_rc=0,
         changed_files=["tests/test_x.py"],
     )
     assert "Lint or format check failed" in errors
@@ -191,7 +187,6 @@ def test_verification_no_test_files():
         test_rc=0,
         test_out="",
         lint_rc=0,
-        fmt_rc=0,
         changed_files=["src/patina/store.py"],
     )
     assert "No test files were added or modified" in errors
@@ -203,7 +198,6 @@ def test_verification_multiple_errors():
         test_rc=1,
         test_out="fail",
         lint_rc=1,
-        fmt_rc=1,
         changed_files=[],
     )
     assert len(errors) == 4
@@ -215,7 +209,6 @@ def test_verification_default_pattern_matches_tests_py():
         test_rc=0,
         test_out="",
         lint_rc=0,
-        fmt_rc=0,
         changed_files=["src/app.py", "tests/test_foo.py"],
         test_pattern="tests/*.py",
     )
@@ -228,7 +221,6 @@ def test_verification_custom_pattern_matches():
         test_rc=0,
         test_out="",
         lint_rc=0,
-        fmt_rc=0,
         changed_files=["src/components/foo.test.ts", "src/app.ts"],
         test_pattern="src/**/*.test.ts",
     )
@@ -241,7 +233,6 @@ def test_verification_empty_pattern_skips_check():
         test_rc=0,
         test_out="",
         lint_rc=0,
-        fmt_rc=0,
         changed_files=["src/app.py"],
         test_pattern="",
     )
@@ -509,17 +500,25 @@ def test_design_issue_uses_cfg_model(monkeypatch, tmp_path):
 
 
 def test_verify_implementation_uses_cfg_verify_cmd_with_shell(monkeypatch):
-    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(verify_cmd="make test", test_timeout=30))
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(
+            verify_cmd="make test",
+            test_timeout=30,
+            lint_command="eslint .",
+        ),
+    )
     captured_calls = []
 
     def fake_run(cmd_or_str, **kwargs):
         captured_calls.append({"cmd": cmd_or_str, "kwargs": kwargs})
         if isinstance(cmd_or_str, str) and "make test" in cmd_or_str:
             return type("R", (), {"returncode": 0, "stdout": "passed", "stderr": ""})()
+        if isinstance(cmd_or_str, str) and "eslint" in cmd_or_str:
+            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
         if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "rev-list", "--count"]:
             return type("R", (), {"returncode": 0, "stdout": "1\n", "stderr": ""})()
-        if isinstance(cmd_or_str, list) and "ruff" in cmd_or_str:
-            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
         if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "diff", "--name-only"]:
             return type("R", (), {"returncode": 0, "stdout": "tests/test_x.py\n", "stderr": ""})()
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
@@ -532,6 +531,75 @@ def test_verify_implementation_uses_cfg_verify_cmd_with_shell(monkeypatch):
     assert test_calls[0]["kwargs"]["shell"] is True
     assert test_calls[0]["kwargs"]["cwd"] == implement_issue.REPO_DIR
     assert test_calls[0]["kwargs"]["timeout"] == 30
+
+    lint_calls = [c for c in captured_calls if c["cmd"] == "eslint ."]
+    assert len(lint_calls) == 1
+    assert lint_calls[0]["kwargs"]["shell"] is True
+
+    ruff_calls = [c for c in captured_calls if isinstance(c["cmd"], list) and "ruff" in c["cmd"]]
+    assert len(ruff_calls) == 0
+
+    assert valid is True
+
+
+def test_verify_implementation_empty_lint_command_skips_lint(monkeypatch):
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(verify_cmd="echo ok", test_timeout=30, lint_command=""),
+    )
+    captured_calls = []
+
+    def fake_run(cmd_or_str, **kwargs):
+        captured_calls.append({"cmd": cmd_or_str, "kwargs": kwargs})
+        if isinstance(cmd_or_str, str) and "echo ok" in cmd_or_str:
+            return type("R", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
+        if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "rev-list", "--count"]:
+            return type("R", (), {"returncode": 0, "stdout": "1\n", "stderr": ""})()
+        if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "diff", "--name-only"]:
+            return type("R", (), {"returncode": 0, "stdout": "tests/test_x.py\n", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    valid, errors = implement_issue.verify_implementation("branch")
+
+    shell_calls = [c for c in captured_calls if isinstance(c["cmd"], str)]
+    assert not any("ruff" in c["cmd"] for c in shell_calls)
+    assert not any("lint" in c["cmd"] for c in shell_calls)
+    assert valid is True
+    assert errors == ""
+
+
+def test_verify_implementation_lint_command_runs_as_shell(monkeypatch):
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(
+            verify_cmd="echo ok",
+            test_timeout=30,
+            lint_command="uv run ruff check && uv run ruff format --check",
+        ),
+    )
+    captured_calls = []
+
+    def fake_run(cmd_or_str, **kwargs):
+        captured_calls.append({"cmd": cmd_or_str, "kwargs": kwargs})
+        if isinstance(cmd_or_str, str):
+            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "rev-list", "--count"]:
+            return type("R", (), {"returncode": 0, "stdout": "1\n", "stderr": ""})()
+        if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "diff", "--name-only"]:
+            return type("R", (), {"returncode": 0, "stdout": "tests/test_x.py\n", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    valid, _ = implement_issue.verify_implementation("branch")
+
+    lint_calls = [
+        c for c in captured_calls if c["cmd"] == "uv run ruff check && uv run ruff format --check"
+    ]
+    assert len(lint_calls) == 1
+    assert lint_calls[0]["kwargs"]["shell"] is True
     assert valid is True
 
 
@@ -690,8 +758,6 @@ def test_implement_single_issue_returns_true_on_success(monkeypatch, tmp_path):
             return type("R", (), {"returncode": 0, "stdout": "1\n", "stderr": ""})()
         if isinstance(cmd, str):
             return type("R", (), {"returncode": 0, "stdout": "passed", "stderr": ""})()
-        if isinstance(cmd, list) and "ruff" in cmd:
-            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
         if isinstance(cmd, list) and cmd[:3] == ["git", "diff", "--name-only"]:
             return type("R", (), {"returncode": 0, "stdout": "tests/test_x.py\n", "stderr": ""})()
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()

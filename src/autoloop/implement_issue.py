@@ -104,7 +104,6 @@ def collect_verification_errors(
     test_rc: int,
     test_out: str,
     lint_rc: int,
-    fmt_rc: int,
     changed_files: list[str],
     test_pattern: str = "tests/*.py",
 ) -> list[str]:
@@ -114,7 +113,7 @@ def collect_verification_errors(
         errors.append("No commits on branch")
     if test_rc != 0:
         errors.append(f"Tests failed:\n{test_out[-500:]}")
-    if lint_rc != 0 or fmt_rc != 0:
+    if lint_rc != 0:
         errors.append("Lint or format check failed")
     if test_pattern:
         test_files = [f for f in changed_files if fnmatch.fnmatch(f, test_pattern)]
@@ -597,18 +596,17 @@ def verify_implementation(branch: str) -> tuple[bool, str]:
         cwd=REPO_DIR,
         timeout=cfg.test_timeout,
     )
-    lint = subprocess.run(
-        ["uv", "run", "ruff", "check"],
-        capture_output=True,
-        text=True,
-        cwd=REPO_DIR,
-    )
-    fmt = subprocess.run(
-        ["uv", "run", "ruff", "format", "--check", "."],
-        capture_output=True,
-        text=True,
-        cwd=REPO_DIR,
-    )
+    if cfg.lint_command:
+        lint = subprocess.run(
+            cfg.lint_command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            cwd=REPO_DIR,
+        )
+        lint_rc = lint.returncode
+    else:
+        lint_rc = 0
     diff = subprocess.run(
         ["git", "diff", "--name-only", "main"],
         capture_output=True,
@@ -621,8 +619,7 @@ def verify_implementation(branch: str) -> tuple[bool, str]:
         ahead_count=ahead.stdout if ahead.returncode == 0 else "",
         test_rc=tests.returncode,
         test_out=tests.stdout,
-        lint_rc=lint.returncode,
-        fmt_rc=fmt.returncode,
+        lint_rc=lint_rc,
         changed_files=changed,
         test_pattern=cfg.test_pattern,
     )
