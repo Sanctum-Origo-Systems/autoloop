@@ -686,7 +686,7 @@ def test_validate_decomposition_renumbers_orders():
     assert result[0]["order"] == 1
     assert result[1]["order"] == 2
     assert result[0]["depends_on"] == []
-    assert result[1]["depends_on"] == []
+    assert result[1]["depends_on"] == [1]
 
 
 def test_validate_decomposition_already_valid():
@@ -710,6 +710,99 @@ def test_validate_decomposition_transitive_file_merge():
     result = validate_decomposition(steps)
     assert len(result) == 1
     assert set(result[0]["files"]) == {"x.py", "y.py", "z.py"}
+
+
+def test_validate_decomposition_remaps_deps_after_merge():
+    """Dependencies should be remapped to the absorbing step's new index."""
+    steps = [
+        {"order": 1, "title": "Install packages", "points": 1, "files": ["setup.py"]},
+        {"order": 2, "title": "Configure deps", "points": 1, "files": ["setup.py"]},
+        {
+            "order": 3,
+            "title": "Add endpoint",
+            "points": 3,
+            "files": ["src/api.py"],
+            "depends_on": [2],
+        },
+    ]
+    result = validate_decomposition(steps)
+    assert len(result) == 2
+    api_step = [s for s in result if "src/api.py" in s.get("files", [])][0]
+    setup_step = [s for s in result if "setup.py" in s.get("files", [])][0]
+    assert setup_step["order"] in api_step["depends_on"]
+
+
+def test_validate_decomposition_drops_self_references():
+    """A step should not depend on itself after a merge."""
+    steps = [
+        {"order": 1, "title": "Base model", "points": 1, "files": ["src/model.py"]},
+        {
+            "order": 2,
+            "title": "Model validation",
+            "points": 1,
+            "files": ["src/model.py"],
+            "depends_on": [1],
+        },
+        {"order": 3, "title": "API layer", "points": 3, "files": ["src/api.py"], "depends_on": [2]},
+    ]
+    result = validate_decomposition(steps)
+    for step in result:
+        assert step["order"] not in step["depends_on"]
+
+
+def test_validate_decomposition_preserves_chain():
+    """A dependency chain (1 -> 2 -> 3) with no merges should be preserved."""
+    steps = [
+        {
+            "order": 1,
+            "title": "Schema migration",
+            "points": 3,
+            "files": ["db/schema.py"],
+            "depends_on": [],
+        },
+        {
+            "order": 2,
+            "title": "Data migration",
+            "points": 3,
+            "files": ["db/migrate.py"],
+            "depends_on": [1],
+        },
+        {
+            "order": 3,
+            "title": "API update",
+            "points": 3,
+            "files": ["src/api.py"],
+            "depends_on": [2],
+        },
+    ]
+    result = validate_decomposition(steps)
+    assert len(result) == 3
+    assert result[0]["depends_on"] == []
+    assert result[1]["depends_on"] == [1]
+    assert result[2]["depends_on"] == [2]
+
+
+def test_validate_decomposition_remaps_multiple_deps():
+    """A step depending on multiple others should have all remapped correctly."""
+    steps = [
+        {"order": 1, "title": "Step A", "points": 3, "files": ["a.py"], "depends_on": []},
+        {"order": 2, "title": "Step B", "points": 3, "files": ["b.py"], "depends_on": []},
+        {"order": 3, "title": "Step C", "points": 3, "files": ["c.py"], "depends_on": [1, 2]},
+    ]
+    result = validate_decomposition(steps)
+    assert len(result) == 3
+    assert result[2]["depends_on"] == [1, 2]
+
+
+def test_validate_decomposition_no_internal_metadata_leak():
+    """The _original_orders tracking field should not appear in the output."""
+    steps = [
+        {"order": 1, "title": "A", "points": 3, "files": ["a.py"], "depends_on": []},
+        {"order": 2, "title": "B", "points": 3, "files": ["b.py"], "depends_on": [1]},
+    ]
+    result = validate_decomposition(steps)
+    for step in result:
+        assert "_original_orders" not in step
 
 
 def test_validate_decomposition_regression_20_criteria():
