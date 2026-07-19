@@ -7,6 +7,7 @@ Usage (from the target repo root):
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 from pathlib import Path
 
@@ -53,7 +54,7 @@ error_truncation = 2000
 spec_truncation = 4000
 
 # Paths the builder must never modify — issues targeting these get needs-human
-protected_paths = ["autoloop.toml"]
+protected_paths = ["autoloop.toml", ".claude/settings.json"]
 
 # Scheduling: autoloop uses systemd user timers for scheduled runs.
 # The timer_prefix controls which timers `autoloop status` looks for.
@@ -198,10 +199,108 @@ def create_labels(repo: str, dry_run: bool = False) -> None:
                 print(f"  failed: {name} — {stderr}")
 
 
+BASE_ALLOWLIST = [
+    "Read",
+    "Edit",
+    "Write",
+    "Bash(git status)",
+    "Bash(git add:*)",
+    "Bash(git commit:*)",
+    "Bash(git checkout:*)",
+    "Bash(git branch:*)",
+    "Bash(git push:*)",
+    "Bash(git diff:*)",
+    "Bash(git log:*)",
+    "Bash(gh:*)",
+]
+
+DENY_LIST = [
+    "Bash(git push --force*)",
+    "Bash(git reset --hard*)",
+    "Bash(rm -rf*)",
+    "Bash(gh pr merge*)",
+]
+
+
+def _extract_command_prefixes(cmd_string: str) -> list[str]:
+    """Split a compound command on && / || / ; and return Bash allowlist entries."""
+    parts: list[str] = []
+    for sep in ("&&", "||", ";"):
+        expanded: list[str] = []
+        for part in parts or [cmd_string]:
+            expanded.extend(part.split(sep))
+        parts = expanded
+
+    entries: list[str] = []
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        entries.append(f"Bash({part}*)")
+
+    # Deduplicate: if one entry is a prefix of another, keep only the shorter one
+    deduplicated: list[str] = []
+    sorted_entries = sorted(entries, key=len)
+    for entry in sorted_entries:
+        prefix = entry[: -len("*)")] if entry.endswith("*)") else entry
+        if not any(
+            entry != existing and prefix.startswith(existing[: -len("*)")])
+            for existing in deduplicated
+        ):
+            deduplicated.append(entry)
+    return deduplicated
+
+
+def build_settings_allowlist(verify_cmd: str, lint_cmd: str = "") -> dict:
+    """Build a .claude/settings.json dict from verify and lint commands."""
+    allow = list(BASE_ALLOWLIST)
+    allow.extend(_extract_command_prefixes(verify_cmd))
+    if lint_cmd:
+        allow.extend(_extract_command_prefixes(lint_cmd))
+
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    unique: list[str] = []
+    for entry in allow:
+        if entry not in seen:
+            seen.add(entry)
+            unique.append(entry)
+
+    return {"permissions": {"allow": unique, "deny": list(DENY_LIST)}}
+
+
+def write_claude_settings(target: Path, verify_cmd: str, lint_cmd: str = "") -> None:
+    """Create .claude/settings.json with a minimal allowlist, or skip if it exists."""
+    claude_dir = target / ".claude"
+    path = claude_dir / "settings.json"
+
+    needed = build_settings_allowlist(verify_cmd, lint_cmd)
+
+    if path.exists():
+        existing = json.loads(path.read_text())
+        existing_allow = set(existing.get("permissions", {}).get("allow", []))
+        needed_allow = set(needed["permissions"]["allow"])
+        missing = sorted(needed_allow - existing_allow)
+        if missing:
+            print("  .claude/settings.json already exists — skipping creation")
+            print("  Entries autoloop needs but are not present:")
+            for entry in missing:
+                print(f"    + {entry}")
+            print("  Please add them manually if the builder needs them.")
+        else:
+            print("  .claude/settings.json already exists with all needed entries")
+        return
+
+    claude_dir.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(needed, indent=2) + "\n")
+    print("  created .claude/settings.json")
+
+
 def run_init(
     repo: str,
     reviewer: str = "",
     verify_cmd: str = "uv run pytest",
+    lint_cmd: str = "",
     dry_run: bool = False,
     skip_labels: bool = False,
 ) -> None:
@@ -212,6 +311,9 @@ def run_init(
 
     print("Config:")
     write_toml(target, repo, reviewer, verify_cmd)
+
+    print("\nPermissions:")
+    write_claude_settings(target, verify_cmd, lint_cmd)
 
     print("\nWorkflow:")
     write_workflow(target)
@@ -224,9 +326,12 @@ def run_init(
         create_labels(repo, dry_run=dry_run)
 
     print("\nDone! Next steps:")
-    print("  1. Review autoloop.toml")
+    print("  1. Review autoloop.toml and .claude/settings.json")
     print("  2. Commit the generated files:")
-    print("     git add autoloop.toml .github/workflows/autoloop-cleanup.yml .gitignore")
+    print(
+        "     git add autoloop.toml .claude/settings.json"
+        " .github/workflows/autoloop-cleanup.yml .gitignore"
+    )
     print('     git commit -m "feat: add autoloop pipeline"')
     print("  3. Run: autoloop triage    (to triage open issues)")
     print("  4. Run: autoloop implement (to implement top ready issue)")
@@ -240,12 +345,17 @@ def main() -> None:
         "--verify-cmd", default="uv run pytest", help="Verify command (default: uv run pytest)"
     )
     parser.add_argument(
+        "--lint-cmd", default="", help="Lint command (e.g. 'ruff check && ruff format --check')"
+    )
+    parser.add_argument(
         "--dry-run", action="store_true", help="Print label commands without running"
     )
     parser.add_argument("--skip-labels", action="store_true", help="Skip GitHub label creation")
     args = parser.parse_args()
 
-    run_init(args.repo, args.reviewer, args.verify_cmd, args.dry_run, args.skip_labels)
+    run_init(
+        args.repo, args.reviewer, args.verify_cmd, args.lint_cmd, args.dry_run, args.skip_labels
+    )
 
 
 if __name__ == "__main__":
