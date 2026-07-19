@@ -45,6 +45,7 @@ pr_reviewer = "{reviewer}"
 
 # Verification
 verify_cmd = "{verify_cmd}"
+test_pattern = "{test_pattern}"  # glob pattern matching test files — inferred from verify_cmd
 
 # Retry / truncation limits
 max_retries = 3
@@ -132,13 +133,46 @@ jobs:
 
 GITIGNORE_ENTRY = "autoloop/run_history.jsonl"
 
+_PYTEST_KEYWORDS = ("pytest", "py.test")
+_JS_TEST_KEYWORDS = ("npm test", "jest", "vitest", "mocha")
+_BUILD_KEYWORDS = ("npm run build", "make build", "cargo build", "go build", "gradle build")
+
+
+def infer_test_pattern(verify_cmd: str) -> str | None:
+    """Infer a test_pattern glob from a verify command string.
+
+    Returns the pattern string, or None if the command is unrecognized.
+    """
+    cmd = verify_cmd.strip().lower()
+
+    for keyword in _BUILD_KEYWORDS:
+        if keyword in cmd:
+            return ""
+
+    for keyword in _PYTEST_KEYWORDS:
+        if keyword in cmd:
+            return "tests/*.py"
+
+    for keyword in _JS_TEST_KEYWORDS:
+        if keyword in cmd:
+            return "src/**/*.test.*"
+
+    return None
+
 
 def write_toml(target: Path, repo: str, reviewer: str, verify_cmd: str) -> None:
     path = target / "autoloop.toml"
     if path.exists():
         print("  autoloop.toml already exists, skipping (delete to regenerate)")
         return
-    path.write_text(TOML_TEMPLATE.format(repo=repo, reviewer=reviewer, verify_cmd=verify_cmd))
+    test_pattern = infer_test_pattern(verify_cmd)
+    if test_pattern is None:
+        test_pattern = ""
+    path.write_text(
+        TOML_TEMPLATE.format(
+            repo=repo, reviewer=reviewer, verify_cmd=verify_cmd, test_pattern=test_pattern
+        )
+    )
     print("  created autoloop.toml")
 
 

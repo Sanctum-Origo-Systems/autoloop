@@ -6,6 +6,7 @@ from unittest.mock import patch
 from autoloop.init import (
     _extract_command_prefixes,
     build_settings_allowlist,
+    infer_test_pattern,
     run_init,
     write_claude_settings,
 )
@@ -186,3 +187,90 @@ class TestRunInitSettings:
         run_init("acme/widgets", verify_cmd="pytest", skip_labels=True)
         out = capsys.readouterr().out
         assert ".claude/settings.json" in out
+
+
+class TestInferTestPattern:
+    def test_uv_run_pytest(self):
+        assert infer_test_pattern("uv run pytest") == "tests/*.py"
+
+    def test_pytest_bare(self):
+        assert infer_test_pattern("pytest") == "tests/*.py"
+
+    def test_pytest_with_args(self):
+        assert infer_test_pattern("pytest -x --tb=short") == "tests/*.py"
+
+    def test_npm_test(self):
+        assert infer_test_pattern("npm test") == "src/**/*.test.*"
+
+    def test_jest(self):
+        assert infer_test_pattern("jest") == "src/**/*.test.*"
+
+    def test_vitest(self):
+        assert infer_test_pattern("vitest") == "src/**/*.test.*"
+
+    def test_npm_run_build(self):
+        assert infer_test_pattern("npm run build") == ""
+
+    def test_cargo_build(self):
+        assert infer_test_pattern("cargo build") == ""
+
+    def test_make_build(self):
+        assert infer_test_pattern("make build") == ""
+
+    def test_unrecognized_returns_none(self):
+        assert infer_test_pattern("./run_checks.sh") is None
+
+    def test_empty_string(self):
+        assert infer_test_pattern("") is None
+
+    def test_case_insensitive(self):
+        assert infer_test_pattern("UV RUN PYTEST") == "tests/*.py"
+
+    def test_build_takes_precedence_over_test(self):
+        assert infer_test_pattern("npm run build && npm test") == ""
+
+
+class TestWriteTomlTestPattern:
+    @patch("autoloop.init.create_labels")
+    def test_pytest_writes_test_pattern(self, mock_labels, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        run_init("acme/widgets", verify_cmd="uv run pytest", skip_labels=True)
+        content = (tmp_path / "autoloop.toml").read_text()
+        assert 'test_pattern = "tests/*.py"' in content
+
+    @patch("autoloop.init.create_labels")
+    def test_npm_build_writes_empty_test_pattern(self, mock_labels, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        run_init("acme/widgets", verify_cmd="npm run build", skip_labels=True)
+        content = (tmp_path / "autoloop.toml").read_text()
+        assert 'test_pattern = ""' in content
+
+    @patch("autoloop.init.create_labels")
+    def test_test_pattern_has_comment(self, mock_labels, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        run_init("acme/widgets", verify_cmd="uv run pytest", skip_labels=True)
+        content = (tmp_path / "autoloop.toml").read_text()
+        for line in content.splitlines():
+            if "test_pattern" in line and "=" in line:
+                assert "#" in line
+                break
+        else:
+            raise AssertionError("test_pattern line not found in TOML")
+
+    @patch("autoloop.init.create_labels")
+    def test_test_pattern_loadable_by_config(self, mock_labels, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        run_init("acme/widgets", verify_cmd="uv run pytest", skip_labels=True)
+        from autoloop.config import load_config
+
+        cfg = load_config(tmp_path / "autoloop.toml")
+        assert cfg.test_pattern == "tests/*.py"
+
+    @patch("autoloop.init.create_labels")
+    def test_npm_test_pattern_roundtrips(self, mock_labels, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        run_init("acme/widgets", verify_cmd="npm test", skip_labels=True)
+        from autoloop.config import load_config
+
+        cfg = load_config(tmp_path / "autoloop.toml")
+        assert cfg.test_pattern == "src/**/*.test.*"
