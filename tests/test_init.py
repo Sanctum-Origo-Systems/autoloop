@@ -4,11 +4,13 @@ import json
 from unittest.mock import patch
 
 from autoloop.init import (
+    WORKFLOW_TEMPLATE,
     _extract_command_prefixes,
     build_settings_allowlist,
     infer_test_pattern,
     run_init,
     write_claude_settings,
+    write_workflow,
 )
 
 
@@ -274,3 +276,57 @@ class TestWriteTomlTestPattern:
 
         cfg = load_config(tmp_path / "autoloop.toml")
         assert cfg.test_pattern == "src/**/*.test.*"
+
+
+class TestWorkflowTemplate:
+    def test_template_has_checkout_step(self):
+        assert "actions/checkout@v4" in WORKFLOW_TEMPLATE
+
+    def test_template_installs_from_main(self):
+        assert "@main" in WORKFLOW_TEMPLATE
+
+    def test_template_no_pinned_version(self):
+        assert "autoloop@v" not in WORKFLOW_TEMPLATE
+
+    def test_template_no_format_placeholders(self):
+        assert "{version}" not in WORKFLOW_TEMPLATE
+
+
+class TestWriteWorkflow:
+    def test_creates_workflow_file(self, tmp_path, capsys):
+        write_workflow(tmp_path)
+        path = tmp_path / ".github" / "workflows" / "autoloop-cleanup.yml"
+        assert path.exists()
+        out = capsys.readouterr().out
+        assert "created .github/workflows/autoloop-cleanup.yml" in out
+
+    def test_workflow_has_checkout_before_python(self, tmp_path):
+        write_workflow(tmp_path)
+        path = tmp_path / ".github" / "workflows" / "autoloop-cleanup.yml"
+        content = path.read_text()
+        checkout_pos = content.index("actions/checkout@v4")
+        python_pos = content.index("actions/setup-python@v5")
+        assert checkout_pos < python_pos
+
+    def test_workflow_installs_from_main(self, tmp_path):
+        write_workflow(tmp_path)
+        path = tmp_path / ".github" / "workflows" / "autoloop-cleanup.yml"
+        content = path.read_text()
+        assert "autoloop@main" in content
+        assert "autoloop@v" not in content
+
+    def test_workflow_skips_existing(self, tmp_path, capsys):
+        path = tmp_path / ".github" / "workflows" / "autoloop-cleanup.yml"
+        path.parent.mkdir(parents=True)
+        path.write_text("existing")
+        write_workflow(tmp_path)
+        assert path.read_text() == "existing"
+        out = capsys.readouterr().out
+        assert "already exists" in out
+
+    def test_workflow_valid_github_actions_expressions(self, tmp_path):
+        write_workflow(tmp_path)
+        path = tmp_path / ".github" / "workflows" / "autoloop-cleanup.yml"
+        content = path.read_text()
+        assert "${{ secrets.GITHUB_TOKEN }}" in content
+        assert "${{ github.event.pull_request.number }}" in content
