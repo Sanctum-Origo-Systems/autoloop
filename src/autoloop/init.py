@@ -101,34 +101,36 @@ jobs:
             ];
             const body = context.payload.pull_request.body || '';
             const matches = body.match(/Closes #(\\d+)/g) || [];
-            for (const match of matches) {{
+            for (const match of matches) {
               const issueNumber = parseInt(match.replace('Closes #', ''));
-              for (const label of labels) {{
-                try {{
-                  await github.rest.issues.removeLabel({{
+              for (const label of labels) {
+                try {
+                  await github.rest.issues.removeLabel({
                     owner: context.repo.owner,
                     repo: context.repo.repo,
                     issue_number: issueNumber,
                     name: label
-                  }});
-                }} catch (e) {{}}
-              }}
-            }}
+                  });
+                } catch (e) {}
+              }
+            }
 
   auto-close-parent:
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
       - name: Install autoloop
-        run: pip install git+https://github.com/Sanctum-Origo-Systems/autoloop@v{version}
+        run: pip install git+https://github.com/Sanctum-Origo-Systems/autoloop@main
       - name: Auto-close parent issue
         env:
-          GH_TOKEN: ${{{{ secrets.GITHUB_TOKEN }}}}
-        run: autoloop auto-close-parent "${{{{ github.event.pull_request.number }}}}"
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: autoloop auto-close-parent "${{ github.event.pull_request.number }}"
 """
 
 GITIGNORE_ENTRY = "autoloop/run_history.jsonl"
@@ -177,14 +179,12 @@ def write_toml(target: Path, repo: str, reviewer: str, verify_cmd: str) -> None:
 
 
 def write_workflow(target: Path) -> None:
-    from autoloop import __version__
-
     path = target / ".github" / "workflows" / "autoloop-cleanup.yml"
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
         print("  workflow already exists, skipping (delete to regenerate)")
         return
-    path.write_text(WORKFLOW_TEMPLATE.format(version=__version__))
+    path.write_text(WORKFLOW_TEMPLATE)
     print("  created .github/workflows/autoloop-cleanup.yml")
 
 
