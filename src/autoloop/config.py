@@ -28,7 +28,7 @@ class AutoLoopConfig:
     error_truncation: int = 2000
     spec_truncation: int = 4000
     verify_cmd: str = "uv run pytest"
-    lint_command: str = "uv run ruff check && uv run ruff format --check"
+    lint_command: str = ""
     test_pattern: str = "tests/*.py"
     timer_prefix: str = "autoloop"
     protected_paths: list[str] = field(default_factory=lambda: ["autoloop/"])

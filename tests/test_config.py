@@ -60,7 +60,7 @@ def test_partial_toml_keeps_defaults(tmp_path, monkeypatch):
     assert config.impl_model == "claude-opus-4-6[1m]"
     assert config.impl_timeout == 900
     assert config.verify_cmd == "uv run pytest"
-    assert config.lint_command == "uv run ruff check && uv run ruff format --check"
+    assert config.lint_command == ""
     assert config.max_story_points == 2
     assert len(config.triage_labels) == 6
 
@@ -160,6 +160,27 @@ def test_touches_protected_path_multiple_protected():
         touches_protected_path(["autoloop.toml", "src/main.py"], ["autoloop/", "autoloop.toml"])
         is True
     )
+
+
+def test_lint_command_defaults_to_empty():
+    config = AutoLoopConfig()
+    assert config.lint_command == ""
+
+
+def test_lint_command_loaded_from_toml(autoloop_toml, monkeypatch):
+    for var in (
+        "AUTOLOOP_TRIAGE_MODEL",
+        "AUTOLOOP_IMPL_MODEL",
+        "AUTOLOOP_TIMEOUT",
+        "AUTOLOOP_REVIEWER",
+        "AUTOLOOP_TRIAGE_TIMEOUT",
+        "AUTOLOOP_TEST_TIMEOUT",
+        "AUTOLOOP_MAX_RETRIES",
+        "AUTOLOOP_REPO",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    config = load_config(autoloop_toml)
+    assert config.lint_command == "echo lint"
 
 
 def test_test_pattern_default():
