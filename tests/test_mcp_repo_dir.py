@@ -147,6 +147,42 @@ def test_triage_cwd_none_when_no_repo_dir(mcp_tools):
     assert captured[0]["kwargs"]["cwd"] is None
 
 
+def test_preflight_passes_cwd(mcp_tools, tmp_path):
+    """autoloop_preflight passes repo_dir as cwd to Popen."""
+    captured = []
+
+    def fake_popen(cmd, **kwargs):
+        captured.append({"cmd": cmd, "kwargs": kwargs})
+
+    with patch("autoloop.mcp_server.subprocess.Popen", fake_popen):
+        result = mcp_tools["autoloop_preflight"](repo_dir=str(tmp_path))
+
+    assert len(captured) == 1
+    assert captured[0]["kwargs"]["cwd"] == str(tmp_path)
+    assert captured[0]["cmd"] == ["autoloop", "preflight"]
+    assert result == "Started preflight checks."
+
+
+def test_preflight_cwd_none_when_no_repo_dir(mcp_tools):
+    """autoloop_preflight passes cwd=None when repo_dir omitted."""
+    captured = []
+
+    def fake_popen(cmd, **kwargs):
+        captured.append({"cmd": cmd, "kwargs": kwargs})
+
+    with patch("autoloop.mcp_server.subprocess.Popen", fake_popen):
+        result = mcp_tools["autoloop_preflight"]()
+
+    assert len(captured) == 1
+    assert captured[0]["kwargs"]["cwd"] is None
+    assert result == "Started preflight checks."
+
+
+def test_preflight_registered(mcp_tools):
+    """autoloop_preflight appears in the MCP server's tool listing."""
+    assert "autoloop_preflight" in mcp_tools
+
+
 def test_fix_pr_passes_cwd(mcp_tools, tmp_path):
     """autoloop_fix_pr passes repo_dir as cwd to Popen."""
     captured = []
