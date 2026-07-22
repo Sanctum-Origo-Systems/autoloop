@@ -84,8 +84,10 @@ def build_pr_body(
         f"{issue['title']}\n\n"
         f"## Test Plan\n"
         f"- `{cfg.verify_cmd}` — all tests pass\n"
-        f"- `uv run ruff check && uv run ruff format --check` — clean\n\n"
     )
+    if cfg.lint_command:
+        body += f"- `{cfg.lint_command}` — clean\n"
+    body += "\n"
     if attempts > 0:
         body += (
             f"## AutoLoop Run Stats\n"
@@ -426,7 +428,7 @@ def build_implementation_prompt(issue: dict) -> str:
             metric_targets,
         )
 
-    return (
+    prompt = (
         f"## Task\n\n"
         f"Implement GitHub issue #{issue['number']}: {issue['title']}\n\n"
         f"## Issue Details\n\n{full_context}\n\n"
@@ -434,11 +436,21 @@ def build_implementation_prompt(issue: dict) -> str:
         f"## Implementation Checklist\n\n"
         f"1. Read the files listed in 'Files to Modify'\n"
         f"2. Implement the changes described in the issue\n"
-        f"3. Write comprehensive unit tests for every new/changed function\n"
-        f"4. Run `{cfg.verify_cmd}` — all tests must pass\n"
-        f"5. Run `uv run ruff check && uv run ruff format` — must be clean\n"
-        f"6. If README.md needs updating (new tools, commands), update it\n"
-        f"7. Stage and commit:\n"
+    )
+
+    step = 3
+    if cfg.test_pattern:
+        prompt += f"{step}. Write comprehensive unit tests for every new/changed function\n"
+        step += 1
+    prompt += f"{step}. Run `{cfg.verify_cmd}` — all tests must pass\n"
+    step += 1
+    if cfg.lint_command:
+        prompt += f"{step}. Run `{cfg.lint_command}` — must be clean\n"
+        step += 1
+    prompt += f"{step}. If README.md needs updating (new tools, commands), update it\n"
+    step += 1
+    prompt += (
+        f"{step}. Stage and commit:\n"
         f"   `git add <specific files>`\n"
         f"   `git commit -m '<type>: <description> (#{issue['number']})'\n"
         f"   Types: fix (bugs), feat (features), refactor\n"
@@ -447,9 +459,20 @@ def build_implementation_prompt(issue: dict) -> str:
         f"- Never use real person or company names in test data\n"
         f"- Follow existing code patterns in this repo\n"
         f"- Do not add features beyond what the issue asks for\n"
-        f"- Do not skip tests or lint\n"
-        f"- Do not run git push\n"
     )
+    if cfg.test_pattern or cfg.lint_command:
+        skippable = " or ".join(
+            part
+            for part in (
+                "tests" if cfg.test_pattern else "",
+                "lint" if cfg.lint_command else "",
+            )
+            if part
+        )
+        prompt += f"- Do not skip {skippable}\n"
+    prompt += "- Do not run git push\n"
+
+    return prompt
 
 
 DESIGN_PROMPT = (
