@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.3.0
+
+- Multi-language support: triage and implementation prompts use project commands from config instead of hardcoded Python tools
+- Default `lint_command` to empty string; no longer assumes ruff on unconfigured projects
+- `autoloop preflight` command and MCP tool to validate build environment before implementation
+- Fix cleanup workflow: add missing checkout step, install from `@main` instead of pinned tag
+
 ## v0.2.3
 
 - Fix verification using hardcoded ruff commands instead of `lint_command` from config
