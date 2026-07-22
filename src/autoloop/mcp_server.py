@@ -130,6 +130,16 @@ def main():
         return f"Started fix-pr for PR #{pr_number}."
 
     @server.tool()
+    def autoloop_preflight(repo_dir: str | None = None) -> str:
+        """Run preflight checks (verify and lint commands) on the current branch.
+
+        Args:
+            repo_dir: Target repository directory. Defaults to server's working directory.
+        """
+        _spawn(["autoloop", "preflight"], cwd=repo_dir)
+        return "Started preflight checks."
+
+    @server.tool()
     def autoloop_status(repo_dir: str | None = None) -> str:
         """Check last run result, active runs, ready issue count, and next scheduled runs.
 
