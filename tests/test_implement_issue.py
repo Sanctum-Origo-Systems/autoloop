@@ -285,6 +285,28 @@ def test_build_pr_body_no_stats_when_zero_calls(monkeypatch):
     assert "AutoLoop Run Stats" not in body
 
 
+def test_build_pr_body_uses_cfg_lint_command(monkeypatch):
+    monkeypatch.setattr(
+        implement_issue, "cfg", _test_cfg(lint_command="eslint . && prettier --check .")
+    )
+
+    issue = {"number": 42, "title": "Add flag"}
+    body = build_pr_body(issue)
+
+    assert "`eslint . && prettier --check .`" in body
+    assert "ruff" not in body
+
+
+def test_build_pr_body_omits_lint_line_when_lint_command_empty(monkeypatch):
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(lint_command=""))
+
+    issue = {"number": 42, "title": "Add flag"}
+    body = build_pr_body(issue)
+
+    assert "ruff" not in body
+    assert "lint" not in body.lower().split("autoloop")[0]
+
+
 # --- Config-driven tests: subprocess calls use cfg.repo ---
 
 
@@ -624,6 +646,131 @@ def test_build_implementation_prompt_references_cfg_verify_cmd(monkeypatch, tmp_
 
     assert "`npm test`" in prompt
     assert "uv run pytest" not in prompt
+
+
+def test_build_implementation_prompt_uses_cfg_lint_command(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(lint_command="eslint . && prettier --check .", repo="my-org/my-repo"),
+    )
+    claude_md = tmp_path / "CLAUDE.md"
+    claude_md.write_text("# Project\nTest project")
+    monkeypatch.setattr(implement_issue, "REPO_DIR", tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    issue = {"number": 1, "title": "Test", "body": "details"}
+    prompt = implement_issue.build_implementation_prompt(issue)
+
+    assert "`eslint . && prettier --check .`" in prompt
+    assert "ruff" not in prompt
+
+
+def test_build_implementation_prompt_omits_lint_when_empty(monkeypatch, tmp_path):
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(lint_command="", repo="my-org/my-repo"))
+    claude_md = tmp_path / "CLAUDE.md"
+    claude_md.write_text("# Project\nTest project")
+    monkeypatch.setattr(implement_issue, "REPO_DIR", tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    issue = {"number": 1, "title": "Test", "body": "details"}
+    prompt = implement_issue.build_implementation_prompt(issue)
+
+    assert "ruff" not in prompt
+    assert "lint" not in prompt.lower().split("## rules")[0]
+
+
+def test_build_implementation_prompt_omits_test_step_when_test_pattern_empty(monkeypatch, tmp_path):
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(test_pattern="", repo="my-org/my-repo"))
+    claude_md = tmp_path / "CLAUDE.md"
+    claude_md.write_text("# Project\nTest project")
+    monkeypatch.setattr(implement_issue, "REPO_DIR", tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    issue = {"number": 1, "title": "Test issue", "body": "details"}
+    prompt = implement_issue.build_implementation_prompt(issue)
+
+    assert "Write comprehensive unit tests" not in prompt
+    assert "Do not skip tests" not in prompt
+
+
+def test_build_implementation_prompt_includes_test_step_when_test_pattern_set(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(test_pattern="src/**/*.test.ts", lint_command="eslint .", repo="my-org/my-repo"),
+    )
+    claude_md = tmp_path / "CLAUDE.md"
+    claude_md.write_text("# Project\nTest project")
+    monkeypatch.setattr(implement_issue, "REPO_DIR", tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    issue = {"number": 1, "title": "Test issue", "body": "details"}
+    prompt = implement_issue.build_implementation_prompt(issue)
+
+    assert "Write comprehensive unit tests" in prompt
+    assert "Do not skip tests or lint" in prompt
+
+
+def test_build_implementation_prompt_skip_rule_lint_only(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(test_pattern="", lint_command="eslint .", repo="my-org/my-repo"),
+    )
+    claude_md = tmp_path / "CLAUDE.md"
+    claude_md.write_text("# Project\nTest project")
+    monkeypatch.setattr(implement_issue, "REPO_DIR", tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    issue = {"number": 1, "title": "Test issue", "body": "details"}
+    prompt = implement_issue.build_implementation_prompt(issue)
+
+    assert "Do not skip lint" in prompt
+    assert "Do not skip tests" not in prompt
+
+
+def test_build_implementation_prompt_no_skip_rule_when_both_empty(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(test_pattern="", lint_command="", repo="my-org/my-repo"),
+    )
+    claude_md = tmp_path / "CLAUDE.md"
+    claude_md.write_text("# Project\nTest project")
+    monkeypatch.setattr(implement_issue, "REPO_DIR", tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    issue = {"number": 1, "title": "Test issue", "body": "details"}
+    prompt = implement_issue.build_implementation_prompt(issue)
+
+    assert "Do not skip" not in prompt
 
 
 # --- Config-driven tests: review_implementation uses cfg.impl_model ---
