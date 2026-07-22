@@ -133,6 +133,9 @@ Sub-issue: {step_title}
 Files: {step_files}
 Reason for ordering: {step_reason}
 
+Project verification command: {verify_cmd}
+Project lint command: {lint_cmd}
+
 Respond with JSON only:
 {{
   "expected_behavior": "specific, testable description",
@@ -144,6 +147,8 @@ Rules:
 - Acceptance criteria must be verifiable by running a test or command.
 - Do not include generic criteria like "tests pass" or "lint clean".
 - Reference function names and modules, not line numbers.
+- Reference the project's verify command ("{verify_cmd}") in acceptance criteria, not hardcoded tool names.
+- Reference the project's lint command ("{lint_cmd}") in acceptance criteria, or omit lint criteria if empty.
 """
 
 REWRITE_PROMPT = """\
@@ -599,6 +604,8 @@ def suggest_sub_issue_fields(
         step_title=step["title"],
         step_files=", ".join(step.get("files", [])),
         step_reason=why,
+        verify_cmd=cfg.verify_cmd,
+        lint_cmd=cfg.lint_command,
     )
     result = run_claude(prompt, cfg.triage_model, cfg.triage_timeout)
     if not result.success:

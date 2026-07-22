@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from autoloop.claude_runner import ClaudeResult
 from autoloop.triage_issues import (
+    SUB_ISSUE_PROMPT,
     _merge_steps,
     build_decomposition_comment,
     build_sub_issue_summary_comment,
@@ -16,6 +17,7 @@ from autoloop.triage_issues import (
     parse_rewritten_body,
     parse_sub_issue_response,
     parse_triage_response,
+    suggest_sub_issue_fields,
     validate_decomposition,
     validate_discovered_files,
 )
@@ -1360,3 +1362,77 @@ def test_decompose_issue_closes_parent_after_children(monkeypatch):
     comment_idx = close_cmd.index("--comment") + 1
     assert "Decomposed into" in close_cmd[comment_idx]
     assert "sub-issues" in close_cmd[comment_idx]
+
+
+# --- SUB_ISSUE_PROMPT uses project commands ---
+
+
+def test_sub_issue_prompt_has_no_hardcoded_python_commands():
+    assert "uv run pytest" not in SUB_ISSUE_PROMPT
+    assert "uv run ruff" not in SUB_ISSUE_PROMPT
+
+
+def test_sub_issue_prompt_includes_verify_and_lint_placeholders():
+    assert "{verify_cmd}" in SUB_ISSUE_PROMPT
+    assert "{lint_cmd}" in SUB_ISSUE_PROMPT
+
+
+def test_sub_issue_prompt_renders_with_node_commands():
+    rendered = SUB_ISSUE_PROMPT.format(
+        parent_number=1,
+        parent_summary="Parent summary",
+        step_title="Add widget",
+        step_files="src/widget.ts",
+        step_reason="core module",
+        verify_cmd="npm run build",
+        lint_cmd="",
+    )
+    assert "npm run build" in rendered
+    assert "uv run pytest" not in rendered
+    assert "uv run ruff" not in rendered
+
+
+def test_sub_issue_prompt_renders_with_python_commands():
+    rendered = SUB_ISSUE_PROMPT.format(
+        parent_number=1,
+        parent_summary="Parent summary",
+        step_title="Add parser",
+        step_files="src/parser.py",
+        step_reason="core module",
+        verify_cmd="uv run pytest",
+        lint_cmd="uv run ruff check && uv run ruff format --check",
+    )
+    assert "uv run pytest" in rendered
+    assert "uv run ruff check" in rendered
+
+
+def test_suggest_sub_issue_fields_passes_project_commands(monkeypatch):
+    cfg = _cfg(verify_cmd="npm test", lint_command="eslint .")
+    captured = {}
+
+    def fake_run_claude(prompt, model, timeout):
+        captured["prompt"] = prompt
+        return ClaudeResult(
+            json.dumps(
+                {
+                    "expected_behavior": "works",
+                    "acceptance_criteria": ["tests pass"],
+                }
+            ),
+            0.01,
+            100,
+            50,
+            0,
+            True,
+        )
+
+    monkeypatch.setattr("autoloop.triage_issues.run_claude", fake_run_claude)
+    monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/claude")
+
+    step = {"title": "Add feature", "files": ["src/app.js"], "why_first": "needed"}
+    suggest_sub_issue_fields(10, "parent summary", step, cfg)
+
+    assert "npm test" in captured["prompt"]
+    assert "eslint ." in captured["prompt"]
+    assert "uv run pytest" not in captured["prompt"]
+    assert "uv run ruff" not in captured["prompt"]
