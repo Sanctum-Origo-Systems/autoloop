@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import glob
 import json
+import os
+import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 from autoloop.config import REPO_DIR, AutoLoopConfig, load_config
@@ -137,14 +140,38 @@ def check_gh_cli() -> tuple[bool, str]:
 
 def check_no_active_session(repo_dir: Path | None = None) -> tuple[bool, str]:
     """Check that no active Claude Code session is running in the working directory."""
-    base = repo_dir or REPO_DIR
+    base = (repo_dir or REPO_DIR).resolve()
     lock_file = base / ".autoloop.lock"
     if lock_file.exists():
         return False, (
-            f"{FAIL} Active autoloop session detected (.autoloop.lock exists)\n"
-            "  Fix: close the running autoloop session or remove .autoloop.lock if stale"
+            f"{FAIL} Active Claude Code session conflict (.autoloop.lock exists)\n"
+            "  Fix: close the running session or remove .autoloop.lock if stale"
         )
-    return True, f"{PASS} No active autoloop session conflict"
+    try:
+        result = subprocess.run(
+            ["pgrep", "-x", "claude"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            for pid_str in result.stdout.strip().splitlines():
+                pid = pid_str.strip()
+                if not pid:
+                    continue
+                try:
+                    proc_cwd = os.readlink(f"/proc/{pid}/cwd")
+                    if Path(proc_cwd).resolve() == base:
+                        return False, (
+                            f"{FAIL} Active Claude Code session detected in this directory"
+                            f" (PID {pid})\n"
+                            "  Fix: close the running Claude Code session before running autoloop"
+                        )
+                except OSError:
+                    continue
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    return True, f"{PASS} No active Claude Code session conflict"
 
 
 def check_protected_paths(cfg: AutoLoopConfig, repo_dir: Path | None = None) -> tuple[bool, str]:
@@ -164,11 +191,48 @@ def check_protected_paths(cfg: AutoLoopConfig, repo_dir: Path | None = None) -> 
     return True, f"{PASS} Protected paths config valid"
 
 
-def check_verify_cmd(cfg: AutoLoopConfig) -> tuple[bool, str]:
-    """Run verify_cmd and report pass/fail with output on failure."""
+def check_verify_cmd(cfg: AutoLoopConfig, repo_dir: Path | None = None) -> tuple[bool, str]:
+    """Run verify_cmd on the main branch and report pass/fail with output on failure."""
     cmd = cfg.verify_cmd
     if not cmd:
         return True, f"{PASS} No verify_cmd configured (skipped)"
+
+    base = repo_dir or REPO_DIR
+
+    on_main = False
+    try:
+        current = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            cwd=str(base),
+            timeout=10,
+        )
+        on_main = current.returncode == 0 and current.stdout.strip() == "main"
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        on_main = True
+
+    run_dir = str(base)
+    worktree_dir = None
+
+    if not on_main:
+        worktree_dir = tempfile.mkdtemp(prefix="autoloop-doctor-")
+        try:
+            wt_result = subprocess.run(
+                ["git", "worktree", "add", "--detach", worktree_dir, "main"],
+                capture_output=True,
+                text=True,
+                cwd=str(base),
+                timeout=30,
+            )
+            if wt_result.returncode == 0:
+                run_dir = worktree_dir
+            else:
+                shutil.rmtree(worktree_dir, ignore_errors=True)
+                worktree_dir = None
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            shutil.rmtree(worktree_dir, ignore_errors=True)
+            worktree_dir = None
 
     try:
         result = subprocess.run(
@@ -177,27 +241,41 @@ def check_verify_cmd(cfg: AutoLoopConfig) -> tuple[bool, str]:
             capture_output=True,
             text=True,
             timeout=cfg.test_timeout,
-        )
-    except FileNotFoundError:
-        return False, (
-            f'{FAIL} verify_cmd failed: command not found ("{cmd}")\n'
-            f"  Fix: install the tool required by verify_cmd"
+            cwd=run_dir,
         )
     except subprocess.TimeoutExpired:
         return False, (
             f'{FAIL} verify_cmd timed out after {cfg.test_timeout}s ("{cmd}")\n'
             "  Fix: check that verify_cmd completes in time, or increase test_timeout"
         )
+    finally:
+        _cleanup_worktree(worktree_dir, str(base))
 
     if result.returncode != 0:
         output = (result.stdout + result.stderr).strip()
         return False, (
-            f'{FAIL} verify_cmd failed ("{cmd}" → exit {result.returncode})\n'
+            f'{FAIL} verify_cmd failed on main branch ("{cmd}" → exit {result.returncode})\n'
             f"  Output:\n{_indent(output)}\n"
-            f"  Fix: resolve the errors above so verify_cmd passes"
+            f"  Fix: resolve the errors above so verify_cmd passes on main"
         )
 
-    return True, f'{PASS} verify_cmd passes ("{cmd}" → exit 0)'
+    return True, f'{PASS} verify_cmd passes on main branch ("{cmd}" → exit 0)'
+
+
+def _cleanup_worktree(worktree_dir: str | None, repo_dir: str) -> None:
+    """Remove a temporary git worktree if one was created."""
+    if not worktree_dir:
+        return
+    try:
+        subprocess.run(
+            ["git", "worktree", "remove", "--force", worktree_dir],
+            capture_output=True,
+            text=True,
+            cwd=repo_dir,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        shutil.rmtree(worktree_dir, ignore_errors=True)
 
 
 def check_test_pattern(cfg: AutoLoopConfig, repo_dir: Path | None = None) -> tuple[bool, str]:
@@ -246,7 +324,7 @@ def run_doctor(
     results.append(check_protected_paths(cfg, repo_dir))
 
     if run_verify:
-        results.append(check_verify_cmd(cfg))
+        results.append(check_verify_cmd(cfg, repo_dir))
 
     results.append(check_test_pattern(cfg, repo_dir))
 

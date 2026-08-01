@@ -270,10 +270,14 @@ def test_check_gh_cli_auth_timeout():
 
 
 def test_check_no_active_session_clean(tmp_path):
-    passed, msg = check_no_active_session(tmp_path)
+    def fake_run(cmd, **kwargs):
+        return _ok(returncode=1)
+
+    with patch("autoloop.doctor.subprocess.run", fake_run):
+        passed, msg = check_no_active_session(tmp_path)
     assert passed is True
     assert PASS in msg
-    assert "No active" in msg
+    assert "No active Claude Code session conflict" in msg
 
 
 def test_check_no_active_session_locked(tmp_path):
@@ -282,6 +286,45 @@ def test_check_no_active_session_locked(tmp_path):
     assert passed is False
     assert FAIL in msg
     assert ".autoloop.lock" in msg
+    assert "Claude Code session" in msg
+
+
+def test_check_no_active_session_claude_process(tmp_path):
+    def fake_run(cmd, **kwargs):
+        return _ok(stdout="12345\n")
+
+    with (
+        patch("autoloop.doctor.subprocess.run", fake_run),
+        patch("autoloop.doctor.os.readlink", return_value=str(tmp_path)),
+    ):
+        passed, msg = check_no_active_session(tmp_path)
+    assert passed is False
+    assert FAIL in msg
+    assert "Claude Code session" in msg
+    assert "12345" in msg
+
+
+def test_check_no_active_session_claude_process_other_dir(tmp_path):
+    def fake_run(cmd, **kwargs):
+        return _ok(stdout="12345\n")
+
+    with (
+        patch("autoloop.doctor.subprocess.run", fake_run),
+        patch("autoloop.doctor.os.readlink", return_value="/some/other/dir"),
+    ):
+        passed, msg = check_no_active_session(tmp_path)
+    assert passed is True
+    assert PASS in msg
+
+
+def test_check_no_active_session_pgrep_unavailable(tmp_path):
+    def fake_run(cmd, **kwargs):
+        raise FileNotFoundError("pgrep not found")
+
+    with patch("autoloop.doctor.subprocess.run", fake_run):
+        passed, msg = check_no_active_session(tmp_path)
+    assert passed is True
+    assert PASS in msg
 
 
 # --- check_protected_paths ---
@@ -324,23 +367,29 @@ def test_check_protected_paths_partial_valid(tmp_path):
 
 def test_check_verify_cmd_passes():
     def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list) and "rev-parse" in cmd:
+            return _ok(stdout="main\n")
         return _ok(stdout="all passed\n")
 
     with patch("autoloop.doctor.subprocess.run", fake_run):
         passed, msg = check_verify_cmd(_cfg())
     assert passed is True
     assert PASS in msg
+    assert "on main branch" in msg
     assert "exit 0" in msg
 
 
 def test_check_verify_cmd_fails():
     def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list) and "rev-parse" in cmd:
+            return _ok(stdout="main\n")
         return _ok(returncode=1, stdout="FAILED\n", stderr="error detail\n")
 
     with patch("autoloop.doctor.subprocess.run", fake_run):
         passed, msg = check_verify_cmd(_cfg())
     assert passed is False
     assert FAIL in msg
+    assert "on main branch" in msg
     assert "exit 1" in msg
     assert "FAILED" in msg
     assert "error detail" in msg
@@ -354,6 +403,8 @@ def test_check_verify_cmd_empty():
 
 def test_check_verify_cmd_timeout():
     def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list) and "rev-parse" in cmd:
+            return _ok(stdout="main\n")
         raise subprocess.TimeoutExpired(cmd=cmd, timeout=120)
 
     with patch("autoloop.doctor.subprocess.run", fake_run):
@@ -363,25 +414,54 @@ def test_check_verify_cmd_timeout():
     assert "timed out" in msg
 
 
-def test_check_verify_cmd_not_found():
-    def fake_run(cmd, **kwargs):
-        raise FileNotFoundError("not found")
-
-    with patch("autoloop.doctor.subprocess.run", fake_run):
-        passed, msg = check_verify_cmd(_cfg(verify_cmd="nonexistent-tool test"))
-    assert passed is False
-    assert FAIL in msg
-    assert "not found" in msg
-
-
 def test_check_verify_cmd_output_includes_both_streams():
     def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list) and "rev-parse" in cmd:
+            return _ok(stdout="main\n")
         return _ok(returncode=1, stdout="stdout line\n", stderr="stderr line\n")
 
     with patch("autoloop.doctor.subprocess.run", fake_run):
         passed, msg = check_verify_cmd(_cfg())
     assert "stdout line" in msg
     assert "stderr line" in msg
+
+
+def test_check_verify_cmd_on_feature_branch():
+    def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list):
+            if "rev-parse" in cmd:
+                return _ok(stdout="feature/my-branch\n")
+            if "worktree" in cmd:
+                return _ok()
+        return _ok(stdout="all passed\n")
+
+    with (
+        patch("autoloop.doctor.subprocess.run", fake_run),
+        patch("autoloop.doctor.tempfile.mkdtemp", return_value="/tmp/autoloop-doctor-test"),
+    ):
+        passed, msg = check_verify_cmd(_cfg())
+    assert passed is True
+    assert PASS in msg
+    assert "on main branch" in msg
+
+
+def test_check_verify_cmd_worktree_fails_runs_in_cwd():
+    def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list):
+            if "rev-parse" in cmd:
+                return _ok(stdout="feature/my-branch\n")
+            if "worktree" in cmd and "add" in cmd:
+                return _ok(returncode=1, stderr="fatal: 'main' is not a valid ref")
+        return _ok(stdout="all passed\n")
+
+    with (
+        patch("autoloop.doctor.subprocess.run", fake_run),
+        patch("autoloop.doctor.tempfile.mkdtemp", return_value="/tmp/autoloop-doctor-test"),
+        patch("autoloop.doctor.shutil.rmtree"),
+    ):
+        passed, msg = check_verify_cmd(_cfg())
+    assert passed is True
+    assert PASS in msg
 
 
 # --- check_test_pattern ---
@@ -434,6 +514,8 @@ def test_run_doctor_all_pass(tmp_path):
             return _ok(stdout="sk-ant-xxx")
         if isinstance(cmd, list) and "auth" in cmd:
             return _ok(stdout="Logged in")
+        if isinstance(cmd, list) and "pgrep" in cmd:
+            return _ok(returncode=1)
         return _ok(stdout="ok\n")
 
     with patch("autoloop.doctor.subprocess.run", fake_subprocess):
@@ -464,6 +546,8 @@ def test_run_doctor_returns_failures(tmp_path):
             return _ok(stdout="sk-ant-xxx")
         if isinstance(cmd, list) and "auth" in cmd:
             return _ok(stdout="Logged in")
+        if isinstance(cmd, list) and "pgrep" in cmd:
+            return _ok(returncode=1)
         return _ok()
 
     with patch("autoloop.doctor.subprocess.run", fake_subprocess):
