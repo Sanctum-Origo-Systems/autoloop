@@ -17,6 +17,7 @@ class AutoLoopConfig:
     repo: str = "Sanctum-Origo-Systems/patina"
     triage_model: str = "sonnet"
     impl_model: str = "claude-opus-4-6[1m]"
+    review_model: str = ""
     impl_timeout: int = 900
     triage_timeout: int = 90
     test_timeout: int = 120
@@ -117,6 +118,9 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
     for env_var, (attr, coerce) in _ENV_MAP.items():
         if value := os.environ.get(env_var):
             setattr(config, attr, coerce(value))
+
+    if not config.review_model:
+        config.review_model = config.impl_model
 
     return config
 

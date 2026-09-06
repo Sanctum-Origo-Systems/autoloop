@@ -244,6 +244,21 @@ Detects and fixes:
 - **Lint failures**: runs ruff fix/format, falls back to Claude
 - **Test failures**: Claude fixes the code, re-verifies
 
+### 9. Review a PR
+
+```bash
+autoloop review-pr 42
+```
+
+Runs the review stage on an existing PR without merging:
+1. Checks out the PR branch
+2. Runs the mutation gate (tests, lint, test-file check)
+3. Runs a semantic review via Claude using the `review_model`
+4. Posts findings as a PR comment
+5. Applies the `needs-human` label if either gate or review fails
+
+Use this to get automated review feedback on PRs that were opened manually or by external contributors. The command never merges — you always make the final call.
+
 ## Creating Issues from a Spec
 
 ```bash
@@ -394,6 +409,7 @@ Example workflow from your phone:
 | `repo` | (required) | GitHub `owner/repo` (required) |
 | `triage_model` | `sonnet` | Claude model for triage |
 | `impl_model` | `claude-opus-4-6[1m]` | Claude model for implementation |
+| `review_model` | (defaults to `impl_model`) | Claude model for semantic PR review. Falls back to `impl_model` when omitted |
 | `impl_timeout` | `900` | Implementation timeout (seconds) |
 | `triage_timeout` | `90` | Triage timeout (seconds) |
 | `test_timeout` | `120` | Test command timeout (seconds) |
@@ -419,6 +435,7 @@ All fields can be overridden by environment variables (e.g. `AUTOLOOP_IMPL_MODEL
 | `autoloop triage` | Triage untriaged issues |
 | `autoloop implement` | Implement top ready issue |
 | `autoloop fix-pr` | Fix a PR (rebase, resolve conflicts, fix checks) |
+| `autoloop review-pr` | Review a PR (mutation gate + semantic review, no merge) |
 | `autoloop status` | Show last run, ready issues, timers |
 | `autoloop auto-close-parent` | Close parent when all sub-issues done |
 | `autoloop version` | Print installed version |
