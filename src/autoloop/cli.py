@@ -179,12 +179,20 @@ def review_pr(pr_number, cfg):
     """Review a PR: checkout, run mutation gate + semantic review, post findings.
 
     Never merges. Applies needs-human label on failure.
+    Restores the previous branch after review.
     """
     import autoloop.implement_issue as impl
     from autoloop.claude_runner import run_claude
     from autoloop.config import REPO_DIR
 
     impl.cfg = cfg
+
+    original_branch = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        capture_output=True,
+        text=True,
+        cwd=REPO_DIR,
+    ).stdout.strip()
 
     checkout = subprocess.run(
         ["gh", "pr", "checkout", str(pr_number), "--repo", cfg.repo],
@@ -195,78 +203,106 @@ def review_pr(pr_number, cfg):
         print(f"Failed to checkout PR #{pr_number}")
         return False
 
-    pr_view = subprocess.run(
-        [
-            "gh",
-            "pr",
-            "view",
-            str(pr_number),
-            "--repo",
-            cfg.repo,
-            "--json",
-            "headRefName,title,body",
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if pr_view.returncode != 0:
-        print(f"Failed to get PR #{pr_number} info")
-        return False
-
-    pr_data = json.loads(pr_view.stdout)
-    branch = pr_data["headRefName"]
-    body = pr_data.get("body", "") or ""
-
-    gate_passed, gate_errors = impl.verify_implementation(branch, issue_body=body)
-
-    diff = subprocess.run(
-        ["git", "diff", f"main..{branch}"],
-        capture_output=True,
-        text=True,
-        cwd=REPO_DIR,
-    ).stdout
-
-    prompt = impl.REVIEW_PROMPT.format(
-        number=pr_number,
-        title=pr_data["title"],
-        issue_body=body,
-        diff=diff[: cfg.diff_truncation],
-    )
-    result = run_claude(prompt, cfg.review_model, cfg.impl_timeout)
-    if result.success:
-        review_passed, review_feedback = impl.parse_review_response(result.text)
-    else:
-        review_passed, review_feedback = False, "Review call failed (timeout or non-zero exit)."
-
-    findings = []
-    if not gate_passed:
-        findings.append(f"**Mutation gate failed:**\n```\n{gate_errors}\n```")
-    if not review_passed:
-        findings.append(f"**Semantic review failed:**\n{review_feedback}")
-
-    if findings:
-        comment = "\n\n".join(findings)
-        subprocess.run(
-            ["gh", "pr", "comment", str(pr_number), "--repo", cfg.repo, "--body", comment],
+    try:
+        pr_view = subprocess.run(
+            [
+                "gh",
+                "pr",
+                "view",
+                str(pr_number),
+                "--repo",
+                cfg.repo,
+                "--json",
+                "headRefName,title,body",
+            ],
+            capture_output=True,
+            text=True,
         )
-        subprocess.run(
-            ["gh", "pr", "edit", str(pr_number), "--repo", cfg.repo, "--add-label", "needs-human"],
-        )
-        return False
+        if pr_view.returncode != 0:
+            print(f"Failed to get PR #{pr_number} info")
+            return False
 
-    subprocess.run(
-        [
-            "gh",
-            "pr",
-            "comment",
-            str(pr_number),
-            "--repo",
-            cfg.repo,
-            "--body",
-            "**Review passed:** mutation gate and semantic review both passed.",
-        ],
-    )
-    return True
+        pr_data = json.loads(pr_view.stdout)
+        branch = pr_data["headRefName"]
+        body = pr_data.get("body", "") or ""
+
+        gate_passed, gate_errors = impl.verify_implementation(branch, issue_body=body)
+
+        diff = subprocess.run(
+            ["git", "diff", f"main..{branch}"],
+            capture_output=True,
+            text=True,
+            cwd=REPO_DIR,
+        ).stdout
+
+        prompt = impl.REVIEW_PROMPT.format(
+            number=pr_number,
+            title=pr_data["title"],
+            issue_body=body,
+            diff=diff[: cfg.diff_truncation],
+        )
+        result = run_claude(prompt, cfg.review_model, cfg.impl_timeout)
+        if result.success:
+            review_passed, review_feedback = impl.parse_review_response(result.text)
+        else:
+            review_passed, review_feedback = (
+                False,
+                "Review call failed (timeout or non-zero exit).",
+            )
+
+        findings = []
+        if not gate_passed:
+            findings.append(f"**Mutation gate failed:**\n```\n{gate_errors}\n```")
+        if not review_passed:
+            findings.append(f"**Semantic review failed:**\n{review_feedback}")
+
+        if findings:
+            comment = "\n\n".join(findings)
+            subprocess.run(
+                [
+                    "gh",
+                    "pr",
+                    "comment",
+                    str(pr_number),
+                    "--repo",
+                    cfg.repo,
+                    "--body",
+                    comment,
+                ],
+            )
+            subprocess.run(
+                [
+                    "gh",
+                    "pr",
+                    "edit",
+                    str(pr_number),
+                    "--repo",
+                    cfg.repo,
+                    "--add-label",
+                    "needs-human",
+                ],
+            )
+            return False
+
+        subprocess.run(
+            [
+                "gh",
+                "pr",
+                "comment",
+                str(pr_number),
+                "--repo",
+                cfg.repo,
+                "--body",
+                "**Review passed:** mutation gate and semantic review both passed.",
+            ],
+        )
+        return True
+    finally:
+        subprocess.run(
+            ["git", "checkout", original_branch],
+            capture_output=True,
+            cwd=REPO_DIR,
+        )
 
 
 def _show_status():

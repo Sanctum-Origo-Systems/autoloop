@@ -96,11 +96,17 @@ class TestReviewPrHandler:
         with patch("subprocess.run", side_effect=dispatch) as mock_run:
             result = review_pr(42, cfg)
         assert result is False
-        assert mock_run.call_args_list[0] == call(
-            ["gh", "pr", "checkout", "42", "--repo", "acme-corp/widget"],
-            capture_output=True,
-            text=True,
-        )
+        checkout_calls = [
+            c
+            for c in mock_run.call_args_list
+            if c
+            == call(
+                ["gh", "pr", "checkout", "42", "--repo", "acme-corp/widget"],
+                capture_output=True,
+                text=True,
+            )
+        ]
+        assert len(checkout_calls) == 1
 
     def test_full_success_path(self):
         cfg = _cfg()
@@ -261,3 +267,63 @@ class TestReviewPrHandler:
             if isinstance(c, list) and "--add-label" in c and "needs-human" in c
         ]
         assert len(label_calls) == 1
+
+
+class TestReviewPrBranchRestore:
+    def test_restores_original_branch_on_success(self):
+        cfg = _cfg()
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix", "body": ""})
+        review_json = json.dumps({"approved": True, "summary": "ok"})
+
+        all_calls = []
+
+        def tracking_dispatch(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args", [])
+            all_calls.append(cmd)
+            if isinstance(cmd, list) and cmd[:2] == ["git", "rev-parse"]:
+                return _ok(stdout="main\n")
+            return _make_dispatcher(pr_data)(*args, **kwargs)
+
+        with (
+            patch("subprocess.run", side_effect=tracking_dispatch),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(text=review_json),
+            ),
+        ):
+            review_pr(42, cfg)
+
+        restore_calls = [
+            c
+            for c in all_calls
+            if isinstance(c, list) and c[:2] == ["git", "checkout"] and "main" in c
+        ]
+        assert len(restore_calls) == 1
+
+    def test_restores_original_branch_on_failure(self):
+        cfg = _cfg()
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix", "body": ""})
+        review_json = json.dumps({"approved": False, "issues": ["bad"], "summary": "no"})
+
+        all_calls = []
+
+        def tracking_dispatch(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args", [])
+            all_calls.append(cmd)
+            if isinstance(cmd, list) and cmd[:2] == ["git", "rev-parse"]:
+                return _ok(stdout="my-feature\n")
+            return _make_dispatcher(pr_data)(*args, **kwargs)
+
+        with (
+            patch("subprocess.run", side_effect=tracking_dispatch),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(text=review_json),
+            ),
+        ):
+            review_pr(42, cfg)
+
+        restore_calls = [
+            c for c in all_calls if isinstance(c, list) and c == ["git", "checkout", "my-feature"]
+        ]
+        assert len(restore_calls) == 1
