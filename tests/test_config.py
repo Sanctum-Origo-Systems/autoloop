@@ -229,7 +229,21 @@ def test_test_pattern_empty_from_toml(tmp_path, monkeypatch):
     assert config.test_pattern == ""
 
 
-def test_review_model_explicit_from_toml(tmp_path, monkeypatch):
+def test_review_model_defaults_to_impl_model(tmp_path, monkeypatch):
+    for var in (
+        "AUTOLOOP_TRIAGE_MODEL",
+        "AUTOLOOP_IMPL_MODEL",
+        "AUTOLOOP_TIMEOUT",
+        "AUTOLOOP_REVIEWER",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('impl_model = "claude-sonnet-4-6"\n')
+    config = load_config(toml_path)
+    assert config.review_model == "claude-sonnet-4-6"
+
+
+def test_review_model_explicit_value_preserved(tmp_path, monkeypatch):
     for var in (
         "AUTOLOOP_TRIAGE_MODEL",
         "AUTOLOOP_IMPL_MODEL",
@@ -241,38 +255,10 @@ def test_review_model_explicit_from_toml(tmp_path, monkeypatch):
     toml_path.write_text('impl_model = "opus"\nreview_model = "sonnet"\n')
     config = load_config(toml_path)
     assert config.review_model == "sonnet"
+    assert config.impl_model == "opus"
 
 
-def test_review_model_defaults_to_impl_model(tmp_path, monkeypatch):
-    for var in (
-        "AUTOLOOP_TRIAGE_MODEL",
-        "AUTOLOOP_IMPL_MODEL",
-        "AUTOLOOP_TIMEOUT",
-        "AUTOLOOP_REVIEWER",
-    ):
-        monkeypatch.delenv(var, raising=False)
-    toml_path = tmp_path / "autoloop.toml"
-    toml_path.write_text('impl_model = "opus"\n')
-    config = load_config(toml_path)
-    assert config.review_model == "opus"
-    assert config.review_model == config.impl_model
-
-
-def test_test_gate_skip_types_explicit_from_toml(tmp_path, monkeypatch):
-    for var in (
-        "AUTOLOOP_TRIAGE_MODEL",
-        "AUTOLOOP_IMPL_MODEL",
-        "AUTOLOOP_TIMEOUT",
-        "AUTOLOOP_REVIEWER",
-    ):
-        monkeypatch.delenv(var, raising=False)
-    toml_path = tmp_path / "autoloop.toml"
-    toml_path.write_text('test_gate_skip_types = ["ci", "test"]\n')
-    config = load_config(toml_path)
-    assert config.test_gate_skip_types == ["ci", "test"]
-
-
-def test_test_gate_skip_types_defaults(tmp_path, monkeypatch):
+def test_review_model_defaults_to_dataclass_impl_model(tmp_path, monkeypatch):
     for var in (
         "AUTOLOOP_TRIAGE_MODEL",
         "AUTOLOOP_IMPL_MODEL",
@@ -283,7 +269,27 @@ def test_test_gate_skip_types_defaults(tmp_path, monkeypatch):
     toml_path = tmp_path / "autoloop.toml"
     toml_path.write_text('repo = "acme-corp/widget"\n')
     config = load_config(toml_path)
+    assert config.review_model == config.impl_model
+    assert config.review_model == "claude-opus-4-6[1m]"
+
+
+def test_test_gate_skip_types_default():
+    config = AutoLoopConfig()
     assert config.test_gate_skip_types == ["refactor", "docs", "chore"]
+
+
+def test_test_gate_skip_types_custom_from_toml(tmp_path, monkeypatch):
+    for var in (
+        "AUTOLOOP_TRIAGE_MODEL",
+        "AUTOLOOP_IMPL_MODEL",
+        "AUTOLOOP_TIMEOUT",
+        "AUTOLOOP_REVIEWER",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('test_gate_skip_types = ["docs"]\n')
+    config = load_config(toml_path)
+    assert config.test_gate_skip_types == ["docs"]
 
 
 def test_protected_paths_default():
