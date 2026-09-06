@@ -32,6 +32,7 @@ class AutoLoopConfig:
     test_pattern: str = "tests/*.py"
     timer_prefix: str = "autoloop"
     protected_paths: list[str] = field(default_factory=lambda: ["autoloop/"])
+    review_model: str = ""
     test_gate_skip_types: list[str] = field(default_factory=lambda: ["refactor", "docs", "chore"])
     triage_labels: list[str] = field(
         default_factory=lambda: [
@@ -77,6 +78,7 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
         "repo",
         "triage_model",
         "impl_model",
+        "review_model",
         "pr_reviewer",
         "verify_cmd",
         "lint_command",
@@ -108,6 +110,9 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
 
     if "triage_labels" in data:
         config.triage_labels = list(data["triage_labels"])
+
+    if not config.review_model:
+        config.review_model = config.impl_model
 
     for env_var, (attr, coerce) in _ENV_MAP.items():
         if value := os.environ.get(env_var):
