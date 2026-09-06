@@ -1,6 +1,6 @@
 [project]
 name = "autoloop"
-version = "0.3.5"
+version = "0.4.0"
 description = "Config-driven AI pipeline for triaging and implementing GitHub issues"
 requires-python = ">=3.13"
 license = "Apache-2.0"
