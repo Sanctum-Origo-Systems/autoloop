@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.4.0
+
+- Mutation gate: detect dead-but-green code before opening PRs, with test_gate_skip_types bypass
+- `review-pr` CLI subcommand: PR checkout, mutation gate, semantic review, verdict comment, needs-human labeling
+- Duplicate issue detection at triage: flag overlapping issues before labeling ready
+- `review_model` and `test_gate_skip_types` config fields in autoloop.toml
+- Fix-pr posts result comments on PRs (success or failure reason)
+
 ## v0.3.5
 
 - Migrate from mcp SDK v1 to fastmcp v3 (removes `mcp<2` version pin workaround)
