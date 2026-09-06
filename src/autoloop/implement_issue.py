@@ -1067,9 +1067,9 @@ def implement_single_issue(issue: dict, require_design: bool = False) -> bool:
 
             try:
                 mutation_gate(branch, detect_issue_type(issue.get("body", "")))
-            except RuntimeError as e:
-                gate_msg = str(e)
-                print(f"  Mutation gate failed: {gate_msg}")
+            except (RuntimeError, subprocess.TimeoutExpired, subprocess.CalledProcessError) as e:
+                gate_msg = f"Mutation gate error: {e}"
+                print(f"  {gate_msg}")
                 last_errors = gate_msg
                 post_attempt_failure(issue["number"], attempt, gate_msg)
                 continue

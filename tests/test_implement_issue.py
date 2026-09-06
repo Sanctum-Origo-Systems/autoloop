@@ -2320,6 +2320,112 @@ def test_implement_single_issue_mutation_gate_triggers_retry(monkeypatch, tmp_pa
     assert gate_call_count[0] == 2
 
 
+def test_implement_single_issue_mutation_gate_timeout_triggers_retry(monkeypatch, tmp_path):
+    """subprocess.TimeoutExpired from mutation_gate triggers retry, not a crash."""
+    import subprocess
+
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(max_retries=2))
+    log_path = tmp_path / "run_history.jsonl"
+    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+
+    attempt_count = [0]
+    gate_call_count = [0]
+    posted_errors = []
+
+    def fake_implement(issue, previous_errors=None):
+        attempt_count[0] += 1
+        if attempt_count[0] == 2:
+            assert previous_errors is not None
+            assert "Mutation gate error" in previous_errors
+        return _claude_result()
+
+    def fake_mutation_gate(branch, issue_type):
+        gate_call_count[0] += 1
+        if gate_call_count[0] == 1:
+            raise subprocess.TimeoutExpired(cmd="echo ok", timeout=60)
+
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
+    monkeypatch.setattr(implement_issue, "implement", fake_implement)
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
+    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: False)
+    monkeypatch.setattr(
+        implement_issue, "verify_implementation", lambda branch, issue_body="": (True, "")
+    )
+    monkeypatch.setattr(implement_issue, "mutation_gate", fake_mutation_gate)
+    monkeypatch.setattr(implement_issue, "review_implementation", lambda issue, branch: (True, ""))
+    monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: None)
+    monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
+    monkeypatch.setattr(
+        implement_issue, "post_attempt_failure", lambda n, a, e: posted_errors.append(e)
+    )
+
+    result = implement_single_issue(_FAKE_ISSUE)
+    assert result is True
+    assert attempt_count[0] == 2
+    assert gate_call_count[0] == 2
+    assert len(posted_errors) == 1
+    assert "Mutation gate error" in posted_errors[0]
+
+
+def test_implement_single_issue_mutation_gate_called_process_error_triggers_retry(
+    monkeypatch, tmp_path
+):
+    """subprocess.CalledProcessError from mutation_gate triggers retry, not a crash."""
+    import subprocess
+
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(max_retries=2))
+    log_path = tmp_path / "run_history.jsonl"
+    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+
+    attempt_count = [0]
+    gate_call_count = [0]
+    posted_errors = []
+
+    def fake_implement(issue, previous_errors=None):
+        attempt_count[0] += 1
+        if attempt_count[0] == 2:
+            assert previous_errors is not None
+            assert "Mutation gate error" in previous_errors
+        return _claude_result()
+
+    def fake_mutation_gate(branch, issue_type):
+        gate_call_count[0] += 1
+        if gate_call_count[0] == 1:
+            raise subprocess.CalledProcessError(
+                returncode=1, cmd=["git", "checkout", "main", "--", "src/app.py"]
+            )
+
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
+    monkeypatch.setattr(implement_issue, "implement", fake_implement)
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
+    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: False)
+    monkeypatch.setattr(
+        implement_issue, "verify_implementation", lambda branch, issue_body="": (True, "")
+    )
+    monkeypatch.setattr(implement_issue, "mutation_gate", fake_mutation_gate)
+    monkeypatch.setattr(implement_issue, "review_implementation", lambda issue, branch: (True, ""))
+    monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: None)
+    monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
+    monkeypatch.setattr(
+        implement_issue, "post_attempt_failure", lambda n, a, e: posted_errors.append(e)
+    )
+
+    result = implement_single_issue(_FAKE_ISSUE)
+    assert result is True
+    assert attempt_count[0] == 2
+    assert gate_call_count[0] == 2
+    assert len(posted_errors) == 1
+    assert "Mutation gate error" in posted_errors[0]
+
+
 def test_build_implementation_prompt_truncates_body_plus_comments(monkeypatch, tmp_path):
     """Truncation applies to the combined body + appended comments."""
     monkeypatch.setattr(
