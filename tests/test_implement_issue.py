@@ -31,6 +31,7 @@ from autoloop.implement_issue import (
     implement_targeted_issue,
     is_branch_empty,
     log_run,
+    mutation_gate,
     parent_issue_number,
     parse_and_strip_metric_targets,
     parse_dependency_numbers,
@@ -2121,6 +2122,202 @@ def test_build_implementation_prompt_no_truncation_when_body_fits(monkeypatch, t
 
     assert "Short issue body" in prompt
     assert "[Issue body truncated." not in prompt
+
+
+# --- mutation_gate tests ---
+
+
+def test_mutation_gate_rejects_dead_green_test(monkeypatch):
+    """Gate raises when tests still pass after reverting source files."""
+    monkeypatch.setattr(
+        implement_issue, "cfg", _test_cfg(test_pattern="tests/*.py", test_timeout=60)
+    )
+
+    def fake_run(cmd_or_str, **kwargs):
+        if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "diff", "--name-only"]:
+            return type("R", (), {"returncode": 0, "stdout": "src/app.py\ntests/test_app.py\n"})()
+        if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "checkout", "main"]:
+            return type("R", (), {"returncode": 0})()
+        if isinstance(cmd_or_str, str):
+            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match="tests pass without the implementation"):
+        mutation_gate("autoloop/42-feat", "feat")
+
+
+def test_mutation_gate_accepts_exercising_test(monkeypatch):
+    """Gate passes when tests fail after reverting source files."""
+    monkeypatch.setattr(
+        implement_issue, "cfg", _test_cfg(test_pattern="tests/*.py", test_timeout=60)
+    )
+
+    def fake_run(cmd_or_str, **kwargs):
+        if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "diff", "--name-only"]:
+            return type("R", (), {"returncode": 0, "stdout": "src/app.py\ntests/test_app.py\n"})()
+        if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "checkout", "main"]:
+            return type("R", (), {"returncode": 0})()
+        if isinstance(cmd_or_str, str):
+            return type("R", (), {"returncode": 1, "stdout": "FAILED", "stderr": ""})()
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    mutation_gate("autoloop/42-feat", "feat")
+
+
+def test_mutation_gate_restores_tree_on_success(monkeypatch):
+    """Source files are restored via git checkout even when gate passes."""
+    monkeypatch.setattr(
+        implement_issue, "cfg", _test_cfg(test_pattern="tests/*.py", test_timeout=60)
+    )
+    restore_calls = []
+
+    def fake_run(cmd_or_str, **kwargs):
+        if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "diff", "--name-only"]:
+            return type("R", (), {"returncode": 0, "stdout": "src/app.py\ntests/test_app.py\n"})()
+        if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "checkout", "main"]:
+            return type("R", (), {"returncode": 0})()
+        if isinstance(cmd_or_str, list) and "checkout" in cmd_or_str and "main" not in cmd_or_str:
+            restore_calls.append(cmd_or_str)
+            return type("R", (), {"returncode": 0})()
+        if isinstance(cmd_or_str, str):
+            return type("R", (), {"returncode": 1, "stdout": "FAILED", "stderr": ""})()
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    mutation_gate("autoloop/42-feat", "feat")
+
+    assert len(restore_calls) == 1
+    assert "src/app.py" in restore_calls[0]
+
+
+def test_mutation_gate_restores_tree_on_failure(monkeypatch):
+    """Source files are restored even when gate raises RuntimeError."""
+    monkeypatch.setattr(
+        implement_issue, "cfg", _test_cfg(test_pattern="tests/*.py", test_timeout=60)
+    )
+    restore_calls = []
+
+    def fake_run(cmd_or_str, **kwargs):
+        if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "diff", "--name-only"]:
+            return type("R", (), {"returncode": 0, "stdout": "src/app.py\ntests/test_app.py\n"})()
+        if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "checkout", "main"]:
+            return type("R", (), {"returncode": 0})()
+        if isinstance(cmd_or_str, list) and "checkout" in cmd_or_str and "main" not in cmd_or_str:
+            restore_calls.append(cmd_or_str)
+            return type("R", (), {"returncode": 0})()
+        if isinstance(cmd_or_str, str):
+            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    import pytest
+
+    with pytest.raises(RuntimeError):
+        mutation_gate("autoloop/42-feat", "feat")
+
+    assert len(restore_calls) == 1
+    assert "src/app.py" in restore_calls[0]
+
+
+def test_mutation_gate_restores_tree_on_exception(monkeypatch):
+    """Source files are restored when an unexpected exception occurs mid-gate."""
+    monkeypatch.setattr(
+        implement_issue, "cfg", _test_cfg(test_pattern="tests/*.py", test_timeout=60)
+    )
+    restore_calls = []
+
+    def fake_run(cmd_or_str, **kwargs):
+        if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "diff", "--name-only"]:
+            return type("R", (), {"returncode": 0, "stdout": "src/app.py\ntests/test_app.py\n"})()
+        if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "checkout", "main"]:
+            return type("R", (), {"returncode": 0})()
+        if isinstance(cmd_or_str, list) and "checkout" in cmd_or_str and "main" not in cmd_or_str:
+            restore_calls.append(cmd_or_str)
+            return type("R", (), {"returncode": 0})()
+        if isinstance(cmd_or_str, str):
+            raise OSError("injected failure")
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    import pytest
+
+    with pytest.raises(OSError, match="injected failure"):
+        mutation_gate("autoloop/42-feat", "feat")
+
+    assert len(restore_calls) == 1
+
+
+def test_mutation_gate_skip_types_bypasses(monkeypatch):
+    """Gate returns immediately when issue type is in skip list."""
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(
+            test_pattern="tests/*.py",
+            test_gate_skip_types=["refactor", "docs", "chore"],
+        ),
+    )
+    calls = []
+
+    def fake_run(cmd_or_str, **kwargs):
+        calls.append(cmd_or_str)
+        return type("R", (), {"returncode": 0, "stdout": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    mutation_gate("autoloop/42-refactor", "refactor")
+
+    assert len(calls) == 0
+
+
+def test_implement_single_issue_mutation_gate_triggers_retry(monkeypatch, tmp_path):
+    """Mutation gate failure appends to last_errors and triggers retry."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(max_retries=2))
+    log_path = tmp_path / "run_history.jsonl"
+    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+
+    attempt_count = [0]
+    gate_call_count = [0]
+
+    def fake_implement(issue, previous_errors=None):
+        attempt_count[0] += 1
+        if attempt_count[0] == 2:
+            assert previous_errors is not None
+            assert "tests pass without the implementation" in previous_errors
+        return _claude_result()
+
+    def fake_mutation_gate(branch, issue_type):
+        gate_call_count[0] += 1
+        if gate_call_count[0] == 1:
+            raise RuntimeError("tests pass without the implementation")
+
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
+    monkeypatch.setattr(implement_issue, "implement", fake_implement)
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
+    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: False)
+    monkeypatch.setattr(
+        implement_issue, "verify_implementation", lambda branch, issue_body="": (True, "")
+    )
+    monkeypatch.setattr(implement_issue, "mutation_gate", fake_mutation_gate)
+    monkeypatch.setattr(implement_issue, "review_implementation", lambda issue, branch: (True, ""))
+    monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: None)
+    monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
+    monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
+
+    result = implement_single_issue(_FAKE_ISSUE)
+    assert result is True
+    assert attempt_count[0] == 2
+    assert gate_call_count[0] == 2
 
 
 def test_build_implementation_prompt_truncates_body_plus_comments(monkeypatch, tmp_path):
