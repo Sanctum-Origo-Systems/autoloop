@@ -43,7 +43,12 @@ class AutoLoopConfig:
             "needs-human",
         ]
     )
+    review_model: str | None = None
     project_dir: str = ""
+
+    def __post_init__(self):
+        if self.review_model is None:
+            self.review_model = self.impl_model
 
 
 _ENV_MAP: dict[str, tuple[str, type]] = {
@@ -112,6 +117,11 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
     for env_var, (attr, coerce) in _ENV_MAP.items():
         if value := os.environ.get(env_var):
             setattr(config, attr, coerce(value))
+
+    if "review_model" in data:
+        config.review_model = data["review_model"]
+    else:
+        config.review_model = config.impl_model
 
     return config
 

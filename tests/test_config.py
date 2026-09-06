@@ -234,6 +234,48 @@ def test_protected_paths_default():
     assert config.protected_paths == ["autoloop/"]
 
 
+def test_review_model_defaults_to_impl_model_in_dataclass():
+    config = AutoLoopConfig(impl_model="opus")
+    assert config.review_model == "opus"
+
+
+def test_review_model_defaults_to_impl_model_when_absent_from_toml(autoloop_toml, monkeypatch):
+    for var in (
+        "AUTOLOOP_TRIAGE_MODEL",
+        "AUTOLOOP_IMPL_MODEL",
+        "AUTOLOOP_TIMEOUT",
+        "AUTOLOOP_REVIEWER",
+        "AUTOLOOP_TRIAGE_TIMEOUT",
+        "AUTOLOOP_TEST_TIMEOUT",
+        "AUTOLOOP_MAX_RETRIES",
+        "AUTOLOOP_REPO",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    config = load_config(autoloop_toml)
+    assert config.review_model == config.impl_model
+
+
+def test_review_model_loaded_from_toml(tmp_path, monkeypatch):
+    for var in (
+        "AUTOLOOP_TRIAGE_MODEL",
+        "AUTOLOOP_IMPL_MODEL",
+        "AUTOLOOP_TIMEOUT",
+        "AUTOLOOP_REVIEWER",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('impl_model = "opus"\nreview_model = "sonnet"\n')
+    config = load_config(toml_path)
+    assert config.review_model == "sonnet"
+    assert config.impl_model == "opus"
+
+
+def test_review_model_accessible_without_passing_it():
+    config = AutoLoopConfig()
+    assert hasattr(config, "review_model")
+    assert config.review_model == config.impl_model
+
+
 def test_protected_paths_loaded_from_toml(tmp_path, monkeypatch):
     for var in (
         "AUTOLOOP_TRIAGE_MODEL",
