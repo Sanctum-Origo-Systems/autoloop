@@ -180,6 +180,111 @@ Rules:
 # --- Pure functions (testable without mocking) ---
 
 
+def _extract_files_from_body(body: str) -> list[str]:
+    """Extract file paths from a '## Files to Modify' section in an issue body."""
+    match = re.search(r"## Files to Modify\n(.*?)(?:\n## |\Z)", body, re.DOTALL)
+    if not match:
+        return []
+    files = []
+    for line in match.group(1).strip().split("\n"):
+        path = line.strip().lstrip("- ").strip().strip("`")
+        if path and path != "Unknown" and ("/" in path or "." in path):
+            files.append(path)
+    return files
+
+
+def _extract_keywords(text: str) -> set[str]:
+    """Extract meaningful keywords from text for similarity comparison."""
+    stopwords = {
+        "add",
+        "all",
+        "and",
+        "are",
+        "been",
+        "bug",
+        "but",
+        "change",
+        "chore",
+        "could",
+        "delete",
+        "docs",
+        "feat",
+        "fix",
+        "for",
+        "from",
+        "get",
+        "have",
+        "into",
+        "make",
+        "move",
+        "new",
+        "not",
+        "refactor",
+        "remove",
+        "set",
+        "should",
+        "that",
+        "the",
+        "this",
+        "update",
+        "use",
+        "was",
+        "were",
+        "will",
+        "with",
+        "would",
+    }
+    words = re.findall(r"[a-z][a-z0-9_]+", text.lower())
+    return {w for w in words if w not in stopwords and len(w) > 2}
+
+
+def detect_duplicate_issues(
+    candidate_title: str,
+    candidate_files: list[str],
+    existing_issues: list[dict],
+) -> list[dict]:
+    """Check if a candidate overlaps with existing ready/in-progress issues.
+
+    Returns list of potential duplicates: [{"number": 89, "reason": "..."}].
+    Flags overlap when files AND keywords overlap, or when keyword overlap is high.
+    """
+    candidate_keywords = _extract_keywords(candidate_title)
+    candidate_file_set = set(candidate_files)
+    duplicates = []
+
+    for issue in existing_issues:
+        body = issue.get("body") or ""
+        existing_files = set(_extract_files_from_body(body))
+        existing_keywords = _extract_keywords(issue.get("title", ""))
+
+        file_overlap = candidate_file_set & existing_files
+        keyword_overlap = candidate_keywords & existing_keywords
+
+        if file_overlap and keyword_overlap:
+            file_list = ", ".join(f"`{f}`" for f in sorted(file_overlap))
+            keyword_list = ", ".join(sorted(keyword_overlap))
+            duplicates.append(
+                {
+                    "number": issue["number"],
+                    "reason": f"both target {file_list} and describe {keyword_list}",
+                }
+            )
+        elif (
+            len(keyword_overlap) >= 2
+            and candidate_keywords
+            and len(keyword_overlap) / len(candidate_keywords) >= 0.5
+        ):
+            keyword_list = ", ".join(sorted(keyword_overlap))
+            duplicates.append(
+                {
+                    "number": issue["number"],
+                    "reason": f"similar scope — shared keywords: {keyword_list}",
+                }
+            )
+
+    return duplicates
+
+
 def parse_triage_response(stdout: str) -> dict:
     """Extract JSON verdict from Claude's triage output."""
     text = stdout.strip()
@@ -477,6 +582,70 @@ def discover_files(issue: dict, cfg: AutoLoopConfig) -> tuple[list[dict], Claude
 
     files = parse_file_discovery_response(result.text)
     return validate_discovered_files(files, REPO_DIR), result
+
+
+def list_issues_with_labels(cfg: AutoLoopConfig, labels: list[str]) -> list[dict]:
+    """Fetch open issues that have any of the specified labels."""
+    seen: set[int] = set()
+    results: list[dict] = []
+    for label in labels:
+        proc = subprocess.run(
+            [
+                "gh",
+                "issue",
+                "list",
+                "--repo",
+                cfg.repo,
+                "--state",
+                "open",
+                "--label",
+                label,
+                "--json",
+                "number,title,body,labels",
+                "--limit",
+                "50",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode != 0:
+            continue
+        for issue in json.loads(proc.stdout):
+            if issue["number"] not in seen:
+                seen.add(issue["number"])
+                results.append(issue)
+    return results
+
+
+def flag_duplicate(number: int, duplicates: list[dict], cfg: AutoLoopConfig):
+    """Label issue needs-human and comment about potential duplicates."""
+    dup_lines = "\n".join(
+        f"- Potential duplicate of #{d['number']} — {d['reason']}" for d in duplicates
+    )
+    subprocess.run(
+        [
+            "gh",
+            "issue",
+            "edit",
+            str(number),
+            "--repo",
+            cfg.repo,
+            "--add-label",
+            "needs-human",
+        ],
+    )
+    subprocess.run(
+        [
+            "gh",
+            "issue",
+            "comment",
+            str(number),
+            "--repo",
+            cfg.repo,
+            "--body",
+            f"**Auto-triage — needs-human (potential duplicate):**\n\n{dup_lines}",
+        ],
+    )
 
 
 def enrich_issue_with_files(number: int, files: list[dict], cfg: AutoLoopConfig):
@@ -805,11 +974,12 @@ def triage_issue(issue: dict, cfg: AutoLoopConfig, auto_fix: bool = True) -> lis
         reject_issue(issue["number"], verdict["reason"], cfg)
         return results
 
+    discovered_files: list[dict] = []
     if verdict.get("files_missing", False):
-        files, disc_result = discover_files(issue, cfg)
+        discovered_files, disc_result = discover_files(issue, cfg)
         results.append(disc_result)
-        if files:
-            enrich_issue_with_files(issue["number"], files, cfg)
+        if discovered_files:
+            enrich_issue_with_files(issue["number"], discovered_files, cfg)
 
     if verdict["verdict"] == "ready":
         from autoloop.config import touches_protected_path
@@ -845,6 +1015,22 @@ def triage_issue(issue: dict, cfg: AutoLoopConfig, auto_fix: bool = True) -> lis
                 ],
             )
             return results
+
+        candidate_files = list(
+            set(
+                mentioned_files
+                + _extract_files_from_body(body)
+                + [f["path"] for f in discovered_files]
+            )
+        )
+        existing = list_issues_with_labels(cfg, ["ready", "in-progress"])
+        existing = [e for e in existing if e["number"] != issue["number"]]
+        duplicates = detect_duplicate_issues(issue["title"], candidate_files, existing)
+        if duplicates:
+            print(f"  #{issue['number']}: potential duplicate detected, routing to needs-human")
+            flag_duplicate(issue["number"], duplicates, cfg)
+            return results
+
         approve_issue(issue["number"], verdict["priority"], verdict["reason"], cfg)
     elif verdict["verdict"] == "needs-decomposition":
         depth = get_decomposition_depth(issue, cfg)

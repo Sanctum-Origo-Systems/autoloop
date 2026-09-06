@@ -7,10 +7,13 @@ from unittest.mock import patch
 from autoloop.claude_runner import ClaudeResult
 from autoloop.triage_issues import (
     SUB_ISSUE_PROMPT,
+    _extract_files_from_body,
+    _extract_keywords,
     _merge_steps,
     build_decomposition_comment,
     build_sub_issue_summary_comment,
     build_triage_prompt,
+    detect_duplicate_issues,
     fetch_issue_body,
     get_decomposition_depth,
     parse_file_discovery_response,
@@ -32,6 +35,7 @@ def _cfg(**overrides):
         "verify_cmd": "uv run pytest",
         "lint_command": "uv run ruff check && uv run ruff format --check",
         "tree_truncation": 3000,
+        "protected_paths": ["autoloop/"],
         "triage_labels": [
             "ready",
             "rejected",
@@ -1746,3 +1750,552 @@ def test_suggest_sub_issue_fields_passes_project_commands(monkeypatch):
     assert "eslint ." in captured["prompt"]
     assert "uv run pytest" not in captured["prompt"]
     assert "uv run ruff" not in captured["prompt"]
+
+
+# --- _extract_files_from_body ---
+
+
+def test_extract_files_from_body_basic():
+    body = "## Summary\nDo stuff\n\n## Files to Modify\n- src/config.py\n- tests/test_config.py\n\n## Expected Behavior\nIt works"
+    result = _extract_files_from_body(body)
+    assert result == ["src/config.py", "tests/test_config.py"]
+
+
+def test_extract_files_from_body_backtick_paths():
+    body = "## Files to Modify\n- `src/main.py`\n- `tests/test_main.py`\n\n## Type\nfeature"
+    result = _extract_files_from_body(body)
+    assert result == ["src/main.py", "tests/test_main.py"]
+
+
+def test_extract_files_from_body_unknown():
+    body = "## Files to Modify\nUnknown\n\n## Expected Behavior\nIt works"
+    assert _extract_files_from_body(body) == []
+
+
+def test_extract_files_from_body_no_section():
+    body = "## Summary\nJust a summary\n\n## Expected Behavior\nIt works"
+    assert _extract_files_from_body(body) == []
+
+
+def test_extract_files_from_body_empty():
+    assert _extract_files_from_body("") == []
+
+
+def test_extract_files_from_body_at_end_of_body():
+    body = "## Summary\nStuff\n\n## Files to Modify\n- src/app.py"
+    result = _extract_files_from_body(body)
+    assert result == ["src/app.py"]
+
+
+# --- _extract_keywords ---
+
+
+def test_extract_keywords_basic():
+    result = _extract_keywords("add review_model field to AutoLoopConfig")
+    assert "review_model" in result
+    assert "autoloopconfig" in result
+    assert "field" in result
+
+
+def test_extract_keywords_filters_stopwords():
+    result = _extract_keywords("add fix update remove the config")
+    assert "add" not in result
+    assert "fix" not in result
+    assert "update" not in result
+    assert "remove" not in result
+    assert "config" in result
+
+
+def test_extract_keywords_filters_short_words():
+    result = _extract_keywords("go to do it on")
+    assert len(result) == 0
+
+
+def test_extract_keywords_empty():
+    assert _extract_keywords("") == set()
+
+
+def test_extract_keywords_underscored_identifiers():
+    result = _extract_keywords("test_gate_skip_types config fields")
+    assert "test_gate_skip_types" in result
+    assert "config" in result
+    assert "fields" in result
+
+
+# --- detect_duplicate_issues ---
+
+
+def test_detect_duplicate_file_and_keyword_overlap():
+    existing = [
+        {
+            "number": 89,
+            "title": "add review_model and test_gate_skip_types config fields",
+            "body": "## Files to Modify\n- src/autoloop/config.py\n- tests/test_config.py\n\n## Type\nfeature",
+        },
+    ]
+    result = detect_duplicate_issues(
+        "add review_model field to AutoLoopConfig and TOML loader",
+        ["src/autoloop/config.py"],
+        existing,
+    )
+    assert len(result) == 1
+    assert result[0]["number"] == 89
+    assert "src/autoloop/config.py" in result[0]["reason"]
+    assert "review_model" in result[0]["reason"]
+
+
+def test_detect_duplicate_keyword_only_high_overlap():
+    existing = [
+        {
+            "number": 50,
+            "title": "implement mutation_gate verification in pipeline",
+            "body": "## Files to Modify\n- src/other.py\n\n## Type\nfeature",
+        },
+    ]
+    result = detect_duplicate_issues(
+        "mutation_gate verification pipeline integration",
+        ["src/different.py"],
+        existing,
+    )
+    assert len(result) == 1
+    assert result[0]["number"] == 50
+    assert "shared keywords" in result[0]["reason"]
+
+
+def test_detect_duplicate_no_overlap():
+    existing = [
+        {
+            "number": 10,
+            "title": "refactor database connection pooling",
+            "body": "## Files to Modify\n- src/db.py\n\n## Type\nrefactor",
+        },
+    ]
+    result = detect_duplicate_issues(
+        "add review_model config field",
+        ["src/autoloop/config.py"],
+        existing,
+    )
+    assert result == []
+
+
+def test_detect_duplicate_file_only_no_keyword_no_match():
+    existing = [
+        {
+            "number": 20,
+            "title": "refactor database connection pooling",
+            "body": "## Files to Modify\n- src/autoloop/config.py\n\n## Type\nrefactor",
+        },
+    ]
+    result = detect_duplicate_issues(
+        "add review_model config field",
+        ["src/autoloop/config.py"],
+        existing,
+    )
+    assert result == []
+
+
+def test_detect_duplicate_empty_existing():
+    result = detect_duplicate_issues("add some feature", ["src/main.py"], [])
+    assert result == []
+
+
+def test_detect_duplicate_multiple_matches():
+    existing = [
+        {
+            "number": 10,
+            "title": "add review_model config field",
+            "body": "## Files to Modify\n- src/config.py\n\n## Type\nfeature",
+        },
+        {
+            "number": 11,
+            "title": "add review_model to TOML loader",
+            "body": "## Files to Modify\n- src/config.py\n\n## Type\nfeature",
+        },
+    ]
+    result = detect_duplicate_issues(
+        "add review_model configuration",
+        ["src/config.py"],
+        existing,
+    )
+    assert len(result) == 2
+    numbers = {d["number"] for d in result}
+    assert numbers == {10, 11}
+
+
+# --- list_issues_with_labels ---
+
+
+def test_list_issues_with_labels_uses_cfg_repo():
+    cfg = _cfg(repo="acme/widgets")
+    calls: list[list[str]] = []
+
+    class FakeResult:
+        returncode = 0
+        stdout = json.dumps([])
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return FakeResult()
+
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import list_issues_with_labels
+
+        list_issues_with_labels(cfg, ["ready", "in-progress"])
+
+    assert len(calls) == 2
+    for call in calls:
+        assert "--repo" in call
+        assert call[call.index("--repo") + 1] == "acme/widgets"
+        assert "--label" in call
+
+
+def test_list_issues_with_labels_deduplicates():
+    cfg = _cfg(repo="acme/widgets")
+
+    issue_a = {"number": 1, "title": "A", "body": "", "labels": [{"name": "ready"}]}
+    issue_b = {"number": 2, "title": "B", "body": "", "labels": [{"name": "in-progress"}]}
+
+    def fake_run(cmd, **_kwargs):
+        label_idx = cmd.index("--label") + 1
+        label = cmd[label_idx]
+
+        class FakeResult:
+            returncode = 0
+
+        if label == "ready":
+            FakeResult.stdout = json.dumps([issue_a, issue_b])
+        else:
+            FakeResult.stdout = json.dumps([issue_b])
+        return FakeResult()
+
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import list_issues_with_labels
+
+        result = list_issues_with_labels(cfg, ["ready", "in-progress"])
+
+    assert len(result) == 2
+    numbers = {i["number"] for i in result}
+    assert numbers == {1, 2}
+
+
+def test_list_issues_with_labels_handles_failure():
+    cfg = _cfg(repo="acme/widgets")
+
+    class FakeResult:
+        returncode = 1
+        stdout = ""
+
+    with patch("autoloop.triage_issues.subprocess.run", return_value=FakeResult()):
+        from autoloop.triage_issues import list_issues_with_labels
+
+        result = list_issues_with_labels(cfg, ["ready"])
+
+    assert result == []
+
+
+# --- flag_duplicate ---
+
+
+def test_flag_duplicate_uses_cfg_repo():
+    cfg = _cfg(repo="acme/widgets")
+    calls: list[list[str]] = []
+
+    class FakeResult:
+        returncode = 0
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return FakeResult()
+
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import flag_duplicate
+
+        flag_duplicate(
+            42,
+            [{"number": 89, "reason": "both target `src/config.py` and describe review_model"}],
+            cfg,
+        )
+
+    assert len(calls) == 2
+    for call in calls:
+        assert "--repo" in call
+        assert call[call.index("--repo") + 1] == "acme/widgets"
+
+    edit_call = [c for c in calls if "edit" in c][0]
+    assert "needs-human" in edit_call[edit_call.index("--add-label") + 1]
+
+    comment_call = [c for c in calls if "comment" in c][0]
+    body = comment_call[comment_call.index("--body") + 1]
+    assert "potential duplicate" in body.lower()
+    assert "#89" in body
+
+
+# --- triage_issue duplicate detection integration ---
+
+
+def test_triage_issue_detects_duplicate_routes_to_needs_human(monkeypatch):
+    """When a ready issue overlaps with an existing ready issue, route to needs-human."""
+    cfg = _cfg()
+
+    def fake_load():
+        return "src/autoloop/config.py\n", "# CLAUDE.md"
+
+    monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
+
+    def fake_run_claude(prompt, model, timeout):
+        return ClaudeResult(
+            json.dumps(
+                {
+                    "verdict": "ready",
+                    "points": 2,
+                    "priority": "p1",
+                    "reason": "template complete and feasible",
+                    "files_missing": False,
+                }
+            ),
+            0.01,
+            100,
+            50,
+            0,
+            True,
+        )
+
+    monkeypatch.setattr("autoloop.triage_issues.run_claude", fake_run_claude)
+
+    existing_issue = {
+        "number": 89,
+        "title": "add review_model and test_gate_skip_types config fields",
+        "body": "## Files to Modify\n- src/autoloop/config.py\n\n## Type\nfeature",
+        "labels": [{"name": "ready"}],
+    }
+
+    def fake_list_labeled(cfg, labels):
+        return [existing_issue]
+
+    monkeypatch.setattr("autoloop.triage_issues.list_issues_with_labels", fake_list_labeled)
+
+    calls: list[list[str]] = []
+
+    class FakeResult:
+        returncode = 0
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return FakeResult()
+
+    candidate = {
+        "number": 92,
+        "title": "add review_model field to AutoLoopConfig and TOML loader",
+        "body": "## Files to Modify\n- src/autoloop/config.py\n\n## Type\nfeature",
+    }
+
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import triage_issue
+
+        triage_issue(candidate, cfg)
+
+    label_calls = [c for c in calls if "edit" in c and "--add-label" in c]
+    assert any("needs-human" in c[c.index("--add-label") + 1] for c in label_calls)
+    assert not any("ready" in c[c.index("--add-label") + 1] for c in label_calls)
+
+    comment_calls = [c for c in calls if "comment" in c and "--body" in c]
+    body_texts = [c[c.index("--body") + 1] for c in comment_calls]
+    assert any("duplicate" in b.lower() for b in body_texts)
+    assert any("#89" in b for b in body_texts)
+
+
+def test_triage_issue_no_duplicate_approves_normally(monkeypatch):
+    """When no duplicate exists, a ready issue is approved as usual."""
+    cfg = _cfg()
+
+    def fake_load():
+        return "src/autoloop/config.py\n", "# CLAUDE.md"
+
+    monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
+
+    def fake_run_claude(prompt, model, timeout):
+        return ClaudeResult(
+            json.dumps(
+                {
+                    "verdict": "ready",
+                    "points": 2,
+                    "priority": "p1",
+                    "reason": "template complete and feasible",
+                    "files_missing": False,
+                }
+            ),
+            0.01,
+            100,
+            50,
+            0,
+            True,
+        )
+
+    monkeypatch.setattr("autoloop.triage_issues.run_claude", fake_run_claude)
+
+    def fake_list_labeled(cfg, labels):
+        return []
+
+    monkeypatch.setattr("autoloop.triage_issues.list_issues_with_labels", fake_list_labeled)
+
+    calls: list[list[str]] = []
+
+    class FakeResult:
+        returncode = 0
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return FakeResult()
+
+    candidate = {
+        "number": 99,
+        "title": "detect duplicate issues at triage",
+        "body": "## Files to Modify\n- src/autoloop/triage_issues.py\n\n## Type\nfeature",
+    }
+
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import triage_issue
+
+        triage_issue(candidate, cfg)
+
+    label_calls = [c for c in calls if "edit" in c and "--add-label" in c]
+    assert any("ready" in c[c.index("--add-label") + 1] for c in label_calls)
+    assert not any("needs-human" in c[c.index("--add-label") + 1] for c in label_calls)
+
+
+def test_triage_issue_duplicate_check_excludes_self(monkeypatch):
+    """The candidate issue should not be flagged as a duplicate of itself."""
+    cfg = _cfg()
+
+    def fake_load():
+        return "src/autoloop/config.py\n", "# CLAUDE.md"
+
+    monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
+
+    def fake_run_claude(prompt, model, timeout):
+        return ClaudeResult(
+            json.dumps(
+                {
+                    "verdict": "ready",
+                    "points": 2,
+                    "priority": "p1",
+                    "reason": "ok",
+                    "files_missing": False,
+                }
+            ),
+            0.01,
+            100,
+            50,
+            0,
+            True,
+        )
+
+    monkeypatch.setattr("autoloop.triage_issues.run_claude", fake_run_claude)
+
+    candidate = {
+        "number": 99,
+        "title": "add review_model config field",
+        "body": "## Files to Modify\n- src/autoloop/config.py\n\n## Type\nfeature",
+    }
+
+    def fake_list_labeled(cfg, labels):
+        return [
+            {
+                "number": 99,
+                "title": "add review_model config field",
+                "body": "## Files to Modify\n- src/autoloop/config.py\n\n## Type\nfeature",
+                "labels": [{"name": "ready"}],
+            },
+        ]
+
+    monkeypatch.setattr("autoloop.triage_issues.list_issues_with_labels", fake_list_labeled)
+
+    calls: list[list[str]] = []
+
+    class FakeResult:
+        returncode = 0
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return FakeResult()
+
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import triage_issue
+
+        triage_issue(candidate, cfg)
+
+    label_calls = [c for c in calls if "edit" in c and "--add-label" in c]
+    assert any("ready" in c[c.index("--add-label") + 1] for c in label_calls)
+    assert not any("needs-human" in c[c.index("--add-label") + 1] for c in label_calls)
+
+
+def test_triage_issue_uses_discovered_files_for_duplicate_check(monkeypatch):
+    """Discovered files from file discovery should be used in duplicate detection."""
+    cfg = _cfg()
+
+    def fake_load():
+        return "src/autoloop/config.py\n", "# CLAUDE.md"
+
+    monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
+
+    def fake_run_claude(prompt, model, timeout):
+        return ClaudeResult(
+            json.dumps(
+                {
+                    "verdict": "ready",
+                    "points": 2,
+                    "priority": "p1",
+                    "reason": "ok",
+                    "files_missing": True,
+                }
+            ),
+            0.01,
+            100,
+            50,
+            0,
+            True,
+        )
+
+    monkeypatch.setattr("autoloop.triage_issues.run_claude", fake_run_claude)
+
+    def fake_discover(issue, cfg):
+        return [{"path": "src/autoloop/config.py", "reason": "main"}], ClaudeResult(
+            "ok", 0.01, 50, 25, 0, True
+        )
+
+    monkeypatch.setattr("autoloop.triage_issues.discover_files", fake_discover)
+
+    existing_issue = {
+        "number": 89,
+        "title": "add review_model config fields",
+        "body": "## Files to Modify\n- src/autoloop/config.py\n\n## Type\nfeature",
+        "labels": [{"name": "ready"}],
+    }
+
+    def fake_list_labeled(cfg, labels):
+        return [existing_issue]
+
+    monkeypatch.setattr("autoloop.triage_issues.list_issues_with_labels", fake_list_labeled)
+
+    calls: list[list[str]] = []
+
+    class FakeResult:
+        returncode = 0
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return FakeResult()
+
+    candidate = {
+        "number": 92,
+        "title": "add review_model to TOML loader",
+        "body": "",
+    }
+
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import triage_issue
+
+        triage_issue(candidate, cfg)
+
+    label_calls = [c for c in calls if "edit" in c and "--add-label" in c]
+    assert any("needs-human" in c[c.index("--add-label") + 1] for c in label_calls)
