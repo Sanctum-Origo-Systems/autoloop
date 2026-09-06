@@ -650,6 +650,53 @@ def is_branch_empty(branch: str) -> bool:
     return count == "0" or count == ""
 
 
+def mutation_gate(branch: str, issue_type: str) -> None:
+    """Verify tests actually exercise the implementation by reverting source files.
+
+    Raises RuntimeError if tests still pass after reverting source-only changes.
+    """
+    skip_types = cfg.test_gate_skip_types if cfg.test_gate_skip_types else []
+    if issue_type in skip_types:
+        return
+
+    if not cfg.test_pattern:
+        return
+
+    diff_result = subprocess.run(
+        ["git", "diff", "--name-only", f"main..{branch}"],
+        capture_output=True,
+        text=True,
+        cwd=REPO_DIR,
+    )
+    changed_files = [f for f in diff_result.stdout.strip().split("\n") if f]
+
+    source_files = [f for f in changed_files if not fnmatch.fnmatch(f, cfg.test_pattern)]
+    if not source_files:
+        return
+
+    try:
+        subprocess.run(
+            ["git", "checkout", "main", "--"] + source_files,
+            cwd=REPO_DIR,
+            check=True,
+        )
+        result = subprocess.run(
+            cfg.verify_cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            cwd=REPO_DIR,
+            timeout=cfg.test_timeout,
+        )
+        if result.returncode == 0:
+            raise RuntimeError("tests pass without the implementation")
+    finally:
+        subprocess.run(
+            ["git", "checkout", branch, "--"] + source_files,
+            cwd=REPO_DIR,
+        )
+
+
 def verify_implementation(branch: str, issue_body: str = "") -> tuple[bool, str]:
     """Verify the agent actually produced valid work."""
     ahead = subprocess.run(
@@ -1016,6 +1063,15 @@ def implement_single_issue(issue: dict, require_design: bool = False) -> bool:
                 print(f"  Verification failed:\n{errors}")
                 last_errors = errors
                 post_attempt_failure(issue["number"], attempt, errors)
+                continue
+
+            try:
+                mutation_gate(branch, detect_issue_type(issue.get("body", "")))
+            except RuntimeError as e:
+                gate_msg = str(e)
+                print(f"  Mutation gate failed: {gate_msg}")
+                last_errors = gate_msg
+                post_attempt_failure(issue["number"], attempt, gate_msg)
                 continue
 
             print("  Verification passed. Reviewing implementation...")
