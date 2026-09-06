@@ -36,6 +36,8 @@ After resolving, stage the fixed files with `git add` and do NOT commit —
 the rebase will continue automatically.
 """
 
+COMMENT_PREFIX = "**AutoLoop Fix-PR:**"
+
 FIX_CHECKS_PROMPT = """\
 This PR branch has failing checks after rebasing on main. Fix the issues
 described below. Do not change the intent of the code — only fix what's broken.
@@ -300,6 +302,14 @@ def force_push(branch: str) -> bool:
     return result.returncode == 0
 
 
+def post_pr_comment(pr_number: int, repo: str, message: str) -> None:
+    """Post a comment on a GitHub PR."""
+    subprocess.run(
+        ["gh", "pr", "comment", str(pr_number), "--repo", repo, "--body", message],
+        capture_output=True,
+    )
+
+
 def abort_rebase() -> None:
     """Abort an in-progress rebase."""
     subprocess.run(["git", "rebase", "--abort"], cwd=REPO_DIR, capture_output=True)
@@ -381,6 +391,7 @@ def fix_pr(pr_number: int, cfg: AutoLoopConfig) -> bool:
 
     Handles: stale base, merge conflicts, lint failures, test failures,
     and combinations thereof. Returns True if the PR was fixed and pushed.
+    Posts a GitHub comment on the PR describing the outcome.
     """
     print(f"Fixing PR #{pr_number}...")
 
@@ -397,38 +408,81 @@ def fix_pr(pr_number: int, cfg: AutoLoopConfig) -> bool:
 
     if not checkout_branch(pr.branch):
         print(f"  Could not checkout branch {pr.branch}.")
+        post_pr_comment(
+            pr_number,
+            cfg.repo,
+            f"{COMMENT_PREFIX} Failed — could not checkout branch `{pr.branch}`.",
+        )
         return False
 
-    update_main()
-    needs_rebase = is_behind_main(pr.branch)
-    needs_check_fix = bool(pr.failing_checks)
+    try:
+        update_main()
+        actions: list[str] = []
+        needs_rebase = is_behind_main(pr.branch)
+        needs_check_fix = bool(pr.failing_checks)
 
-    if not needs_rebase and not needs_check_fix:
-        print("  PR is up-to-date and checks pass. Nothing to fix.")
-        restore_main()
-        return True
+        if not needs_rebase and not needs_check_fix:
+            print("  PR is up-to-date and checks pass. Nothing to fix.")
+            restore_main()
+            return True
 
-    if needs_rebase:
-        print(f"  Branch is behind main.{' Has conflicts.' if pr.has_conflicts else ''}")
-        if not _handle_rebase(cfg):
+        if needs_rebase:
+            print(f"  Branch is behind main.{' Has conflicts.' if pr.has_conflicts else ''}")
+            if not _handle_rebase(cfg):
+                msg = f"{COMMENT_PREFIX} Failed — could not rebase branch `{pr.branch}` on main."
+                if pr.has_conflicts:
+                    msg += " Merge conflicts could not be resolved automatically."
+                post_pr_comment(pr_number, cfg.repo, msg)
+                restore_main()
+                return False
+            actions.append(
+                "resolved merge conflicts and rebased on main"
+                if pr.has_conflicts
+                else "rebased on main"
+            )
+
+        print("  Running checks...")
+        if not _handle_checks(cfg):
+            failing = ", ".join(pr.failing_checks) if pr.failing_checks else "lint/tests"
+            post_pr_comment(
+                pr_number,
+                cfg.repo,
+                f"{COMMENT_PREFIX} Failed — could not fix failing checks ({failing})."
+                " Manual intervention required.",
+            )
             restore_main()
             return False
 
-    print("  Running checks...")
-    if not _handle_checks(cfg):
+        if has_staged_changes():
+            print("  Committing fixes...")
+            commit_fixes()
+            actions.append("fixed failing checks")
+
+        print("  Pushing...")
+        if not force_push(pr.branch):
+            print("  Push failed.")
+            post_pr_comment(
+                pr_number,
+                cfg.repo,
+                f"{COMMENT_PREFIX} Failed — force push to `{pr.branch}` was rejected.",
+            )
+            restore_main()
+            return False
+
+        summary = ", ".join(actions) if actions else "verified clean"
+        post_pr_comment(
+            pr_number,
+            cfg.repo,
+            f"{COMMENT_PREFIX} Successfully {summary}. CI should pass now.",
+        )
+        print(f"  PR #{pr_number} fixed and pushed.")
+        restore_main()
+        return True
+    except Exception as exc:
+        post_pr_comment(
+            pr_number,
+            cfg.repo,
+            f"{COMMENT_PREFIX} Failed — unexpected error: {exc}",
+        )
         restore_main()
         return False
-
-    if has_staged_changes():
-        print("  Committing fixes...")
-        commit_fixes()
-
-    print("  Pushing...")
-    if not force_push(pr.branch):
-        print("  Push failed.")
-        restore_main()
-        return False
-
-    print(f"  PR #{pr_number} fixed and pushed.")
-    restore_main()
-    return True

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from autoloop.fix_pr import (
+    COMMENT_PREFIX,
     PrState,
     _get_unmerged_files,
     _parse_conflicting_files,
@@ -19,6 +20,7 @@ from autoloop.fix_pr import (
     has_staged_changes,
     is_behind_main,
     lint_check,
+    post_pr_comment,
     rebase_on_main,
     restore_main,
     run_lint_fix,
@@ -762,3 +764,323 @@ def test_fix_pr_push_failure(capsys):
     assert result is False
     out = capsys.readouterr().out
     assert "Push failed" in out
+
+
+# --- post_pr_comment ---
+
+
+def test_post_pr_comment_calls_gh():
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return _ok()
+
+    with patch("autoloop.fix_pr.subprocess.run", fake_run):
+        post_pr_comment(42, "acme-corp/widget", "Test message")
+
+    assert calls[0][:3] == ["gh", "pr", "comment"]
+    assert "42" in calls[0]
+    assert "--repo" in calls[0]
+    assert "acme-corp/widget" in calls[0]
+    assert "--body" in calls[0]
+    assert "Test message" in calls[0]
+
+
+# --- fix_pr comment posting ---
+
+
+def test_fix_pr_posts_success_comment_on_rebase(capsys):
+    cfg = _cfg()
+    comments = []
+
+    def fake_run(cmd, **kwargs):
+        if isinstance(cmd, str):
+            return _ok(stdout="ok")
+        return _ok()
+
+    with (
+        patch("autoloop.fix_pr.get_pr_info", return_value=_fake_pr_info()),
+        patch("autoloop.fix_pr.is_behind_main", return_value=True),
+        patch("autoloop.fix_pr.subprocess.run", fake_run),
+        patch("autoloop.fix_pr.post_pr_comment", side_effect=lambda *a: comments.append(a)),
+    ):
+        result = fix_pr(42, cfg)
+
+    assert result is True
+    assert len(comments) == 1
+    pr_num, repo, msg = comments[0]
+    assert pr_num == 42
+    assert repo == "acme-corp/widget"
+    assert COMMENT_PREFIX in msg
+    assert "Successfully" in msg
+    assert "rebased on main" in msg
+    assert "CI should pass now" in msg
+
+
+def test_fix_pr_posts_success_comment_with_conflict_resolution(capsys):
+    cfg = _cfg()
+    comments = []
+
+    def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list) and cmd[:2] == ["git", "rebase"]:
+            if "--abort" in cmd or "--continue" in cmd:
+                return _ok()
+            return _ok(
+                returncode=1,
+                stdout="CONFLICT (content): Merge conflict in src/a.py\n",
+            )
+        if isinstance(cmd, list) and cmd[:2] == ["git", "status"]:
+            return _ok(stdout="")
+        if isinstance(cmd, str):
+            return _ok(stdout="ok")
+        return _ok()
+
+    with (
+        patch(
+            "autoloop.fix_pr.get_pr_info",
+            return_value=_fake_pr_info(has_conflicts=True),
+        ),
+        patch("autoloop.fix_pr.is_behind_main", return_value=True),
+        patch("autoloop.fix_pr.resolve_conflicts_with_claude", return_value=True),
+        patch("autoloop.fix_pr.subprocess.run", fake_run),
+        patch("autoloop.fix_pr.post_pr_comment", side_effect=lambda *a: comments.append(a)),
+    ):
+        result = fix_pr(42, cfg)
+
+    assert result is True
+    assert len(comments) == 1
+    _, _, msg = comments[0]
+    assert "resolved merge conflicts" in msg
+
+
+def test_fix_pr_posts_success_comment_with_check_fix(capsys):
+    cfg = _cfg()
+    comments = []
+    verify_calls = [0]
+
+    def fake_run(cmd, **kwargs):
+        if isinstance(cmd, str) and cfg.verify_cmd in cmd:
+            verify_calls[0] += 1
+            if verify_calls[0] <= 1:
+                return _ok(returncode=1, stdout="FAILED test_x")
+            return _ok(stdout="ok")
+        if isinstance(cmd, str):
+            return _ok()
+        if isinstance(cmd, list) and cmd[:2] == ["git", "status"]:
+            return _ok(stdout="M  src/file.py\n")
+        return _ok()
+
+    with (
+        patch(
+            "autoloop.fix_pr.get_pr_info",
+            return_value=_fake_pr_info(failing_checks=["test"]),
+        ),
+        patch("autoloop.fix_pr.is_behind_main", return_value=False),
+        patch("autoloop.fix_pr.fix_checks_with_claude", return_value=True),
+        patch("autoloop.fix_pr.subprocess.run", fake_run),
+        patch("autoloop.fix_pr.post_pr_comment", side_effect=lambda *a: comments.append(a)),
+    ):
+        result = fix_pr(42, cfg)
+
+    assert result is True
+    assert len(comments) == 1
+    _, _, msg = comments[0]
+    assert "fixed failing checks" in msg
+
+
+def test_fix_pr_posts_failure_comment_on_checkout_fail(capsys):
+    cfg = _cfg()
+    comments = []
+
+    with (
+        patch(
+            "autoloop.fix_pr.get_pr_info",
+            return_value=_fake_pr_info(branch="broken-branch"),
+        ),
+        patch("autoloop.fix_pr.checkout_branch", return_value=False),
+        patch("autoloop.fix_pr.post_pr_comment", side_effect=lambda *a: comments.append(a)),
+    ):
+        result = fix_pr(42, cfg)
+
+    assert result is False
+    assert len(comments) == 1
+    _, _, msg = comments[0]
+    assert COMMENT_PREFIX in msg
+    assert "Failed" in msg
+    assert "checkout" in msg
+    assert "broken-branch" in msg
+
+
+def test_fix_pr_posts_failure_comment_on_rebase_fail(capsys):
+    cfg = _cfg()
+    comments = []
+
+    def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list) and cmd[:2] == ["git", "rebase"]:
+            if "--abort" in cmd:
+                return _ok()
+            return _ok(returncode=1, stdout="error: could not apply\n")
+        if isinstance(cmd, list) and cmd[:2] == ["git", "status"]:
+            return _ok(stdout="")
+        return _ok()
+
+    with (
+        patch("autoloop.fix_pr.get_pr_info", return_value=_fake_pr_info()),
+        patch("autoloop.fix_pr.is_behind_main", return_value=True),
+        patch("autoloop.fix_pr.subprocess.run", fake_run),
+        patch("autoloop.fix_pr.post_pr_comment", side_effect=lambda *a: comments.append(a)),
+    ):
+        result = fix_pr(42, cfg)
+
+    assert result is False
+    assert len(comments) == 1
+    _, _, msg = comments[0]
+    assert COMMENT_PREFIX in msg
+    assert "Failed" in msg
+    assert "rebase" in msg
+
+
+def test_fix_pr_posts_failure_comment_on_rebase_fail_with_conflicts(capsys):
+    cfg = _cfg()
+    comments = []
+
+    def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list) and cmd[:2] == ["git", "rebase"]:
+            if "--abort" in cmd:
+                return _ok()
+            return _ok(
+                returncode=1,
+                stdout="CONFLICT (content): Merge conflict in src/a.py\n",
+            )
+        if isinstance(cmd, list) and cmd[:2] == ["git", "status"]:
+            return _ok(stdout="UU src/a.py\n")
+        return _ok()
+
+    with (
+        patch(
+            "autoloop.fix_pr.get_pr_info",
+            return_value=_fake_pr_info(has_conflicts=True),
+        ),
+        patch("autoloop.fix_pr.is_behind_main", return_value=True),
+        patch("autoloop.fix_pr.resolve_conflicts_with_claude", return_value=False),
+        patch("autoloop.fix_pr.subprocess.run", fake_run),
+        patch("autoloop.fix_pr.post_pr_comment", side_effect=lambda *a: comments.append(a)),
+    ):
+        result = fix_pr(42, cfg)
+
+    assert result is False
+    assert len(comments) == 1
+    _, _, msg = comments[0]
+    assert "Merge conflicts could not be resolved" in msg
+
+
+def test_fix_pr_posts_failure_comment_on_checks_fail(capsys):
+    cfg = _cfg()
+    comments = []
+
+    def fake_run(cmd, **kwargs):
+        if isinstance(cmd, str):
+            return _ok(returncode=1, stdout="ruff error")
+        return _ok()
+
+    with (
+        patch(
+            "autoloop.fix_pr.get_pr_info",
+            return_value=_fake_pr_info(failing_checks=["lint", "test"]),
+        ),
+        patch("autoloop.fix_pr.is_behind_main", return_value=False),
+        patch("autoloop.fix_pr.fix_checks_with_claude", return_value=False),
+        patch("autoloop.fix_pr.subprocess.run", fake_run),
+        patch("autoloop.fix_pr.post_pr_comment", side_effect=lambda *a: comments.append(a)),
+    ):
+        result = fix_pr(42, cfg)
+
+    assert result is False
+    assert len(comments) == 1
+    _, _, msg = comments[0]
+    assert COMMENT_PREFIX in msg
+    assert "failing checks" in msg
+    assert "lint, test" in msg
+    assert "Manual intervention" in msg
+
+
+def test_fix_pr_posts_failure_comment_on_push_fail(capsys):
+    cfg = _cfg()
+    comments = []
+
+    def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list) and "push" in cmd:
+            return _ok(returncode=1)
+        if isinstance(cmd, str):
+            return _ok(stdout="ok")
+        return _ok()
+
+    with (
+        patch("autoloop.fix_pr.get_pr_info", return_value=_fake_pr_info()),
+        patch("autoloop.fix_pr.is_behind_main", return_value=True),
+        patch("autoloop.fix_pr.subprocess.run", fake_run),
+        patch("autoloop.fix_pr.post_pr_comment", side_effect=lambda *a: comments.append(a)),
+    ):
+        result = fix_pr(42, cfg)
+
+    assert result is False
+    assert len(comments) == 1
+    _, _, msg = comments[0]
+    assert COMMENT_PREFIX in msg
+    assert "force push" in msg
+    assert "rejected" in msg
+
+
+def test_fix_pr_posts_failure_comment_on_unexpected_error(capsys):
+    cfg = _cfg()
+    comments = []
+
+    with (
+        patch("autoloop.fix_pr.get_pr_info", return_value=_fake_pr_info()),
+        patch("autoloop.fix_pr.checkout_branch", return_value=True),
+        patch("autoloop.fix_pr.update_main", side_effect=RuntimeError("disk full")),
+        patch("autoloop.fix_pr.restore_main"),
+        patch("autoloop.fix_pr.post_pr_comment", side_effect=lambda *a: comments.append(a)),
+    ):
+        result = fix_pr(42, cfg)
+
+    assert result is False
+    assert len(comments) == 1
+    _, _, msg = comments[0]
+    assert COMMENT_PREFIX in msg
+    assert "unexpected error" in msg
+    assert "disk full" in msg
+
+
+def test_fix_pr_no_comment_when_nothing_to_fix(capsys):
+    cfg = _cfg()
+    comments = []
+
+    def fake_run(cmd, **kwargs):
+        return _ok()
+
+    with (
+        patch("autoloop.fix_pr.get_pr_info", return_value=_fake_pr_info()),
+        patch("autoloop.fix_pr.is_behind_main", return_value=False),
+        patch("autoloop.fix_pr.subprocess.run", fake_run),
+        patch("autoloop.fix_pr.post_pr_comment", side_effect=lambda *a: comments.append(a)),
+    ):
+        result = fix_pr(42, cfg)
+
+    assert result is True
+    assert len(comments) == 0
+
+
+def test_fix_pr_no_comment_when_pr_not_found():
+    cfg = _cfg()
+    comments = []
+
+    with (
+        patch("autoloop.fix_pr.get_pr_info", return_value=None),
+        patch("autoloop.fix_pr.post_pr_comment", side_effect=lambda *a: comments.append(a)),
+    ):
+        result = fix_pr(42, cfg)
+
+    assert result is False
+    assert len(comments) == 0
