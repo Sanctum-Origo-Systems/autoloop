@@ -380,7 +380,7 @@ Configure the autoloop MCP server by adding to your project's `.mcp.json`:
   "mcpServers": {
     "autoloop-mcp": {
       "command": "autoloop-mcp",
-      "autoApprove": ["autoloop_status", "autoloop_triage", "autoloop_implement", "autoloop_fix_pr"]
+      "autoApprove": ["autoloop_status", "autoloop_triage", "autoloop_implement", "autoloop_fix_pr", "autoloop_review_pr"]
     }
   }
 }
