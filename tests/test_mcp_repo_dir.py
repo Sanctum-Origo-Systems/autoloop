@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from autoloop.mcp_server import _read_last_run
+from autoloop.mcp_server import _read_last_run, _read_last_runs
 
 
 # --- _read_last_run with base parameter ---
@@ -39,6 +39,68 @@ def test_read_last_run_without_base_uses_cwd(tmp_path, monkeypatch):
 
     result = _read_last_run()
     assert result["issue"] == 3
+
+
+# --- _read_last_runs ---
+
+
+def test_read_last_runs_returns_both(tmp_path):
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    log_file = log_dir / "run_history.jsonl"
+    lines = [
+        json.dumps({"type": "implement", "issue": 10, "success": True, "timestamp": "t1"}),
+        json.dumps(
+            {
+                "type": "review",
+                "pr_number": 42,
+                "success": False,
+                "cost_usd": 0.08,
+                "timestamp": "t2",
+            }
+        ),
+    ]
+    log_file.write_text("\n".join(lines) + "\n")
+
+    last_impl, last_review = _read_last_runs(base=tmp_path)
+    assert last_impl["issue"] == 10
+    assert last_review["pr_number"] == 42
+    assert last_review["type"] == "review"
+
+
+def test_read_last_runs_no_file(tmp_path):
+    last_impl, last_review = _read_last_runs(base=tmp_path)
+    assert last_impl is None
+    assert last_review is None
+
+
+def test_read_last_runs_only_implement(tmp_path):
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    log_file = log_dir / "run_history.jsonl"
+    log_file.write_text(
+        json.dumps({"type": "implement", "issue": 5, "success": True, "timestamp": "t1"}) + "\n"
+    )
+
+    last_impl, last_review = _read_last_runs(base=tmp_path)
+    assert last_impl["issue"] == 5
+    assert last_review is None
+
+
+def test_read_last_runs_only_review(tmp_path):
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    log_file = log_dir / "run_history.jsonl"
+    log_file.write_text(
+        json.dumps(
+            {"type": "review", "pr_number": 7, "success": True, "cost_usd": 0.05, "timestamp": "t1"}
+        )
+        + "\n"
+    )
+
+    last_impl, last_review = _read_last_runs(base=tmp_path)
+    assert last_impl is None
+    assert last_review["pr_number"] == 7
 
 
 # --- Fake FastMCP for testing tool registration ---
@@ -214,8 +276,10 @@ def test_review_pr_registered(mcp_tools):
     assert "autoloop_review_pr" in mcp_tools
 
 
-def test_review_pr_returns_cost_from_log(mcp_tools, tmp_path, monkeypatch):
-    """autoloop_review_pr returns cost info from run_history.jsonl."""
+def test_review_pr_returns_cost_from_return_dict(mcp_tools, tmp_path, monkeypatch):
+    """autoloop_review_pr returns cost info from review_pr() return dict."""
+    import asyncio
+
     toml_path = tmp_path / "autoloop.toml"
     toml_path.write_text('repo = "acme-corp/widget"\n')
     for var in (
@@ -227,25 +291,16 @@ def test_review_pr_returns_cost_from_log(mcp_tools, tmp_path, monkeypatch):
     ):
         monkeypatch.delenv(var, raising=False)
 
-    log_dir = tmp_path / "autoloop"
-    log_dir.mkdir()
-    log_file = log_dir / "run_history.jsonl"
-    log_file.write_text(
-        json.dumps(
-            {
-                "type": "review",
-                "pr_number": 55,
-                "success": True,
-                "cost_usd": 0.12,
-                "input_tokens": 1500,
-                "output_tokens": 300,
-            }
-        )
-        + "\n"
-    )
+    review_result = {
+        "success": True,
+        "cost_usd": 0.12,
+        "input_tokens": 1500,
+        "output_tokens": 300,
+        "cache_read_tokens": 100,
+    }
 
-    with patch("autoloop.cli.review_pr", return_value=True):
-        result = mcp_tools["autoloop_review_pr"](pr_number=55, repo_dir=str(tmp_path))
+    with patch("autoloop.cli.review_pr", return_value=review_result):
+        result = asyncio.run(mcp_tools["autoloop_review_pr"](pr_number=55, repo_dir=str(tmp_path)))
 
     assert "passed" in result
     assert "$0.12" in result
@@ -255,6 +310,8 @@ def test_review_pr_returns_cost_from_log(mcp_tools, tmp_path, monkeypatch):
 
 def test_review_pr_failure_returns_status(mcp_tools, tmp_path, monkeypatch):
     """autoloop_review_pr returns failure status with cost."""
+    import asyncio
+
     toml_path = tmp_path / "autoloop.toml"
     toml_path.write_text('repo = "acme-corp/widget"\n')
     for var in (
@@ -266,47 +323,19 @@ def test_review_pr_failure_returns_status(mcp_tools, tmp_path, monkeypatch):
     ):
         monkeypatch.delenv(var, raising=False)
 
-    log_dir = tmp_path / "autoloop"
-    log_dir.mkdir()
-    log_file = log_dir / "run_history.jsonl"
-    log_file.write_text(
-        json.dumps(
-            {
-                "type": "review",
-                "pr_number": 55,
-                "success": False,
-                "cost_usd": 0.08,
-                "input_tokens": 1000,
-                "output_tokens": 200,
-            }
-        )
-        + "\n"
-    )
+    review_result = {
+        "success": False,
+        "cost_usd": 0.08,
+        "input_tokens": 1000,
+        "output_tokens": 200,
+        "cache_read_tokens": 50,
+    }
 
-    with patch("autoloop.cli.review_pr", return_value=False):
-        result = mcp_tools["autoloop_review_pr"](pr_number=55, repo_dir=str(tmp_path))
+    with patch("autoloop.cli.review_pr", return_value=review_result):
+        result = asyncio.run(mcp_tools["autoloop_review_pr"](pr_number=55, repo_dir=str(tmp_path)))
 
     assert "failed" in result
     assert "$0.08" in result
-
-
-def test_review_pr_no_log_returns_basic_status(mcp_tools, tmp_path, monkeypatch):
-    """autoloop_review_pr returns basic status when no log exists."""
-    toml_path = tmp_path / "autoloop.toml"
-    toml_path.write_text('repo = "acme-corp/widget"\n')
-    for var in (
-        "AUTOLOOP_TRIAGE_MODEL",
-        "AUTOLOOP_IMPL_MODEL",
-        "AUTOLOOP_TIMEOUT",
-        "AUTOLOOP_REVIEWER",
-        "AUTOLOOP_REPO",
-    ):
-        monkeypatch.delenv(var, raising=False)
-
-    with patch("autoloop.cli.review_pr", return_value=True):
-        result = mcp_tools["autoloop_review_pr"](pr_number=55, repo_dir=str(tmp_path))
-
-    assert result == "Review passed for PR #55."
 
 
 def test_status_with_repo_dir(mcp_tools, tmp_path, monkeypatch):
@@ -346,9 +375,59 @@ def test_status_with_repo_dir(mcp_tools, tmp_path, monkeypatch):
     with patch("autoloop.mcp_server.subprocess.run", fake_run):
         result = mcp_tools["autoloop_status"](repo_dir=str(tmp_path))
 
-    assert "issue #10" in result
+    assert "Last implement: issue #10" in result
     assert "success" in result
     assert "implementation" in result
+
+
+def test_status_shows_both_implement_and_review(mcp_tools, tmp_path, monkeypatch):
+    """autoloop_status shows last implement and last review side-by-side."""
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('repo = "acme-corp/widget"\n')
+
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    lines = [
+        json.dumps(
+            {"issue": 10, "success": True, "cost_usd": 0.75, "timestamp": "2026-07-18T10:00:00"}
+        ),
+        json.dumps(
+            {
+                "type": "review",
+                "issue": 0,
+                "pr_number": 42,
+                "success": False,
+                "cost_usd": 0.12,
+                "timestamp": "2026-07-18T11:00:00",
+            }
+        ),
+    ]
+    (log_dir / "run_history.jsonl").write_text("\n".join(lines) + "\n")
+
+    for var in (
+        "AUTOLOOP_TRIAGE_MODEL",
+        "AUTOLOOP_IMPL_MODEL",
+        "AUTOLOOP_TIMEOUT",
+        "AUTOLOOP_REVIEWER",
+        "AUTOLOOP_REPO",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "gh":
+            return type("R", (), {"returncode": 0, "stdout": "[]", "stderr": ""})()
+        if cmd[0] == "pgrep":
+            return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+        if cmd[0] == "systemctl":
+            return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    with patch("autoloop.mcp_server.subprocess.run", fake_run):
+        result = mcp_tools["autoloop_status"](repo_dir=str(tmp_path))
+
+    assert "Last implement: issue #10" in result
+    assert "Last review: PR #42" in result
+    assert "failed" in result
 
 
 def test_status_without_repo_dir_uses_cwd(mcp_tools, tmp_path, monkeypatch):

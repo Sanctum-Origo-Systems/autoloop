@@ -98,7 +98,7 @@ class TestReviewPrHandler:
         dispatch = _make_dispatcher(pr_data, {("gh", "pr", "checkout"): _ok(returncode=1)})
         with patch("subprocess.run", side_effect=dispatch) as mock_run:
             result = review_pr(42, cfg)
-        assert result is False
+        assert result["success"] is False
         checkout_calls = [
             c
             for c in mock_run.call_args_list
@@ -125,7 +125,7 @@ class TestReviewPrHandler:
             ),
         ):
             result = review_pr(42, cfg)
-        assert result is True
+        assert result["success"] is True
 
     def test_gate_failure_posts_comment_and_label(self):
         cfg = _cfg()
@@ -150,7 +150,7 @@ class TestReviewPrHandler:
         ):
             result = review_pr(42, cfg)
 
-        assert result is False
+        assert result["success"] is False
         comment_calls = [
             c for c in all_calls if isinstance(c, list) and c[:3] == ["gh", "pr", "comment"]
         ]
@@ -191,7 +191,7 @@ class TestReviewPrHandler:
         ):
             result = review_pr(42, cfg)
 
-        assert result is False
+        assert result["success"] is False
         comment_calls = [
             c for c in all_calls if isinstance(c, list) and c[:3] == ["gh", "pr", "comment"]
         ]
@@ -356,7 +356,11 @@ class TestReviewPrCostTracking:
         ):
             result = review_pr(42, cfg)
 
-        assert result is True
+        assert result["success"] is True
+        assert result["cost_usd"] == 0.12
+        assert result["input_tokens"] == 1500
+        assert result["output_tokens"] == 300
+        assert result["cache_read_tokens"] == 100
         assert log_file.exists()
         entry = json.loads(log_file.read_text().strip())
         assert entry["type"] == "review"
@@ -388,7 +392,8 @@ class TestReviewPrCostTracking:
         ):
             result = review_pr(42, cfg)
 
-        assert result is False
+        assert result["success"] is False
+        assert result["cost_usd"] == 0.08
         entry = json.loads(log_file.read_text().strip())
         assert entry["type"] == "review"
         assert entry["pr_number"] == 42

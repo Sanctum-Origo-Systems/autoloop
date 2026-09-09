@@ -134,8 +134,8 @@ def main():
         from autoloop.config import load_config
 
         cfg = load_config()
-        success = review_pr(args.pr_number, cfg)
-        if not success:
+        result = review_pr(args.pr_number, cfg)
+        if not result["success"]:
             sys.exit(1)
 
     elif args.command == "auto-close-parent":
@@ -180,13 +180,22 @@ def review_pr(pr_number, cfg):
 
     Never merges. Applies needs-human label on failure.
     Restores the previous branch after review.
-    Returns True on success, False on failure.
+    Returns a dict with keys: success, cost_usd, input_tokens, output_tokens,
+    cache_read_tokens.
     """
     import time
 
     import autoloop.implement_issue as impl
     from autoloop.claude_runner import run_claude
     from autoloop.config import REPO_DIR
+
+    _zero_result = {
+        "success": False,
+        "cost_usd": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+    }
 
     impl.cfg = cfg
     start_time = time.time()
@@ -205,7 +214,7 @@ def review_pr(pr_number, cfg):
     )
     if checkout.returncode != 0:
         print(f"Failed to checkout PR #{pr_number}")
-        return False
+        return _zero_result
 
     try:
         pr_view = subprocess.run(
@@ -224,7 +233,7 @@ def review_pr(pr_number, cfg):
         )
         if pr_view.returncode != 0:
             print(f"Failed to get PR #{pr_number} info")
-            return False
+            return _zero_result
 
         pr_data = json.loads(pr_view.stdout)
         branch = pr_data["headRefName"]
@@ -324,7 +333,13 @@ def review_pr(pr_number, cfg):
             pr_number=pr_number,
         )
 
-        return success
+        return {
+            "success": success,
+            "cost_usd": result.cost_usd,
+            "input_tokens": result.input_tokens,
+            "output_tokens": result.output_tokens,
+            "cache_read_tokens": result.cache_read_tokens,
+        }
     finally:
         subprocess.run(
             ["git", "checkout", original_branch],
