@@ -175,10 +175,13 @@ def log_run(
     input_tokens: int = 0,
     output_tokens: int = 0,
     cache_read_tokens: int = 0,
+    run_type: str = "implement",
+    pr_number: int | None = None,
 ):
     """Append a JSON entry to the run history log."""
     entry = {
         "timestamp": datetime.now(UTC).isoformat(),
+        "type": run_type,
         "issue": issue_number,
         "success": success,
         "attempts": attempts,
@@ -188,6 +191,8 @@ def log_run(
         "output_tokens": output_tokens,
         "cache_read_tokens": cache_read_tokens,
     }
+    if pr_number is not None:
+        entry["pr_number"] = pr_number
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(LOG_FILE, "a") as f:
         f.write(json.dumps(entry) + "\n")

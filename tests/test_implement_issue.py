@@ -1019,6 +1019,27 @@ def test_log_run_writes_json_entry(tmp_path, monkeypatch):
     entry = json.loads(lines[0])
     assert entry["issue"] == 17
     assert entry["success"] is True
+    assert entry["type"] == "implement"
+    assert "pr_number" not in entry
+
+
+def test_log_run_review_entry_includes_cost_fields(tmp_path, monkeypatch):
+    log_path = tmp_path / "run_history.jsonl"
+    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+    log_run(0, True, 1, 30.0, 0.12, 1500, 300, 100, run_type="review", pr_number=42)
+
+    lines = log_path.read_text().strip().splitlines()
+    assert len(lines) == 1
+    entry = json.loads(lines[0])
+    assert entry["type"] == "review"
+    assert entry["pr_number"] == 42
+    assert entry["success"] is True
+    assert entry["cost_usd"] == 0.12
+    assert entry["input_tokens"] == 1500
+    assert entry["output_tokens"] == 300
+    assert entry["cache_read_tokens"] == 100
+    assert entry["duration_seconds"] == 30
+    assert "timestamp" in entry
 
 
 # --- create_branch tests ---
