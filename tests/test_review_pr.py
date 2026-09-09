@@ -469,3 +469,34 @@ class TestReviewPrCostTracking:
         body = comment_calls[0][body_idx]
         assert "Review cost:" in body
         assert "$0.10" in body
+
+    def test_checkout_failure_logs_run(self, tmp_path):
+        cfg = _cfg()
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix", "body": ""})
+        dispatch = _make_dispatcher(pr_data, {("gh", "pr", "checkout"): _ok(returncode=1)})
+        log_file = tmp_path / "run_history.jsonl"
+        with (
+            patch("subprocess.run", side_effect=dispatch),
+            patch("autoloop.implement_issue.LOG_FILE", log_file),
+        ):
+            review_pr(42, cfg)
+        entry = json.loads(log_file.read_text().strip())
+        assert entry["type"] == "review"
+        assert entry["pr_number"] == 42
+        assert entry["success"] is False
+        assert entry["cost_usd"] == 0
+
+    def test_pr_view_failure_logs_run(self, tmp_path):
+        cfg = _cfg()
+        dispatch = _make_dispatcher("", {("gh", "pr", "view"): _ok(returncode=1)})
+        log_file = tmp_path / "run_history.jsonl"
+        with (
+            patch("subprocess.run", side_effect=dispatch),
+            patch("autoloop.implement_issue.LOG_FILE", log_file),
+        ):
+            review_pr(42, cfg)
+        entry = json.loads(log_file.read_text().strip())
+        assert entry["type"] == "review"
+        assert entry["pr_number"] == 42
+        assert entry["success"] is False
+        assert entry["cost_usd"] == 0

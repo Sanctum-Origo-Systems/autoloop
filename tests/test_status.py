@@ -5,40 +5,7 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
-from autoloop.mcp_server import _get_timer_info, _is_process_running, _read_last_run
-
-
-# --- _read_last_run ---
-
-
-def test_read_last_run_returns_last_entry(tmp_path, monkeypatch):
-    log_dir = tmp_path / "autoloop"
-    log_dir.mkdir()
-    log_file = log_dir / "run_history.jsonl"
-    log_file.write_text(
-        json.dumps({"issue": 1, "success": True, "cost_usd": 0.50})
-        + "\n"
-        + json.dumps({"issue": 2, "success": False, "cost_usd": 1.00})
-        + "\n"
-    )
-    monkeypatch.setattr("autoloop.mcp_server.Path.cwd", lambda: tmp_path)
-
-    result = _read_last_run()
-    assert result["issue"] == 2
-    assert result["success"] is False
-
-
-def test_read_last_run_returns_none_when_no_file(tmp_path, monkeypatch):
-    monkeypatch.setattr("autoloop.mcp_server.Path.cwd", lambda: tmp_path)
-    assert _read_last_run() is None
-
-
-def test_read_last_run_returns_none_when_empty_file(tmp_path, monkeypatch):
-    log_dir = tmp_path / "autoloop"
-    log_dir.mkdir()
-    (log_dir / "run_history.jsonl").write_text("")
-    monkeypatch.setattr("autoloop.mcp_server.Path.cwd", lambda: tmp_path)
-    assert _read_last_run() is None
+from autoloop.mcp_server import _get_timer_info, _is_process_running
 
 
 # --- _get_timer_info ---

@@ -214,6 +214,16 @@ def review_pr(pr_number, cfg):
     )
     if checkout.returncode != 0:
         print(f"Failed to checkout PR #{pr_number}")
+        elapsed = time.time() - start_time
+        impl.log_run(
+            issue_number=0,
+            success=False,
+            attempts=1,
+            duration=elapsed,
+            cost_usd=0,
+            run_type="review",
+            pr_number=pr_number,
+        )
         return _zero_result
 
     try:
@@ -233,6 +243,16 @@ def review_pr(pr_number, cfg):
         )
         if pr_view.returncode != 0:
             print(f"Failed to get PR #{pr_number} info")
+            elapsed = time.time() - start_time
+            impl.log_run(
+                issue_number=0,
+                success=False,
+                attempts=1,
+                duration=elapsed,
+                cost_usd=0,
+                run_type="review",
+                pr_number=pr_number,
+            )
             return _zero_result
 
         pr_data = json.loads(pr_view.stdout)
@@ -350,45 +370,25 @@ def review_pr(pr_number, cfg):
 
 def _show_status():
     """Show last run, ready issues, and next scheduled timers."""
-    import json
-    from pathlib import Path
-
     from autoloop.config import load_config
+    from autoloop.mcp_server import _read_last_runs
 
     cfg = load_config()
 
-    log_file = Path.cwd() / "autoloop" / "run_history.jsonl"
-    if log_file.exists():
-        lines = log_file.read_text().strip().splitlines()
-        if lines:
-            last_impl = None
-            last_review = None
-            for line in reversed(lines):
-                entry = json.loads(line)
-                run_type = entry.get("type", "implement")
-                if run_type == "review" and last_review is None:
-                    last_review = entry
-                elif run_type != "review" and last_impl is None:
-                    last_impl = entry
-                if last_impl and last_review:
-                    break
-            if last_impl:
-                print(
-                    f"Last implement: issue #{last_impl['issue']} — "
-                    f"{'success' if last_impl['success'] else 'failed'} — "
-                    f"${last_impl.get('cost_usd', 0):.2f} — {last_impl['timestamp']}"
-                )
-            if last_review:
-                print(
-                    f"Last review: PR #{last_review['pr_number']} — "
-                    f"{'success' if last_review['success'] else 'failed'} — "
-                    f"${last_review.get('cost_usd', 0):.2f} — {last_review['timestamp']}"
-                )
-            if not last_impl and not last_review:
-                print("No run history yet.")
-        else:
-            print("No run history yet.")
-    else:
+    last_impl, last_review = _read_last_runs()
+    if last_impl:
+        print(
+            f"Last implement: issue #{last_impl['issue']} — "
+            f"{'success' if last_impl['success'] else 'failed'} — "
+            f"${last_impl.get('cost_usd', 0):.2f} — {last_impl['timestamp']}"
+        )
+    if last_review:
+        print(
+            f"Last review: PR #{last_review['pr_number']} — "
+            f"{'success' if last_review['success'] else 'failed'} — "
+            f"${last_review.get('cost_usd', 0):.2f} — {last_review['timestamp']}"
+        )
+    if not last_impl and not last_review:
         print("No run history yet.")
 
     import subprocess

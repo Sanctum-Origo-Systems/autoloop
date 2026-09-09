@@ -14,17 +14,6 @@ import subprocess
 from pathlib import Path
 
 
-def _read_last_run(base: Path | None = None) -> dict | None:
-    """Read the last entry from run_history.jsonl."""
-    log_file = (base or Path.cwd()) / "autoloop" / "run_history.jsonl"
-    if not log_file.exists():
-        return None
-    lines = log_file.read_text().strip().splitlines()
-    if not lines:
-        return None
-    return json.loads(lines[-1])
-
-
 def _read_last_runs(base: Path | None = None) -> tuple[dict | None, dict | None]:
     """Read the last implement and last review entries from run_history.jsonl."""
     log_file = (base or Path.cwd()) / "autoloop" / "run_history.jsonl"

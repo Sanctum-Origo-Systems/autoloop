@@ -9,36 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from autoloop.mcp_server import _read_last_run, _read_last_runs
-
-
-# --- _read_last_run with base parameter ---
-
-
-def test_read_last_run_with_base_path(tmp_path):
-    log_dir = tmp_path / "autoloop"
-    log_dir.mkdir()
-    log_file = log_dir / "run_history.jsonl"
-    log_file.write_text(json.dumps({"issue": 5, "success": True, "cost_usd": 0.25}) + "\n")
-
-    result = _read_last_run(base=tmp_path)
-    assert result["issue"] == 5
-    assert result["success"] is True
-
-
-def test_read_last_run_with_base_path_no_file(tmp_path):
-    assert _read_last_run(base=tmp_path) is None
-
-
-def test_read_last_run_without_base_uses_cwd(tmp_path, monkeypatch):
-    log_dir = tmp_path / "autoloop"
-    log_dir.mkdir()
-    log_file = log_dir / "run_history.jsonl"
-    log_file.write_text(json.dumps({"issue": 3, "success": False, "cost_usd": 0.10}) + "\n")
-    monkeypatch.setattr("autoloop.mcp_server.Path.cwd", lambda: tmp_path)
-
-    result = _read_last_run()
-    assert result["issue"] == 3
+from autoloop.mcp_server import _read_last_runs
 
 
 # --- _read_last_runs ---
