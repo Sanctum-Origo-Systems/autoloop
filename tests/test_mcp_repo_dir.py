@@ -209,6 +209,41 @@ def test_fix_pr_cwd_none_when_no_repo_dir(mcp_tools):
     assert captured[0]["kwargs"]["cwd"] is None
 
 
+def test_review_pr_registered(mcp_tools):
+    """autoloop_review_pr appears in the MCP server's tool listing."""
+    assert "autoloop_review_pr" in mcp_tools
+
+
+def test_review_pr_passes_cwd(mcp_tools, tmp_path):
+    """autoloop_review_pr passes repo_dir as cwd to Popen."""
+    captured = []
+
+    def fake_popen(cmd, **kwargs):
+        captured.append({"cmd": cmd, "kwargs": kwargs})
+
+    with patch("autoloop.mcp_server.subprocess.Popen", fake_popen):
+        result = mcp_tools["autoloop_review_pr"](pr_number=55, repo_dir=str(tmp_path))
+
+    assert len(captured) == 1
+    assert captured[0]["kwargs"]["cwd"] == str(tmp_path)
+    assert captured[0]["cmd"] == ["autoloop", "review-pr", "55"]
+    assert result == "Started review-pr for PR #55."
+
+
+def test_review_pr_cwd_none_when_no_repo_dir(mcp_tools):
+    """autoloop_review_pr passes cwd=None when repo_dir omitted."""
+    captured = []
+
+    def fake_popen(cmd, **kwargs):
+        captured.append({"cmd": cmd, "kwargs": kwargs})
+
+    with patch("autoloop.mcp_server.subprocess.Popen", fake_popen):
+        mcp_tools["autoloop_review_pr"](pr_number=1)
+
+    assert len(captured) == 1
+    assert captured[0]["kwargs"]["cwd"] is None
+
+
 def test_status_with_repo_dir(mcp_tools, tmp_path, monkeypatch):
     """autoloop_status resolves paths from repo_dir when provided."""
     toml_path = tmp_path / "autoloop.toml"

@@ -130,6 +130,17 @@ def main():
         return f"Started fix-pr for PR #{pr_number}."
 
     @server.tool()
+    def autoloop_review_pr(pr_number: int, repo_dir: str | None = None) -> str:
+        """Review a PR (mutation gate + semantic review, no merge).
+
+        Args:
+            pr_number: The PR number to review.
+            repo_dir: Target repository directory. Defaults to server's working directory.
+        """
+        _spawn(["autoloop", "review-pr", str(pr_number)], cwd=repo_dir)
+        return f"Started review-pr for PR #{pr_number}."
+
+    @server.tool()
     def autoloop_preflight(repo_dir: str | None = None) -> str:
         """Run preflight checks (verify and lint commands) on the current branch.
 
