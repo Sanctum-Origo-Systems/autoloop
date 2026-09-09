@@ -214,34 +214,99 @@ def test_review_pr_registered(mcp_tools):
     assert "autoloop_review_pr" in mcp_tools
 
 
-def test_review_pr_passes_cwd(mcp_tools, tmp_path):
-    """autoloop_review_pr passes repo_dir as cwd to Popen."""
-    captured = []
+def test_review_pr_returns_cost_from_log(mcp_tools, tmp_path, monkeypatch):
+    """autoloop_review_pr returns cost info from run_history.jsonl."""
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('repo = "acme-corp/widget"\n')
+    for var in (
+        "AUTOLOOP_TRIAGE_MODEL",
+        "AUTOLOOP_IMPL_MODEL",
+        "AUTOLOOP_TIMEOUT",
+        "AUTOLOOP_REVIEWER",
+        "AUTOLOOP_REPO",
+    ):
+        monkeypatch.delenv(var, raising=False)
 
-    def fake_popen(cmd, **kwargs):
-        captured.append({"cmd": cmd, "kwargs": kwargs})
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    log_file = log_dir / "run_history.jsonl"
+    log_file.write_text(
+        json.dumps(
+            {
+                "type": "review",
+                "pr_number": 55,
+                "success": True,
+                "cost_usd": 0.12,
+                "input_tokens": 1500,
+                "output_tokens": 300,
+            }
+        )
+        + "\n"
+    )
 
-    with patch("autoloop.mcp_server.subprocess.Popen", fake_popen):
+    with patch("autoloop.cli.review_pr", return_value=True):
         result = mcp_tools["autoloop_review_pr"](pr_number=55, repo_dir=str(tmp_path))
 
-    assert len(captured) == 1
-    assert captured[0]["kwargs"]["cwd"] == str(tmp_path)
-    assert captured[0]["cmd"] == ["autoloop", "review-pr", "55"]
-    assert result == "Started review-pr for PR #55."
+    assert "passed" in result
+    assert "$0.12" in result
+    assert "1,500 input" in result
+    assert "300 output" in result
 
 
-def test_review_pr_cwd_none_when_no_repo_dir(mcp_tools):
-    """autoloop_review_pr passes cwd=None when repo_dir omitted."""
-    captured = []
+def test_review_pr_failure_returns_status(mcp_tools, tmp_path, monkeypatch):
+    """autoloop_review_pr returns failure status with cost."""
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('repo = "acme-corp/widget"\n')
+    for var in (
+        "AUTOLOOP_TRIAGE_MODEL",
+        "AUTOLOOP_IMPL_MODEL",
+        "AUTOLOOP_TIMEOUT",
+        "AUTOLOOP_REVIEWER",
+        "AUTOLOOP_REPO",
+    ):
+        monkeypatch.delenv(var, raising=False)
 
-    def fake_popen(cmd, **kwargs):
-        captured.append({"cmd": cmd, "kwargs": kwargs})
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    log_file = log_dir / "run_history.jsonl"
+    log_file.write_text(
+        json.dumps(
+            {
+                "type": "review",
+                "pr_number": 55,
+                "success": False,
+                "cost_usd": 0.08,
+                "input_tokens": 1000,
+                "output_tokens": 200,
+            }
+        )
+        + "\n"
+    )
 
-    with patch("autoloop.mcp_server.subprocess.Popen", fake_popen):
-        mcp_tools["autoloop_review_pr"](pr_number=1)
+    with patch("autoloop.cli.review_pr", return_value=False):
+        result = mcp_tools["autoloop_review_pr"](pr_number=55, repo_dir=str(tmp_path))
 
-    assert len(captured) == 1
-    assert captured[0]["kwargs"]["cwd"] is None
+    assert "failed" in result
+    assert "$0.08" in result
+
+
+def test_review_pr_no_log_returns_basic_status(mcp_tools, tmp_path, monkeypatch):
+    """autoloop_review_pr returns basic status when no log exists."""
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('repo = "acme-corp/widget"\n')
+    for var in (
+        "AUTOLOOP_TRIAGE_MODEL",
+        "AUTOLOOP_IMPL_MODEL",
+        "AUTOLOOP_TIMEOUT",
+        "AUTOLOOP_REVIEWER",
+        "AUTOLOOP_REPO",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    with patch("autoloop.cli.review_pr", return_value=True):
+        result = mcp_tools["autoloop_review_pr"](pr_number=55, repo_dir=str(tmp_path))
+
+    assert result == "Review passed for PR #55."
 
 
 def test_status_with_repo_dir(mcp_tools, tmp_path, monkeypatch):

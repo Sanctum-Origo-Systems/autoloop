@@ -133,12 +133,34 @@ def main():
     def autoloop_review_pr(pr_number: int, repo_dir: str | None = None) -> str:
         """Review a PR (mutation gate + semantic review, no merge).
 
+        Runs synchronously and returns the review result with cost information.
+
         Args:
             pr_number: The PR number to review.
             repo_dir: Target repository directory. Defaults to server's working directory.
         """
-        _spawn(["autoloop", "review-pr", str(pr_number)], cwd=repo_dir)
-        return f"Started review-pr for PR #{pr_number}."
+        from autoloop.cli import review_pr
+        from autoloop.config import load_config
+
+        base = Path(repo_dir) if repo_dir else Path.cwd()
+        cfg = load_config(path=base / "autoloop.toml")
+        success = review_pr(pr_number, cfg)
+
+        status = "passed" if success else "failed"
+        log_file = base / "autoloop" / "run_history.jsonl"
+        if log_file.exists():
+            lines = log_file.read_text().strip().splitlines()
+            if lines:
+                entry = json.loads(lines[-1])
+                if entry.get("type") == "review" and entry.get("pr_number") == pr_number:
+                    cost = entry.get("cost_usd", 0)
+                    inp = entry.get("input_tokens", 0)
+                    out = entry.get("output_tokens", 0)
+                    return (
+                        f"Review {status} for PR #{pr_number}. "
+                        f"Cost: ${cost:.2f}, tokens: {inp:,} input / {out:,} output."
+                    )
+        return f"Review {status} for PR #{pr_number}."
 
     @server.tool()
     def autoloop_preflight(repo_dir: str | None = None) -> str:

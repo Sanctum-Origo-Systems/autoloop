@@ -180,7 +180,7 @@ def review_pr(pr_number, cfg):
 
     Never merges. Applies needs-human label on failure.
     Restores the previous branch after review.
-    Returns (success, cost_usd, input_tokens, output_tokens) tuple.
+    Returns True on success, False on failure.
     """
     import time
 
