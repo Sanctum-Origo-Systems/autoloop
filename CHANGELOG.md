@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.4.1
+
+- `autoloop_review_pr` MCP tool: review PRs remotely via MCP
+- Track and report cost for review-pr runs (tokens, cost in PR comment + run_history.jsonl)
+- Review-pr removes `needs-human` label when review passes after prior failure
+
 ## v0.4.0
 
 - Mutation gate: detect dead-but-green code before opening PRs, with test_gate_skip_types bypass
