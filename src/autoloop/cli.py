@@ -353,6 +353,21 @@ def review_pr(pr_number, cfg):
             pr_number=pr_number,
         )
 
+        if success:
+            subprocess.run(
+                [
+                    "gh",
+                    "pr",
+                    "edit",
+                    str(pr_number),
+                    "--repo",
+                    cfg.repo,
+                    "--remove-label",
+                    "needs-human",
+                ],
+                capture_output=True,
+            )
+
         return {
             "success": success,
             "cost_usd": result.cost_usd,
