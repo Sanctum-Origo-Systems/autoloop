@@ -134,8 +134,8 @@ def main():
         from autoloop.config import load_config
 
         cfg = load_config()
-        success = review_pr(args.pr_number, cfg)
-        if not success:
+        result = review_pr(args.pr_number, cfg)
+        if not result["success"]:
             sys.exit(1)
 
     elif args.command == "auto-close-parent":
@@ -180,12 +180,25 @@ def review_pr(pr_number, cfg):
 
     Never merges. Applies needs-human label on failure.
     Restores the previous branch after review.
+    Returns a dict with keys: success, cost_usd, input_tokens, output_tokens,
+    cache_read_tokens.
     """
+    import time
+
     import autoloop.implement_issue as impl
     from autoloop.claude_runner import run_claude
     from autoloop.config import REPO_DIR
 
+    _zero_result = {
+        "success": False,
+        "cost_usd": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+    }
+
     impl.cfg = cfg
+    start_time = time.time()
 
     original_branch = subprocess.run(
         ["git", "rev-parse", "--abbrev-ref", "HEAD"],
@@ -201,7 +214,17 @@ def review_pr(pr_number, cfg):
     )
     if checkout.returncode != 0:
         print(f"Failed to checkout PR #{pr_number}")
-        return False
+        elapsed = time.time() - start_time
+        impl.log_run(
+            issue_number=0,
+            success=False,
+            attempts=1,
+            duration=elapsed,
+            cost_usd=0,
+            run_type="review",
+            pr_number=pr_number,
+        )
+        return _zero_result
 
     try:
         pr_view = subprocess.run(
@@ -220,7 +243,17 @@ def review_pr(pr_number, cfg):
         )
         if pr_view.returncode != 0:
             print(f"Failed to get PR #{pr_number} info")
-            return False
+            elapsed = time.time() - start_time
+            impl.log_run(
+                issue_number=0,
+                success=False,
+                attempts=1,
+                duration=elapsed,
+                cost_usd=0,
+                run_type="review",
+                pr_number=pr_number,
+            )
+            return _zero_result
 
         pr_data = json.loads(pr_view.stdout)
         branch = pr_data["headRefName"]
@@ -250,14 +283,22 @@ def review_pr(pr_number, cfg):
                 "Review call failed (timeout or non-zero exit).",
             )
 
+        cost_line = (
+            f"\n\n**Review cost:** ${result.cost_usd:.2f}, "
+            f"tokens: {result.input_tokens:,} input / {result.output_tokens:,} output"
+        )
+
         findings = []
         if not gate_passed:
             findings.append(f"**Mutation gate failed:**\n```\n{gate_errors}\n```")
         if not review_passed:
             findings.append(f"**Semantic review failed:**\n{review_feedback}")
 
+        elapsed = time.time() - start_time
+        success = not findings
+
         if findings:
-            comment = "\n\n".join(findings)
+            comment = "\n\n".join(findings) + cost_line
             subprocess.run(
                 [
                     "gh",
@@ -282,21 +323,43 @@ def review_pr(pr_number, cfg):
                     "needs-human",
                 ],
             )
-            return False
+        else:
+            comment = (
+                "**Review passed:** mutation gate and semantic review both passed." + cost_line
+            )
+            subprocess.run(
+                [
+                    "gh",
+                    "pr",
+                    "comment",
+                    str(pr_number),
+                    "--repo",
+                    cfg.repo,
+                    "--body",
+                    comment,
+                ],
+            )
 
-        subprocess.run(
-            [
-                "gh",
-                "pr",
-                "comment",
-                str(pr_number),
-                "--repo",
-                cfg.repo,
-                "--body",
-                "**Review passed:** mutation gate and semantic review both passed.",
-            ],
+        impl.log_run(
+            issue_number=0,
+            success=success,
+            attempts=1,
+            duration=elapsed,
+            cost_usd=result.cost_usd,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            cache_read_tokens=result.cache_read_tokens,
+            run_type="review",
+            pr_number=pr_number,
         )
-        return True
+
+        return {
+            "success": success,
+            "cost_usd": result.cost_usd,
+            "input_tokens": result.input_tokens,
+            "output_tokens": result.output_tokens,
+            "cache_read_tokens": result.cache_read_tokens,
+        }
     finally:
         subprocess.run(
             ["git", "checkout", original_branch],
@@ -307,26 +370,25 @@ def review_pr(pr_number, cfg):
 
 def _show_status():
     """Show last run, ready issues, and next scheduled timers."""
-    import json
-    from pathlib import Path
-
     from autoloop.config import load_config
+    from autoloop.mcp_server import _read_last_runs
 
     cfg = load_config()
 
-    log_file = Path.cwd() / "autoloop" / "run_history.jsonl"
-    if log_file.exists():
-        lines = log_file.read_text().strip().splitlines()
-        if lines:
-            last = json.loads(lines[-1])
-            print(
-                f"Last run: issue #{last['issue']} — "
-                f"{'success' if last['success'] else 'failed'} — "
-                f"${last.get('cost_usd', 0):.2f} — {last['timestamp']}"
-            )
-        else:
-            print("No run history yet.")
-    else:
+    last_impl, last_review = _read_last_runs()
+    if last_impl:
+        print(
+            f"Last implement: issue #{last_impl['issue']} — "
+            f"{'success' if last_impl['success'] else 'failed'} — "
+            f"${last_impl.get('cost_usd', 0):.2f} — {last_impl['timestamp']}"
+        )
+    if last_review:
+        print(
+            f"Last review: PR #{last_review['pr_number']} — "
+            f"{'success' if last_review['success'] else 'failed'} — "
+            f"${last_review.get('cost_usd', 0):.2f} — {last_review['timestamp']}"
+        )
+    if not last_impl and not last_review:
         print("No run history yet.")
 
     import subprocess

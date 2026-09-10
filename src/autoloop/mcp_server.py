@@ -14,15 +14,26 @@ import subprocess
 from pathlib import Path
 
 
-def _read_last_run(base: Path | None = None) -> dict | None:
-    """Read the last entry from run_history.jsonl."""
+def _read_last_runs(base: Path | None = None) -> tuple[dict | None, dict | None]:
+    """Read the last implement and last review entries from run_history.jsonl."""
     log_file = (base or Path.cwd()) / "autoloop" / "run_history.jsonl"
     if not log_file.exists():
-        return None
+        return None, None
     lines = log_file.read_text().strip().splitlines()
     if not lines:
-        return None
-    return json.loads(lines[-1])
+        return None, None
+    last_impl = None
+    last_review = None
+    for line in reversed(lines):
+        entry = json.loads(line)
+        run_type = entry.get("type", "implement")
+        if run_type == "review" and last_review is None:
+            last_review = entry
+        elif run_type != "review" and last_impl is None:
+            last_impl = entry
+        if last_impl and last_review:
+            break
+    return last_impl, last_review
 
 
 def _get_timer_info(prefix: str = "autoloop") -> dict[str, str]:
@@ -130,15 +141,35 @@ def main():
         return f"Started fix-pr for PR #{pr_number}."
 
     @server.tool()
-    def autoloop_review_pr(pr_number: int, repo_dir: str | None = None) -> str:
+    async def autoloop_review_pr(pr_number: int, repo_dir: str | None = None) -> str:
         """Review a PR (mutation gate + semantic review, no merge).
+
+        Returns the review result with cost information. Runs in a thread
+        so it does not block the MCP server for other callers.
 
         Args:
             pr_number: The PR number to review.
             repo_dir: Target repository directory. Defaults to server's working directory.
         """
-        _spawn(["autoloop", "review-pr", str(pr_number)], cwd=repo_dir)
-        return f"Started review-pr for PR #{pr_number}."
+        import asyncio
+
+        from autoloop.cli import review_pr
+        from autoloop.config import load_config
+
+        base = Path(repo_dir) if repo_dir else Path.cwd()
+        cfg = load_config(path=base / "autoloop.toml")
+
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, review_pr, pr_number, cfg)
+
+        status = "passed" if result["success"] else "failed"
+        cost = result["cost_usd"]
+        inp = result["input_tokens"]
+        out = result["output_tokens"]
+        return (
+            f"Review {status} for PR #{pr_number}. "
+            f"Cost: ${cost:.2f}, tokens: {inp:,} input / {out:,} output."
+        )
 
     @server.tool()
     def autoloop_preflight(repo_dir: str | None = None) -> str:
@@ -163,14 +194,20 @@ def main():
         parts = []
         cfg = load_config(path=base / "autoloop.toml")
 
-        last = _read_last_run(base)
-        if last:
-            status = "success" if last["success"] else "failed"
+        last_impl, last_review = _read_last_runs(base)
+        if last_impl:
+            status = "success" if last_impl["success"] else "failed"
             parts.append(
-                f"Last run: issue #{last['issue']} — {status} — "
-                f"${last.get('cost_usd', 0):.2f} — {last['timestamp']}"
+                f"Last implement: issue #{last_impl['issue']} — {status} — "
+                f"${last_impl.get('cost_usd', 0):.2f} — {last_impl['timestamp']}"
             )
-        else:
+        if last_review:
+            status = "success" if last_review["success"] else "failed"
+            parts.append(
+                f"Last review: PR #{last_review['pr_number']} — {status} — "
+                f"${last_review.get('cost_usd', 0):.2f} — {last_review['timestamp']}"
+            )
+        if not last_impl and not last_review:
             parts.append("Last run: no history")
 
         lockfile = base / ".autoloop.lock"

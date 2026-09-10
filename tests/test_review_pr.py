@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import call, patch
 
@@ -33,13 +34,15 @@ def _ok(stdout="", returncode=0):
     return SimpleNamespace(returncode=returncode, stdout=stdout, stderr="")
 
 
-def _claude_result(text="", success=True):
+def _claude_result(
+    text="", success=True, cost_usd=0, input_tokens=0, output_tokens=0, cache_read_tokens=0
+):
     return SimpleNamespace(
         text=text,
-        cost_usd=0,
-        input_tokens=0,
-        output_tokens=0,
-        cache_read_tokens=0,
+        cost_usd=cost_usd,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read_tokens,
         success=success,
         timed_out=False,
     )
@@ -95,7 +98,7 @@ class TestReviewPrHandler:
         dispatch = _make_dispatcher(pr_data, {("gh", "pr", "checkout"): _ok(returncode=1)})
         with patch("subprocess.run", side_effect=dispatch) as mock_run:
             result = review_pr(42, cfg)
-        assert result is False
+        assert result["success"] is False
         checkout_calls = [
             c
             for c in mock_run.call_args_list
@@ -122,7 +125,7 @@ class TestReviewPrHandler:
             ),
         ):
             result = review_pr(42, cfg)
-        assert result is True
+        assert result["success"] is True
 
     def test_gate_failure_posts_comment_and_label(self):
         cfg = _cfg()
@@ -147,7 +150,7 @@ class TestReviewPrHandler:
         ):
             result = review_pr(42, cfg)
 
-        assert result is False
+        assert result["success"] is False
         comment_calls = [
             c for c in all_calls if isinstance(c, list) and c[:3] == ["gh", "pr", "comment"]
         ]
@@ -188,7 +191,7 @@ class TestReviewPrHandler:
         ):
             result = review_pr(42, cfg)
 
-        assert result is False
+        assert result["success"] is False
         comment_calls = [
             c for c in all_calls if isinstance(c, list) and c[:3] == ["gh", "pr", "comment"]
         ]
@@ -327,3 +330,173 @@ class TestReviewPrBranchRestore:
             c for c in all_calls if isinstance(c, list) and c == ["git", "checkout", "my-feature"]
         ]
         assert len(restore_calls) == 1
+
+
+class TestReviewPrCostTracking:
+    def test_success_logs_review_entry_with_cost_fields(self, tmp_path):
+        cfg = _cfg()
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
+        review_json = json.dumps({"approved": True, "summary": "looks good"})
+        dispatch = _make_dispatcher(pr_data)
+        log_file = tmp_path / "autoloop" / "run_history.jsonl"
+
+        with (
+            patch("subprocess.run", side_effect=dispatch),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(
+                    text=review_json,
+                    cost_usd=0.12,
+                    input_tokens=1500,
+                    output_tokens=300,
+                    cache_read_tokens=100,
+                ),
+            ),
+            patch("autoloop.implement_issue.LOG_FILE", log_file),
+        ):
+            result = review_pr(42, cfg)
+
+        assert result["success"] is True
+        assert result["cost_usd"] == 0.12
+        assert result["input_tokens"] == 1500
+        assert result["output_tokens"] == 300
+        assert result["cache_read_tokens"] == 100
+        assert log_file.exists()
+        entry = json.loads(log_file.read_text().strip())
+        assert entry["type"] == "review"
+        assert entry["pr_number"] == 42
+        assert entry["success"] is True
+        assert entry["cost_usd"] == 0.12
+        assert entry["input_tokens"] == 1500
+        assert entry["output_tokens"] == 300
+        assert entry["cache_read_tokens"] == 100
+        assert "duration_seconds" in entry
+        assert "timestamp" in entry
+
+    def test_failure_logs_review_entry(self, tmp_path):
+        cfg = _cfg()
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
+        review_json = json.dumps(
+            {"approved": False, "issues": ["missing tests"], "summary": "needs work"}
+        )
+        dispatch = _make_dispatcher(pr_data)
+        log_file = tmp_path / "autoloop" / "run_history.jsonl"
+
+        with (
+            patch("subprocess.run", side_effect=dispatch),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(text=review_json, cost_usd=0.08),
+            ),
+            patch("autoloop.implement_issue.LOG_FILE", log_file),
+        ):
+            result = review_pr(42, cfg)
+
+        assert result["success"] is False
+        assert result["cost_usd"] == 0.08
+        entry = json.loads(log_file.read_text().strip())
+        assert entry["type"] == "review"
+        assert entry["pr_number"] == 42
+        assert entry["success"] is False
+        assert entry["cost_usd"] == 0.08
+
+    def test_success_comment_includes_cost_line(self):
+        cfg = _cfg()
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
+        review_json = json.dumps({"approved": True, "summary": "looks good"})
+        dispatch = _make_dispatcher(pr_data)
+
+        all_calls = []
+        original_dispatch = dispatch
+
+        def tracking_dispatch(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args", [])
+            all_calls.append((cmd, kwargs))
+            return original_dispatch(*args, **kwargs)
+
+        with (
+            patch("subprocess.run", side_effect=tracking_dispatch),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(
+                    text=review_json, cost_usd=0.15, input_tokens=2000, output_tokens=500
+                ),
+            ),
+            patch("autoloop.implement_issue.LOG_FILE", Path("/dev/null")),
+        ):
+            review_pr(42, cfg)
+
+        comment_calls = [
+            c for c, kw in all_calls if isinstance(c, list) and c[:3] == ["gh", "pr", "comment"]
+        ]
+        assert len(comment_calls) >= 1
+        body_idx = comment_calls[0].index("--body") + 1
+        body = comment_calls[0][body_idx]
+        assert "Review cost:" in body
+        assert "$0.15" in body
+        assert "2,000 input" in body
+        assert "500 output" in body
+
+    def test_failure_comment_includes_cost_line(self):
+        cfg = _cfg()
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
+        review_json = json.dumps({"approved": False, "issues": ["bad tests"], "summary": "no"})
+        dispatch = _make_dispatcher(pr_data)
+
+        all_calls = []
+        original_dispatch = dispatch
+
+        def tracking_dispatch(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args", [])
+            all_calls.append((cmd, kwargs))
+            return original_dispatch(*args, **kwargs)
+
+        with (
+            patch("subprocess.run", side_effect=tracking_dispatch),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(text=review_json, cost_usd=0.10),
+            ),
+            patch("autoloop.implement_issue.LOG_FILE", Path("/dev/null")),
+        ):
+            review_pr(42, cfg)
+
+        comment_calls = [
+            c for c, kw in all_calls if isinstance(c, list) and c[:3] == ["gh", "pr", "comment"]
+        ]
+        assert len(comment_calls) >= 1
+        body_idx = comment_calls[0].index("--body") + 1
+        body = comment_calls[0][body_idx]
+        assert "Review cost:" in body
+        assert "$0.10" in body
+
+    def test_checkout_failure_logs_run(self, tmp_path):
+        cfg = _cfg()
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix", "body": ""})
+        dispatch = _make_dispatcher(pr_data, {("gh", "pr", "checkout"): _ok(returncode=1)})
+        log_file = tmp_path / "run_history.jsonl"
+        with (
+            patch("subprocess.run", side_effect=dispatch),
+            patch("autoloop.implement_issue.LOG_FILE", log_file),
+        ):
+            review_pr(42, cfg)
+        entry = json.loads(log_file.read_text().strip())
+        assert entry["type"] == "review"
+        assert entry["pr_number"] == 42
+        assert entry["success"] is False
+        assert entry["cost_usd"] == 0
+
+    def test_pr_view_failure_logs_run(self, tmp_path):
+        cfg = _cfg()
+        dispatch = _make_dispatcher("", {("gh", "pr", "view"): _ok(returncode=1)})
+        log_file = tmp_path / "run_history.jsonl"
+        with (
+            patch("subprocess.run", side_effect=dispatch),
+            patch("autoloop.implement_issue.LOG_FILE", log_file),
+        ):
+            review_pr(42, cfg)
+        entry = json.loads(log_file.read_text().strip())
+        assert entry["type"] == "review"
+        assert entry["pr_number"] == 42
+        assert entry["success"] is False
+        assert entry["cost_usd"] == 0

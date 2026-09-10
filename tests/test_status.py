@@ -5,40 +5,7 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
-from autoloop.mcp_server import _get_timer_info, _is_process_running, _read_last_run
-
-
-# --- _read_last_run ---
-
-
-def test_read_last_run_returns_last_entry(tmp_path, monkeypatch):
-    log_dir = tmp_path / "autoloop"
-    log_dir.mkdir()
-    log_file = log_dir / "run_history.jsonl"
-    log_file.write_text(
-        json.dumps({"issue": 1, "success": True, "cost_usd": 0.50})
-        + "\n"
-        + json.dumps({"issue": 2, "success": False, "cost_usd": 1.00})
-        + "\n"
-    )
-    monkeypatch.setattr("autoloop.mcp_server.Path.cwd", lambda: tmp_path)
-
-    result = _read_last_run()
-    assert result["issue"] == 2
-    assert result["success"] is False
-
-
-def test_read_last_run_returns_none_when_no_file(tmp_path, monkeypatch):
-    monkeypatch.setattr("autoloop.mcp_server.Path.cwd", lambda: tmp_path)
-    assert _read_last_run() is None
-
-
-def test_read_last_run_returns_none_when_empty_file(tmp_path, monkeypatch):
-    log_dir = tmp_path / "autoloop"
-    log_dir.mkdir()
-    (log_dir / "run_history.jsonl").write_text("")
-    monkeypatch.setattr("autoloop.mcp_server.Path.cwd", lambda: tmp_path)
-    assert _read_last_run() is None
+from autoloop.mcp_server import _get_timer_info, _is_process_running
 
 
 # --- _get_timer_info ---
@@ -245,3 +212,107 @@ def test_timer_prefix_keeps_default_when_not_in_toml(tmp_path, monkeypatch):
 
     config = load_config(toml_path)
     assert config.timer_prefix == "autoloop"
+
+
+# --- CLI _show_status review display ---
+
+
+def test_cli_show_status_displays_review_run(tmp_path, monkeypatch, capsys):
+    from autoloop.config import AutoLoopConfig
+
+    monkeypatch.setattr(
+        "autoloop.config.load_config",
+        lambda path=None: AutoLoopConfig(repo="owner/repo"),
+    )
+
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    log_file = log_dir / "run_history.jsonl"
+    log_file.write_text(
+        json.dumps(
+            {
+                "timestamp": "2026-09-01T12:00:00",
+                "type": "implement",
+                "issue": 10,
+                "success": True,
+                "cost_usd": 0.50,
+                "attempts": 1,
+                "duration_seconds": 60,
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "timestamp": "2026-09-02T14:00:00",
+                "type": "review",
+                "pr_number": 42,
+                "success": True,
+                "cost_usd": 0.12,
+                "duration_seconds": 30,
+            }
+        )
+        + "\n"
+    )
+    monkeypatch.chdir(tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "gh":
+            return type("R", (), {"returncode": 0, "stdout": "[]", "stderr": ""})()
+        if cmd[0] == "systemctl":
+            return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    with patch("subprocess.run", fake_run):
+        import autoloop.cli
+
+        autoloop.cli._show_status()
+
+    out = capsys.readouterr().out
+    assert "Last implement: issue #10" in out
+    assert "$0.50" in out
+    assert "Last review: PR #42" in out
+    assert "$0.12" in out
+
+
+def test_cli_show_status_no_review_shows_implement_only(tmp_path, monkeypatch, capsys):
+    from autoloop.config import AutoLoopConfig
+
+    monkeypatch.setattr(
+        "autoloop.config.load_config",
+        lambda path=None: AutoLoopConfig(repo="owner/repo"),
+    )
+
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    log_file = log_dir / "run_history.jsonl"
+    log_file.write_text(
+        json.dumps(
+            {
+                "timestamp": "2026-09-01T12:00:00",
+                "type": "implement",
+                "issue": 10,
+                "success": True,
+                "cost_usd": 0.50,
+                "attempts": 1,
+                "duration_seconds": 60,
+            }
+        )
+        + "\n"
+    )
+    monkeypatch.chdir(tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "gh":
+            return type("R", (), {"returncode": 0, "stdout": "[]", "stderr": ""})()
+        if cmd[0] == "systemctl":
+            return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    with patch("subprocess.run", fake_run):
+        import autoloop.cli
+
+        autoloop.cli._show_status()
+
+    out = capsys.readouterr().out
+    assert "Last implement: issue #10" in out
+    assert "Last review:" not in out
