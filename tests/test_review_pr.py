@@ -271,6 +271,37 @@ class TestReviewPrHandler:
         ]
         assert len(label_calls) == 1
 
+    def test_needs_human_label_removed_on_pass(self):
+        cfg = _cfg()
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
+        review_json = json.dumps({"approved": True, "summary": "looks good"})
+        dispatch = _make_dispatcher(pr_data)
+
+        all_calls = []
+        original_dispatch = dispatch
+
+        def tracking_dispatch(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args", [])
+            all_calls.append(cmd)
+            return original_dispatch(*args, **kwargs)
+
+        with (
+            patch("subprocess.run", side_effect=tracking_dispatch),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(text=review_json),
+            ),
+        ):
+            result = review_pr(42, cfg)
+
+        assert result["success"] is True
+        remove_label_calls = [
+            c
+            for c in all_calls
+            if isinstance(c, list) and "--remove-label" in c and "needs-human" in c
+        ]
+        assert len(remove_label_calls) == 1
+
 
 class TestReviewPrBranchRestore:
     def test_restores_original_branch_on_success(self):
