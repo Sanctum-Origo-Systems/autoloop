@@ -269,10 +269,20 @@ def review_pr(pr_number, cfg):
             cwd=REPO_DIR,
         ).stdout
 
+        name_only = subprocess.run(
+            ["git", "diff", "--name-only", f"main..{branch}"],
+            capture_output=True,
+            text=True,
+            cwd=REPO_DIR,
+        ).stdout
+        changed_files = [f for f in name_only.strip().split("\n") if f]
+
         prompt = impl.REVIEW_PROMPT.format(
             number=pr_number,
             title=pr_data["title"],
             issue_body=body,
+            changed_files=impl.build_changed_files_manifest(changed_files),
+            file_count=len(changed_files),
             diff=diff[: cfg.diff_truncation],
         )
         result = run_claude(prompt, cfg.review_model, cfg.impl_timeout)

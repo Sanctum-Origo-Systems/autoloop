@@ -302,6 +302,34 @@ class TestReviewPrHandler:
         ]
         assert len(remove_label_calls) == 1
 
+    def test_prompt_includes_changed_files_manifest(self):
+        cfg = _cfg()
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
+        review_json = json.dumps({"approved": True, "summary": "ok"})
+        dispatch = _make_dispatcher(
+            pr_data,
+            {
+                ("git", "diff", "--name-only"): _ok(
+                    stdout="src/autoloop/cli.py\ntests/test_cli.py\n"
+                ),
+            },
+        )
+
+        with (
+            patch("subprocess.run", side_effect=dispatch),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(text=review_json),
+            ) as mock_claude,
+        ):
+            review_pr(42, cfg)
+
+        prompt = mock_claude.call_args[0][0]
+        assert "- src/autoloop/cli.py" in prompt
+        assert "- tests/test_cli.py" in prompt
+        assert "2 files" in prompt
+        assert "ONLY report issues you can directly point to" in prompt
+
 
 class TestReviewPrBranchRestore:
     def test_restores_original_branch_on_success(self):
