@@ -9,8 +9,10 @@ from autoloop.claude_runner import ClaudeResult
 from autoloop.config import AutoLoopConfig
 from autoloop.implement_issue import (
     EMPTY_BRANCH_DIAGNOSTIC,
+    REVIEW_PROMPT,
     acquire_lock,
     build_branch_name,
+    build_changed_files_manifest,
     build_pr_body,
     build_timeout_comment,
     cleanup_merged_labels,
@@ -1420,6 +1422,65 @@ def test_design_gate_proceeds_when_design_approved(monkeypatch):
     issue = {"number": 44, "title": "T", "body": "b", "labels": [{"name": "design-required"}]}
     monkeypatch.setattr(implement_issue, "has_design_comment", lambda n: True)
     assert design_gate(issue, require_design=True) is True
+
+
+# --- build_changed_files_manifest tests ---
+
+
+def test_build_changed_files_manifest_formats_file_list():
+    files = ["src/autoloop/cli.py", "tests/test_cli.py"]
+    result = build_changed_files_manifest(files)
+    assert result == "- src/autoloop/cli.py\n- tests/test_cli.py"
+
+
+def test_build_changed_files_manifest_empty_list():
+    assert "(no files changed)" in build_changed_files_manifest([])
+
+
+# --- review prompt grounding tests ---
+
+
+def test_review_prompt_contains_grounding_instruction():
+    assert "ONLY report issues you can directly point to" in REVIEW_PROMPT
+    assert "Do not infer, assume, or speculate" in REVIEW_PROMPT
+    assert "{changed_files}" in REVIEW_PROMPT
+    assert "{file_count}" in REVIEW_PROMPT
+
+
+def test_review_implementation_includes_file_manifest(monkeypatch):
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(impl_model="haiku"))
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list) and cmd[0] == "git" and "--name-only" in cmd:
+            return type(
+                "R",
+                (),
+                {"returncode": 0, "stdout": "src/foo.py\ntests/test_foo.py\n", "stderr": ""},
+            )()
+        if isinstance(cmd, list) and cmd[0] == "git":
+            return type("R", (), {"returncode": 0, "stdout": "diff content", "stderr": ""})()
+        captured["prompt"] = cmd
+        return type(
+            "R",
+            (),
+            {
+                "returncode": 0,
+                "stdout": json.dumps(
+                    {"result": '{"approved": true, "issues": [], "summary": "ok"}'}
+                ),
+                "stderr": "",
+            },
+        )()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    review_implementation({"number": 1, "title": "T", "body": ""}, "branch")
+
+    prompt_str = " ".join(str(x) for x in captured["prompt"])
+    assert "src/foo.py" in prompt_str
+    assert "tests/test_foo.py" in prompt_str
+    assert "2 files" in prompt_str
+    assert "ONLY report issues" in prompt_str
 
 
 # --- parse_review_response tests ---

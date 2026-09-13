@@ -758,6 +758,12 @@ Review this implementation against the original issue.
 Issue #{number}: {title}
 {issue_body}
 
+Files changed in this PR ({file_count} files):
+{changed_files}
+
+IMPORTANT: Only report issues found in the files listed above.
+Do not reference files not in this list.
+
 Diff:
 {diff}
 
@@ -765,6 +771,9 @@ Evaluate:
 1. Does the implementation satisfy each acceptance criterion?
 2. Are the tests meaningful (not just pass-through stubs)?
 3. Does the code follow existing patterns in the codebase?
+4. ONLY report issues you can directly point to in the diff above. \
+Do not infer, assume, or speculate about files or changes not shown. \
+If you are uncertain whether something is in the diff, do not report it.
 
 Respond with JSON only:
 {{
@@ -773,6 +782,13 @@ Respond with JSON only:
   "summary": "one line"
 }}
 """
+
+
+def build_changed_files_manifest(file_list: list[str]) -> str:
+    """Format a list of changed files as a bulleted manifest for the review prompt."""
+    if not file_list:
+        return "- (no files changed)"
+    return "\n".join(f"- {f}" for f in file_list)
 
 
 def parse_review_response(text: str) -> tuple[bool, str]:
@@ -805,10 +821,20 @@ def review_implementation(issue: dict, branch: str) -> tuple[bool, str]:
         cwd=REPO_DIR,
     ).stdout
 
+    name_only = subprocess.run(
+        ["git", "diff", "--name-only", f"main..{branch}"],
+        capture_output=True,
+        text=True,
+        cwd=REPO_DIR,
+    ).stdout
+    changed_files = [f for f in name_only.strip().split("\n") if f]
+
     prompt = REVIEW_PROMPT.format(
         number=issue["number"],
         title=issue["title"],
         issue_body=issue.get("body", "") or "",
+        changed_files=build_changed_files_manifest(changed_files),
+        file_count=len(changed_files),
         diff=diff[:8000],
     )
     result = run_claude(prompt, cfg.impl_model, cfg.impl_timeout)
