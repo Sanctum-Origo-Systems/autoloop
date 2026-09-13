@@ -15,6 +15,7 @@ from autoloop.triage_issues import (
     build_triage_prompt,
     detect_duplicate_issues,
     fetch_issue_body,
+    fetch_single_issue,
     get_decomposition_depth,
     parse_file_discovery_response,
     parse_rewritten_body,
@@ -2299,3 +2300,126 @@ def test_triage_issue_uses_discovered_files_for_duplicate_check(monkeypatch):
 
     label_calls = [c for c in calls if "edit" in c and "--add-label" in c]
     assert any("needs-human" in c[c.index("--add-label") + 1] for c in label_calls)
+
+
+# --- fetch_single_issue ---
+
+
+def test_fetch_single_issue_success():
+    cfg = _cfg(repo="acme/widgets")
+    issue_data = {"number": 42, "title": "Test issue", "body": "Issue body", "labels": []}
+
+    class FakeResult:
+        returncode = 0
+        stdout = json.dumps(issue_data)
+
+    with patch("autoloop.triage_issues.subprocess.run", return_value=FakeResult()) as mock_run:
+        result = fetch_single_issue(42, cfg)
+
+    assert result is not None
+    assert result["number"] == 42
+    assert result["title"] == "Test issue"
+    cmd = mock_run.call_args[0][0]
+    assert "--repo" in cmd
+    assert cmd[cmd.index("--repo") + 1] == "acme/widgets"
+    assert "42" in cmd
+
+
+def test_fetch_single_issue_not_found():
+    cfg = _cfg(repo="acme/widgets")
+
+    class FakeResult:
+        returncode = 1
+        stdout = ""
+
+    with patch("autoloop.triage_issues.subprocess.run", return_value=FakeResult()):
+        result = fetch_single_issue(99, cfg)
+
+    assert result is None
+
+
+def test_fetch_single_issue_invalid_json():
+    cfg = _cfg(repo="acme/widgets")
+
+    class FakeResult:
+        returncode = 0
+        stdout = "not json"
+
+    with patch("autoloop.triage_issues.subprocess.run", return_value=FakeResult()):
+        result = fetch_single_issue(42, cfg)
+
+    assert result is None
+
+
+# --- main() with --issue ---
+
+
+def test_main_with_issue_triages_single_issue(monkeypatch):
+    """main(issue=42) should fetch and triage only that issue."""
+    cfg = _cfg()
+    monkeypatch.setattr("autoloop.config.load_config", lambda: cfg)
+
+    fetched_issue = {"number": 42, "title": "Test issue", "body": "body", "labels": []}
+
+    def fake_fetch(issue_number, cfg):
+        assert issue_number == 42
+        return fetched_issue
+
+    monkeypatch.setattr("autoloop.triage_issues.fetch_single_issue", fake_fetch)
+
+    triaged = []
+
+    def fake_triage_issue(issue, cfg):
+        triaged.append(issue["number"])
+        return [ClaudeResult("ok", 0.01, 100, 50, 0, True)]
+
+    monkeypatch.setattr("autoloop.triage_issues.triage_issue", fake_triage_issue)
+
+    def fake_log_run(*args, **kwargs):
+        pass
+
+    monkeypatch.setattr("autoloop.triage_issues.log_run", fake_log_run)
+
+    from autoloop.triage_issues import main
+
+    main(issue=42)
+
+    assert triaged == [42]
+
+
+def test_main_with_issue_not_found(monkeypatch, capsys):
+    """main(issue=99) should print not-found message when issue doesn't exist."""
+    cfg = _cfg()
+    monkeypatch.setattr("autoloop.config.load_config", lambda: cfg)
+
+    def fake_fetch(issue_number, cfg):
+        return None
+
+    monkeypatch.setattr("autoloop.triage_issues.fetch_single_issue", fake_fetch)
+
+    from autoloop.triage_issues import main
+
+    main(issue=99)
+
+    output = capsys.readouterr().out
+    assert "Issue #99 not found" in output
+
+
+def test_main_without_issue_uses_list_untriaged(monkeypatch):
+    """main() without issue arg should call list_untriaged_issues as before."""
+    cfg = _cfg()
+    monkeypatch.setattr("autoloop.config.load_config", lambda: cfg)
+
+    list_called = []
+
+    def fake_list(cfg):
+        list_called.append(True)
+        return []
+
+    monkeypatch.setattr("autoloop.triage_issues.list_untriaged_issues", fake_list)
+
+    from autoloop.triage_issues import main
+
+    main()
+
+    assert len(list_called) == 1

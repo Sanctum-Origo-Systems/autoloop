@@ -514,6 +514,30 @@ def load_project_context() -> tuple[str, str]:
     return tree, claude_md
 
 
+def fetch_single_issue(issue_number: int, cfg: AutoLoopConfig) -> dict | None:
+    """Fetch a single issue by number via gh issue view."""
+    result = subprocess.run(
+        [
+            "gh",
+            "issue",
+            "view",
+            str(issue_number),
+            "--repo",
+            cfg.repo,
+            "--json",
+            "number,title,body,labels",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        return json.loads(result.stdout)
+    except (json.JSONDecodeError, AttributeError):
+        return None
+
+
 def list_untriaged_issues(cfg: AutoLoopConfig) -> list[dict]:
     """Fetch open issues that have no triage labels yet."""
     triage_labels = set(cfg.triage_labels)
@@ -1043,20 +1067,27 @@ def triage_issue(issue: dict, cfg: AutoLoopConfig, auto_fix: bool = True) -> lis
     return results
 
 
-def main():
+def main(issue=None):
     from autoloop.config import load_config
 
     cfg = load_config()
     start_time = time.time()
     results: list[ClaudeResult] = []
 
-    issues = list_untriaged_issues(cfg)
-    if not issues:
-        print("No untriaged issues found.")
-        return
-    for issue in issues:
-        print(f"Triaging #{issue['number']}: {issue['title']}")
-        results.extend(triage_issue(issue, cfg))
+    if issue is not None:
+        fetched = fetch_single_issue(issue, cfg)
+        if not fetched:
+            print(f"Issue #{issue} not found.")
+            return
+        issues = [fetched]
+    else:
+        issues = list_untriaged_issues(cfg)
+        if not issues:
+            print("No untriaged issues found.")
+            return
+    for iss in issues:
+        print(f"Triaging #{iss['number']}: {iss['title']}")
+        results.extend(triage_issue(iss, cfg))
 
     if results:
         elapsed = time.time() - start_time
