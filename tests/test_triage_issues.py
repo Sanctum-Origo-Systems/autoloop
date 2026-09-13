@@ -2371,7 +2371,7 @@ def test_main_with_issue_triages_single_issue(monkeypatch):
 
     def fake_triage_issue(issue, cfg):
         triaged.append(issue["number"])
-        return [ClaudeResult("ok", 0.01, 100, 50, 0, True)]
+        return [ClaudeResult("ok", 0.01, 100, 50, 0, True)], False
 
     monkeypatch.setattr("autoloop.triage_issues.triage_issue", fake_triage_issue)
 
@@ -2423,3 +2423,70 @@ def test_main_without_issue_uses_list_untriaged(monkeypatch):
     main()
 
     assert len(list_called) == 1
+
+
+# --- drain mode ---
+
+
+def test_drain_converges_in_two_passes(monkeypatch, capsys, tmp_path):
+    """Drain mode loops until no untriaged issues remain."""
+    cfg = _cfg()
+    monkeypatch.setattr("autoloop.triage_issues.LOG_FILE", tmp_path / "log.jsonl")
+    monkeypatch.setattr("autoloop.config.load_config", lambda: cfg)
+
+    call_count = {"n": 0}
+
+    def fake_list_untriaged(cfg):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return [{"number": 50, "title": "Big feature", "body": "body", "labels": []}]
+        elif call_count["n"] == 2:
+            return [
+                {"number": 51, "title": "Sub A", "body": "body", "labels": []},
+                {"number": 52, "title": "Sub B", "body": "body", "labels": []},
+            ]
+        return []
+
+    def fake_triage_issue(issue, cfg):
+        if issue["number"] == 50:
+            return [ClaudeResult("ok", 0.01, 100, 50, 0, True)], True
+        return [ClaudeResult("ok", 0.01, 100, 50, 0, True)], False
+
+    monkeypatch.setattr("autoloop.triage_issues.list_untriaged_issues", fake_list_untriaged)
+    monkeypatch.setattr("autoloop.triage_issues.triage_issue", fake_triage_issue)
+
+    from autoloop.triage_issues import main
+
+    main(drain=True, max_rounds=5)
+
+    captured = capsys.readouterr()
+    assert "Pass 1: triaged 1 issue (1 decomposed)" in captured.out
+    assert "Pass 2: triaged 2 issues (0 decomposed)" in captured.out
+    assert "Done in 2 passes" in captured.out
+
+
+def test_drain_hits_max_rounds(monkeypatch, capsys, tmp_path):
+    """Drain mode exits with warning when max rounds reached."""
+    cfg = _cfg()
+    monkeypatch.setattr("autoloop.triage_issues.LOG_FILE", tmp_path / "log.jsonl")
+    monkeypatch.setattr("autoloop.config.load_config", lambda: cfg)
+
+    def fake_list_untriaged(cfg):
+        return [{"number": 1, "title": "Persistent issue", "body": "body", "labels": []}]
+
+    def fake_triage_issue(issue, cfg):
+        return [ClaudeResult("ok", 0.01, 100, 50, 0, True)], False
+
+    monkeypatch.setattr("autoloop.triage_issues.list_untriaged_issues", fake_list_untriaged)
+    monkeypatch.setattr("autoloop.triage_issues.triage_issue", fake_triage_issue)
+
+    from autoloop.triage_issues import main
+
+    main(drain=True, max_rounds=3)
+
+    captured = capsys.readouterr()
+    assert "Pass 1:" in captured.out
+    assert "Pass 2:" in captured.out
+    assert "Pass 3:" in captured.out
+    assert "Warning: reached max rounds (3)" in captured.out
+    assert "Some issues may still be untriaged" in captured.out

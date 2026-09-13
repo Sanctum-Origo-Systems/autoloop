@@ -981,7 +981,9 @@ def get_decomposition_depth(issue: dict, cfg: AutoLoopConfig) -> int:
 # --- Orchestration ---
 
 
-def triage_issue(issue: dict, cfg: AutoLoopConfig, auto_fix: bool = True) -> list[ClaudeResult]:
+def triage_issue(
+    issue: dict, cfg: AutoLoopConfig, auto_fix: bool = True
+) -> tuple[list[ClaudeResult], bool]:
     """Evaluate a single issue and apply the appropriate label."""
     results: list[ClaudeResult] = []
     verdict, eval_result = evaluate_issue(issue, cfg)
@@ -993,10 +995,13 @@ def triage_issue(issue: dict, cfg: AutoLoopConfig, auto_fix: bool = True) -> lis
             results.append(rewrite_result)
             if new_body:
                 apply_rewrite(issue["number"], new_body, cfg)
-                results.extend(triage_issue({**issue, "body": new_body}, cfg, auto_fix=False))
-                return results
+                inner_results, decomposed = triage_issue(
+                    {**issue, "body": new_body}, cfg, auto_fix=False
+                )
+                results.extend(inner_results)
+                return results, decomposed
         reject_issue(issue["number"], verdict["reason"], cfg)
-        return results
+        return results, False
 
     discovered_files: list[dict] = []
     if verdict.get("files_missing", False):
@@ -1038,7 +1043,7 @@ def triage_issue(issue: dict, cfg: AutoLoopConfig, auto_fix: bool = True) -> lis
                     f" ({', '.join(mentioned_files)}). Requires manual implementation.",
                 ],
             )
-            return results
+            return results, False
 
         candidate_files = list(
             set(
@@ -1053,7 +1058,7 @@ def triage_issue(issue: dict, cfg: AutoLoopConfig, auto_fix: bool = True) -> lis
         if duplicates:
             print(f"  #{issue['number']}: potential duplicate detected, routing to needs-human")
             flag_duplicate(issue["number"], duplicates, cfg)
-            return results
+            return results, False
 
         approve_issue(issue["number"], verdict["priority"], verdict["reason"], cfg)
     elif verdict["verdict"] == "needs-decomposition":
@@ -1063,16 +1068,18 @@ def triage_issue(issue: dict, cfg: AutoLoopConfig, auto_fix: bool = True) -> lis
             approve_issue(issue["number"], verdict["priority"], verdict["reason"], cfg)
         else:
             decompose_issue(issue["number"], verdict, cfg, issue.get("body") or "")
+            return results, True
 
-    return results
+    return results, False
 
 
-def main(issue=None):
+def main(issue=None, drain=False, max_rounds=5):
     from autoloop.config import load_config
 
     cfg = load_config()
     start_time = time.time()
     results: list[ClaudeResult] = []
+    total_issues = 0
 
     if issue is not None:
         fetched = fetch_single_issue(issue, cfg)
@@ -1080,14 +1087,50 @@ def main(issue=None):
             print(f"Issue #{issue} not found.")
             return
         issues = [fetched]
-    else:
+        for iss in issues:
+            print(f"Triaging #{iss['number']}: {iss['title']}")
+            issue_results, _ = triage_issue(iss, cfg)
+            results.extend(issue_results)
+        total_issues = len(issues)
+    elif not drain:
         issues = list_untriaged_issues(cfg)
         if not issues:
             print("No untriaged issues found.")
             return
-    for iss in issues:
-        print(f"Triaging #{iss['number']}: {iss['title']}")
-        results.extend(triage_issue(iss, cfg))
+        for iss in issues:
+            print(f"Triaging #{iss['number']}: {iss['title']}")
+            issue_results, _ = triage_issue(iss, cfg)
+            results.extend(issue_results)
+        total_issues = len(issues)
+    else:
+        for round_num in range(1, max_rounds + 1):
+            issues = list_untriaged_issues(cfg)
+            if not issues:
+                if round_num == 1:
+                    print("No untriaged issues found.")
+                else:
+                    print(
+                        f"No untriaged issues remaining. Done in {round_num - 1} "
+                        f"{'pass' if round_num - 1 == 1 else 'passes'}."
+                    )
+                break
+            pass_decomposed = 0
+            for iss in issues:
+                print(f"Triaging #{iss['number']}: {iss['title']}")
+                issue_results, decomposed = triage_issue(iss, cfg)
+                results.extend(issue_results)
+                if decomposed:
+                    pass_decomposed += 1
+            total_issues += len(issues)
+            issue_word = "issue" if len(issues) == 1 else "issues"
+            print(
+                f"Pass {round_num}: triaged {len(issues)} {issue_word} "
+                f"({pass_decomposed} decomposed)"
+            )
+        else:
+            print(
+                f"Warning: reached max rounds ({max_rounds}). Some issues may still be untriaged."
+            )
 
     if results:
         elapsed = time.time() - start_time
@@ -1104,7 +1147,7 @@ def main(issue=None):
         log_run(
             0,
             True,
-            len(issues),
+            total_issues,
             elapsed,
             total_cost,
             total_input,
