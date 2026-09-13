@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.4.2
+
+- `--issue N` flag for triage: target a specific issue instead of the full queue
+- `--drain` flag for triage: loop until all decomposed sub-issues are triaged, with `--max-rounds` safety guard
+- Fix: semantic review prompt no longer hallucinates findings not present in the diff
+- Fix: review-pr uses `gh pr diff` instead of `git diff main` for accurate PR diffs
+- Fix: implement restores working tree on review failure (dirty tree no longer blocks subsequent runs)
+
 ## v0.4.1
 
 - `autoloop_review_pr` MCP tool: review PRs remotely via MCP
