@@ -41,7 +41,8 @@ def main():
     plan_parser.add_argument("--dry-run", action="store_true", help="Print without creating")
 
     # triage
-    subparsers.add_parser("triage", help="Triage untriaged issues")
+    triage_parser = subparsers.add_parser("triage", help="Triage untriaged issues")
+    triage_parser.add_argument("--issue", type=int, metavar="NUMBER", help="Specific issue number")
 
     # implement
     impl_parser = subparsers.add_parser("implement", help="Implement top ready issue")
@@ -107,7 +108,7 @@ def main():
     elif args.command == "triage":
         from autoloop.triage_issues import main as triage_main
 
-        triage_main()
+        triage_main(issue=args.issue)
 
     elif args.command == "implement":
         from autoloop.implement_issue import main as implement_main
