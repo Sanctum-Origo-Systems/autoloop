@@ -263,17 +263,15 @@ def review_pr(pr_number, cfg):
         gate_passed, gate_errors = impl.verify_implementation(branch, issue_body=body)
 
         diff = subprocess.run(
-            ["git", "diff", f"main..{branch}"],
+            ["gh", "pr", "diff", str(pr_number), "--repo", cfg.repo],
             capture_output=True,
             text=True,
-            cwd=REPO_DIR,
         ).stdout
 
         name_only = subprocess.run(
-            ["git", "diff", "--name-only", f"main..{branch}"],
+            ["gh", "pr", "diff", str(pr_number), "--repo", cfg.repo, "--name-only"],
             capture_output=True,
             text=True,
-            cwd=REPO_DIR,
         ).stdout
         changed_files = [f for f in name_only.strip().split("\n") if f]
 
