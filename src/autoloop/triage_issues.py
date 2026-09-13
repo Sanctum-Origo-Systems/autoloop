@@ -981,7 +981,12 @@ def get_decomposition_depth(issue: dict, cfg: AutoLoopConfig) -> int:
 # --- Orchestration ---
 
 
-def triage_issue(issue: dict, cfg: AutoLoopConfig, auto_fix: bool = True) -> list[ClaudeResult]:
+def triage_issue(
+    issue: dict,
+    cfg: AutoLoopConfig,
+    auto_fix: bool = True,
+    _pass_stats: dict | None = None,
+) -> list[ClaudeResult]:
     """Evaluate a single issue and apply the appropriate label."""
     results: list[ClaudeResult] = []
     verdict, eval_result = evaluate_issue(issue, cfg)
@@ -1063,31 +1068,66 @@ def triage_issue(issue: dict, cfg: AutoLoopConfig, auto_fix: bool = True) -> lis
             approve_issue(issue["number"], verdict["priority"], verdict["reason"], cfg)
         else:
             decompose_issue(issue["number"], verdict, cfg, issue.get("body") or "")
+            if _pass_stats is not None:
+                _pass_stats["decomposed"] += 1
 
     return results
 
 
-def main(issue=None):
+def main(issue=None, drain=False, max_rounds=None):
     from autoloop.config import load_config
 
     cfg = load_config()
     start_time = time.time()
     results: list[ClaudeResult] = []
+    num_triaged = 0
 
     if issue is not None:
         fetched = fetch_single_issue(issue, cfg)
         if not fetched:
             print(f"Issue #{issue} not found.")
             return
-        issues = [fetched]
+        print(f"Triaging #{fetched['number']}: {fetched['title']}")
+        results.extend(triage_issue(fetched, cfg))
+        num_triaged = 1
+
+    elif drain:
+        if max_rounds is None:
+            max_rounds = 5
+        completed_passes = 0
+        for round_num in range(1, max_rounds + 1):
+            untriaged = list_untriaged_issues(cfg)
+            if not untriaged:
+                if completed_passes == 0:
+                    print("No untriaged issues found.")
+                else:
+                    print(f"No untriaged issues remaining. Done in {completed_passes} passes.")
+                break
+            pass_stats = {"decomposed": 0}
+            for iss in untriaged:
+                print(f"Triaging #{iss['number']}: {iss['title']}")
+                results.extend(triage_issue(iss, cfg, _pass_stats=pass_stats))
+            completed_passes += 1
+            num_triaged += len(untriaged)
+            n = len(untriaged)
+            d = pass_stats["decomposed"]
+            print(
+                f"Pass {round_num}: triaged {n} {'issue' if n == 1 else 'issues'} ({d} decomposed)"
+            )
+        else:
+            print(
+                f"Warning: reached max rounds ({max_rounds}). Some issues may still be untriaged."
+            )
+
     else:
         issues = list_untriaged_issues(cfg)
         if not issues:
             print("No untriaged issues found.")
             return
-    for iss in issues:
-        print(f"Triaging #{iss['number']}: {iss['title']}")
-        results.extend(triage_issue(iss, cfg))
+        for iss in issues:
+            print(f"Triaging #{iss['number']}: {iss['title']}")
+            results.extend(triage_issue(iss, cfg))
+        num_triaged = len(issues)
 
     if results:
         elapsed = time.time() - start_time
@@ -1104,7 +1144,7 @@ def main(issue=None):
         log_run(
             0,
             True,
-            len(issues),
+            num_triaged,
             elapsed,
             total_cost,
             total_input,

@@ -43,6 +43,18 @@ def main():
     # triage
     triage_parser = subparsers.add_parser("triage", help="Triage untriaged issues")
     triage_parser.add_argument("--issue", type=int, metavar="NUMBER", help="Specific issue number")
+    triage_parser.add_argument(
+        "--drain",
+        action="store_true",
+        help="Loop until no untriaged issues remain",
+    )
+    triage_parser.add_argument(
+        "--max-rounds",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Max drain rounds (default: 5)",
+    )
 
     # implement
     impl_parser = subparsers.add_parser("implement", help="Implement top ready issue")
@@ -108,7 +120,7 @@ def main():
     elif args.command == "triage":
         from autoloop.triage_issues import main as triage_main
 
-        triage_main(issue=args.issue)
+        triage_main(issue=args.issue, drain=args.drain, max_rounds=args.max_rounds)
 
     elif args.command == "implement":
         from autoloop.implement_issue import main as implement_main
