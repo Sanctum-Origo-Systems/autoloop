@@ -812,21 +812,45 @@ def parse_review_response(text: str) -> tuple[bool, str]:
     return False, feedback
 
 
-def review_implementation(issue: dict, branch: str) -> tuple[bool, str]:
-    """Review the implementation for semantic quality via Claude."""
-    diff = subprocess.run(
-        ["git", "diff", f"main..{branch}"],
-        capture_output=True,
-        text=True,
-        cwd=REPO_DIR,
-    ).stdout
+def review_implementation(
+    issue: dict, branch: str, pr_number: int | None = None
+) -> tuple[bool, str]:
+    """Review the implementation for semantic quality via Claude.
 
-    name_only = subprocess.run(
-        ["git", "diff", "--name-only", f"main..{branch}"],
-        capture_output=True,
-        text=True,
-        cwd=REPO_DIR,
-    ).stdout
+    When pr_number is provided, uses `gh pr diff` for the canonical GitHub diff.
+    Falls back to `git diff` for pre-PR reviews during implementation.
+    """
+    if pr_number is not None:
+        diff = subprocess.run(
+            ["gh", "pr", "diff", str(pr_number), "--repo", cfg.repo],
+            capture_output=True,
+            text=True,
+        ).stdout
+
+        name_only = subprocess.run(
+            ["gh", "pr", "diff", str(pr_number), "--repo", cfg.repo, "--name-only"],
+            capture_output=True,
+            text=True,
+        ).stdout
+    else:
+        subprocess.run(
+            ["git", "fetch", "origin", "main"],
+            capture_output=True,
+            cwd=REPO_DIR,
+        )
+        diff = subprocess.run(
+            ["git", "diff", f"main..{branch}"],
+            capture_output=True,
+            text=True,
+            cwd=REPO_DIR,
+        ).stdout
+
+        name_only = subprocess.run(
+            ["git", "diff", "--name-only", f"main..{branch}"],
+            capture_output=True,
+            text=True,
+            cwd=REPO_DIR,
+        ).stdout
     changed_files = [f for f in name_only.strip().split("\n") if f]
 
     prompt = REVIEW_PROMPT.format(

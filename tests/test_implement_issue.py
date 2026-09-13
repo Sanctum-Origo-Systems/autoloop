@@ -1483,6 +1483,113 @@ def test_review_implementation_includes_file_manifest(monkeypatch):
     assert "ONLY report issues" in prompt_str
 
 
+def test_review_implementation_uses_gh_pr_diff_when_pr_number_given(monkeypatch):
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(impl_model="haiku", repo="acme-corp/w"))
+    captured_calls = []
+
+    def fake_run(cmd, **kwargs):
+        captured_calls.append(cmd)
+        if isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "diff"] and "--name-only" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "src/foo.py\n", "stderr": ""})()
+        if isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "diff"]:
+            return type("R", (), {"returncode": 0, "stdout": "gh diff content", "stderr": ""})()
+        if isinstance(cmd, list) and cmd[0] == "git":
+            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        return type(
+            "R",
+            (),
+            {
+                "returncode": 0,
+                "stdout": json.dumps(
+                    {"result": '{"approved": true, "issues": [], "summary": "ok"}'}
+                ),
+                "stderr": "",
+            },
+        )()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    review_implementation({"number": 1, "title": "T", "body": ""}, "branch", pr_number=99)
+
+    gh_diff_calls = [
+        c for c in captured_calls if isinstance(c, list) and c[:3] == ["gh", "pr", "diff"]
+    ]
+    assert len(gh_diff_calls) == 2
+    assert "--repo" in gh_diff_calls[0]
+    assert gh_diff_calls[0][gh_diff_calls[0].index("--repo") + 1] == "acme-corp/w"
+
+    git_diff_calls = [
+        c
+        for c in captured_calls
+        if isinstance(c, list) and c[:2] == ["git", "diff"] and "main.." in str(c)
+    ]
+    assert len(git_diff_calls) == 0
+
+
+def test_review_implementation_falls_back_to_git_diff_without_pr_number(monkeypatch):
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(impl_model="haiku"))
+    captured_calls = []
+
+    def fake_run(cmd, **kwargs):
+        captured_calls.append(cmd)
+        if isinstance(cmd, list) and cmd[0] == "git":
+            return type("R", (), {"returncode": 0, "stdout": "diff content", "stderr": ""})()
+        return type(
+            "R",
+            (),
+            {
+                "returncode": 0,
+                "stdout": json.dumps(
+                    {"result": '{"approved": true, "issues": [], "summary": "ok"}'}
+                ),
+                "stderr": "",
+            },
+        )()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    review_implementation({"number": 1, "title": "T", "body": ""}, "branch")
+
+    git_diff_calls = [
+        c
+        for c in captured_calls
+        if isinstance(c, list) and c[:2] == ["git", "diff"] and "main..branch" in str(c)
+    ]
+    assert len(git_diff_calls) >= 1
+
+    gh_diff_calls = [
+        c for c in captured_calls if isinstance(c, list) and c[:3] == ["gh", "pr", "diff"]
+    ]
+    assert len(gh_diff_calls) == 0
+
+
+def test_review_implementation_fetches_origin_main_on_fallback(monkeypatch):
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(impl_model="haiku"))
+    captured_calls = []
+
+    def fake_run(cmd, **kwargs):
+        captured_calls.append(cmd)
+        if isinstance(cmd, list) and cmd[0] == "git":
+            return type("R", (), {"returncode": 0, "stdout": "diff content", "stderr": ""})()
+        return type(
+            "R",
+            (),
+            {
+                "returncode": 0,
+                "stdout": json.dumps(
+                    {"result": '{"approved": true, "issues": [], "summary": "ok"}'}
+                ),
+                "stderr": "",
+            },
+        )()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    review_implementation({"number": 1, "title": "T", "body": ""}, "branch")
+
+    fetch_calls = [
+        c for c in captured_calls if isinstance(c, list) and c == ["git", "fetch", "origin", "main"]
+    ]
+    assert len(fetch_calls) == 1
+
+
 # --- parse_review_response tests ---
 
 

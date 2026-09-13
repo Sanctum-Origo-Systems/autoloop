@@ -55,7 +55,7 @@ def _make_dispatcher(pr_data, overrides=None):
         ("gh", "pr", "view"): _ok(stdout=pr_data),
         ("git", "rev-list"): _ok(stdout="3\n"),
         ("git", "diff", "--name-only"): _ok(stdout="tests/test_x.py"),
-        ("git", "diff"): _ok(stdout="diff content"),
+        ("gh", "pr", "diff"): _ok(stdout="diff content"),
         ("gh", "pr", "comment"): _ok(),
         ("gh", "pr", "edit"): _ok(),
     }
@@ -66,6 +66,17 @@ def _make_dispatcher(pr_data, overrides=None):
         cmd = args[0] if args else kwargs.get("args", [])
         if isinstance(cmd, str):
             return table.get(("shell",), _ok())
+        # match --name-only variant of gh pr diff before the generic gh pr diff
+        if (
+            isinstance(cmd, list)
+            and len(cmd) >= 4
+            and tuple(cmd[:3]) == ("gh", "pr", "diff")
+            and "--name-only" in cmd
+        ):
+            key = ("gh", "pr", "diff", "--name-only")
+            if key in table:
+                return table[key]
+            return _ok(stdout="tests/test_x.py")
         for prefix in sorted(table, key=len, reverse=True):
             if tuple(cmd[: len(prefix)]) == prefix:
                 return table[prefix]
@@ -309,7 +320,7 @@ class TestReviewPrHandler:
         dispatch = _make_dispatcher(
             pr_data,
             {
-                ("git", "diff", "--name-only"): _ok(
+                ("gh", "pr", "diff", "--name-only"): _ok(
                     stdout="src/autoloop/cli.py\ntests/test_cli.py\n"
                 ),
             },
@@ -559,3 +570,122 @@ class TestReviewPrCostTracking:
         assert entry["pr_number"] == 42
         assert entry["success"] is False
         assert entry["cost_usd"] == 0
+
+
+class TestReviewPrUsesGhPrDiff:
+    """Verify review_pr uses gh pr diff instead of git diff for the canonical PR diff."""
+
+    def test_uses_gh_pr_diff_for_diff(self):
+        cfg = _cfg()
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
+        review_json = json.dumps({"approved": True, "summary": "ok"})
+
+        all_calls = []
+
+        def tracking_dispatch(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args", [])
+            all_calls.append(cmd)
+            return _make_dispatcher(pr_data)(*args, **kwargs)
+
+        with (
+            patch("subprocess.run", side_effect=tracking_dispatch),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(text=review_json),
+            ),
+        ):
+            review_pr(42, cfg)
+
+        gh_diff_calls = [
+            c for c in all_calls if isinstance(c, list) and c[:3] == ["gh", "pr", "diff"]
+        ]
+        assert len(gh_diff_calls) >= 1
+
+        git_diff_calls = [
+            c
+            for c in all_calls
+            if isinstance(c, list) and c[:2] == ["git", "diff"] and "main.." in str(c)
+        ]
+        assert len(git_diff_calls) == 0
+
+    def test_uses_gh_pr_diff_name_only_for_changed_files(self):
+        cfg = _cfg()
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
+        review_json = json.dumps({"approved": True, "summary": "ok"})
+
+        all_calls = []
+
+        def tracking_dispatch(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args", [])
+            all_calls.append(cmd)
+            return _make_dispatcher(pr_data)(*args, **kwargs)
+
+        with (
+            patch("subprocess.run", side_effect=tracking_dispatch),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(text=review_json),
+            ),
+        ):
+            review_pr(42, cfg)
+
+        name_only_calls = [
+            c
+            for c in all_calls
+            if isinstance(c, list) and c[:3] == ["gh", "pr", "diff"] and "--name-only" in c
+        ]
+        assert len(name_only_calls) == 1
+
+    def test_gh_pr_diff_includes_repo_flag(self):
+        cfg = _cfg(repo="test-org/test-repo")
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
+        review_json = json.dumps({"approved": True, "summary": "ok"})
+
+        all_calls = []
+
+        def tracking_dispatch(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args", [])
+            all_calls.append(cmd)
+            return _make_dispatcher(pr_data)(*args, **kwargs)
+
+        with (
+            patch("subprocess.run", side_effect=tracking_dispatch),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(text=review_json),
+            ),
+        ):
+            review_pr(42, cfg)
+
+        gh_diff_calls = [
+            c for c in all_calls if isinstance(c, list) and c[:3] == ["gh", "pr", "diff"]
+        ]
+        for call_cmd in gh_diff_calls:
+            assert "--repo" in call_cmd
+            assert call_cmd[call_cmd.index("--repo") + 1] == "test-org/test-repo"
+
+    def test_gh_pr_diff_output_passed_to_review_prompt(self):
+        cfg = _cfg()
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
+        review_json = json.dumps({"approved": True, "summary": "ok"})
+        dispatch = _make_dispatcher(
+            pr_data,
+            {
+                ("gh", "pr", "diff"): _ok(stdout="diff --git a/src/foo.py b/src/foo.py\n+new line"),
+                ("gh", "pr", "diff", "--name-only"): _ok(stdout="src/foo.py\n"),
+            },
+        )
+
+        with (
+            patch("subprocess.run", side_effect=dispatch),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(text=review_json),
+            ) as mock_claude,
+        ):
+            review_pr(42, cfg)
+
+        prompt = mock_claude.call_args[0][0]
+        assert "+new line" in prompt
+        assert "- src/foo.py" in prompt
+        assert "1 files" in prompt
