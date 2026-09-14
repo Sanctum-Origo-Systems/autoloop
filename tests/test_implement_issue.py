@@ -27,6 +27,7 @@ from autoloop.implement_issue import (
     detect_active_claude_session,
     detect_issue_type,
     ensure_clean_main,
+    extract_linked_issue_number,
     get_issue_by_number,
     has_design_comment,
     has_needs_design_label,
@@ -165,6 +166,37 @@ def test_detect_issue_type_chore():
 
 def test_detect_issue_type_default_feat():
     assert detect_issue_type("no type section here") == "feat"
+
+
+# --- Pure function tests: extract_linked_issue_number ---
+
+
+def test_extract_linked_issue_number_closes():
+    assert extract_linked_issue_number("Fix bug", "Closes #42\n\nSummary") == 42
+
+
+def test_extract_linked_issue_number_fixes():
+    assert extract_linked_issue_number("Fix bug", "Fixes #99") == 99
+
+
+def test_extract_linked_issue_number_resolves():
+    assert extract_linked_issue_number("Fix bug", "Resolves #7") == 7
+
+
+def test_extract_linked_issue_number_title_parens():
+    assert extract_linked_issue_number("fix: update docs (#124)", "") == 124
+
+
+def test_extract_linked_issue_number_body_takes_precedence():
+    assert extract_linked_issue_number("fix: thing (#99)", "Closes #42") == 42
+
+
+def test_extract_linked_issue_number_none():
+    assert extract_linked_issue_number("Fix bug", "No linked issue here") is None
+
+
+def test_extract_linked_issue_number_case_insensitive():
+    assert extract_linked_issue_number("", "CLOSES #55") == 55
 
 
 # --- Pure function tests: collect_verification_errors ---

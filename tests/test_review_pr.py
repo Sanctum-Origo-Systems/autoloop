@@ -698,3 +698,146 @@ class TestReviewPrUsesGhPrDiff:
         assert "+new line" in prompt
         assert "- src/foo.py" in prompt
         assert "1 files" in prompt
+
+
+class TestReviewPrIssueTypeDetection:
+    """Verify review_pr fetches the linked issue body for type detection."""
+
+    def test_docs_pr_passes_gate_without_test_files(self):
+        """A docs-type PR should pass the mutation gate even without test files."""
+        cfg = _cfg()
+        pr_body = "Closes #124\n\n## Summary\nUpdate README"
+        pr_data = json.dumps(
+            {
+                "headRefName": "autoloop/124-update-readme",
+                "title": "docs: update README (#124)",
+                "body": pr_body,
+            }
+        )
+        issue_body = "## Summary\nUpdate README\n\n## Type\ndocs"
+        issue_data = json.dumps({"body": issue_body})
+        review_json = json.dumps({"approved": True, "summary": "looks good"})
+
+        dispatch = _make_dispatcher(
+            pr_data,
+            {
+                ("gh", "issue", "view"): _ok(stdout=issue_data),
+                ("git", "diff", "--name-only"): _ok(stdout="README.md"),
+            },
+        )
+
+        with (
+            patch("subprocess.run", side_effect=dispatch),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(text=review_json),
+            ),
+        ):
+            result = review_pr(42, cfg)
+
+        assert result["success"] is True
+
+    def test_feature_pr_still_requires_test_files(self):
+        """A feature-type PR must still include test files to pass the gate."""
+        cfg = _cfg()
+        pr_body = "Closes #200\n\n## Summary\nAdd widget"
+        pr_data = json.dumps(
+            {
+                "headRefName": "autoloop/200-add-widget",
+                "title": "feat: add widget (#200)",
+                "body": pr_body,
+            }
+        )
+        issue_body = "## Summary\nAdd widget\n\n## Type\nfeature"
+        issue_data = json.dumps({"body": issue_body})
+        review_json = json.dumps({"approved": True, "summary": "ok"})
+
+        dispatch = _make_dispatcher(
+            pr_data,
+            {
+                ("gh", "issue", "view"): _ok(stdout=issue_data),
+                ("git", "diff", "--name-only"): _ok(stdout="src/autoloop/widget.py"),
+            },
+        )
+
+        all_calls = []
+        original_dispatch = dispatch
+
+        def tracking_dispatch(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args", [])
+            all_calls.append(cmd)
+            return original_dispatch(*args, **kwargs)
+
+        with (
+            patch("subprocess.run", side_effect=tracking_dispatch),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(text=review_json),
+            ),
+        ):
+            result = review_pr(42, cfg)
+
+        assert result["success"] is False
+        comment_calls = [
+            c for c in all_calls if isinstance(c, list) and c[:3] == ["gh", "pr", "comment"]
+        ]
+        assert len(comment_calls) >= 1
+        body_idx = comment_calls[0].index("--body") + 1
+        assert "No test files" in comment_calls[0][body_idx]
+
+    def test_fetches_linked_issue_body(self):
+        """review_pr should call gh issue view for the linked issue."""
+        cfg = _cfg()
+        pr_body = "Closes #77\n\n## Summary\nFix thing"
+        pr_data = json.dumps(
+            {"headRefName": "fix/77", "title": "fix: thing (#77)", "body": pr_body}
+        )
+        issue_body = "## Summary\nFix thing\n\n## Type\nbug"
+        issue_data = json.dumps({"body": issue_body})
+        review_json = json.dumps({"approved": True, "summary": "ok"})
+
+        all_calls = []
+
+        def tracking_dispatch(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args", [])
+            all_calls.append(cmd)
+            return _make_dispatcher(
+                pr_data,
+                {("gh", "issue", "view"): _ok(stdout=issue_data)},
+            )(*args, **kwargs)
+
+        with (
+            patch("subprocess.run", side_effect=tracking_dispatch),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(text=review_json),
+            ),
+        ):
+            review_pr(42, cfg)
+
+        issue_view_calls = [
+            c
+            for c in all_calls
+            if isinstance(c, list) and c[:3] == ["gh", "issue", "view"] and "77" in c
+        ]
+        assert len(issue_view_calls) == 1
+
+    def test_no_linked_issue_falls_back_to_pr_body(self):
+        """When no linked issue is found, uses PR body for type detection (feat default)."""
+        cfg = _cfg()
+        pr_data = json.dumps(
+            {"headRefName": "fix/42", "title": "Fix bug", "body": "Just a PR with no issue link"}
+        )
+        review_json = json.dumps({"approved": True, "summary": "ok"})
+        dispatch = _make_dispatcher(pr_data)
+
+        with (
+            patch("subprocess.run", side_effect=dispatch),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(text=review_json),
+            ),
+        ):
+            result = review_pr(42, cfg)
+
+        assert result["success"] is True

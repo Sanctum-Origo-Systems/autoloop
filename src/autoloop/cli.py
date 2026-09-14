@@ -296,7 +296,28 @@ def review_pr(pr_number, cfg):
         branch = pr_data["headRefName"]
         body = pr_data.get("body", "") or ""
 
-        gate_passed, gate_errors = impl.verify_implementation(branch, issue_body=body)
+        issue_body = body
+        linked_issue = impl.extract_linked_issue_number(pr_data.get("title", ""), body)
+        if linked_issue:
+            issue_view = subprocess.run(
+                [
+                    "gh",
+                    "issue",
+                    "view",
+                    str(linked_issue),
+                    "--repo",
+                    cfg.repo,
+                    "--json",
+                    "body",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            if issue_view.returncode == 0:
+                issue_data = json.loads(issue_view.stdout)
+                issue_body = issue_data.get("body", "") or ""
+
+        gate_passed, gate_errors = impl.verify_implementation(branch, issue_body=issue_body)
 
         diff = subprocess.run(
             ["gh", "pr", "diff", str(pr_number), "--repo", cfg.repo],
