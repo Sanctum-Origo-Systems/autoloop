@@ -15,14 +15,13 @@ import re
 import subprocess
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 
 from autoloop.claude_runner import ClaudeResult, run_claude
-from autoloop.config import AutoLoopConfig, REPO_DIR, load_config
+from autoloop.config import AutoLoopConfig, load_config
 
 cfg = None
 
-LOCKFILE = REPO_DIR / ".autoloop.lock"
-LOG_FILE = REPO_DIR / "autoloop" / "run_history.jsonl"
 
 EMPTY_BRANCH_DIAGNOSTIC = """\
 No changes were produced by the implementation agent.
@@ -150,20 +149,22 @@ def collect_verification_errors(
 
 def acquire_lock() -> bool:
     """Acquire lockfile. Returns False if another run is active."""
-    if LOCKFILE.exists():
+    lockfile = Path.cwd() / ".autoloop.lock"
+    if lockfile.exists():
         try:
-            pid = int(LOCKFILE.read_text().strip())
+            pid = int(lockfile.read_text().strip())
             os.kill(pid, 0)
             return False
         except (ProcessLookupError, ValueError):
             pass
-    LOCKFILE.write_text(str(os.getpid()))
+    lockfile.write_text(str(os.getpid()))
     return True
 
 
 def release_lock():
     """Remove the lockfile."""
-    LOCKFILE.unlink(missing_ok=True)
+    lockfile = Path.cwd() / ".autoloop.lock"
+    lockfile.unlink(missing_ok=True)
 
 
 def log_run(
@@ -193,8 +194,9 @@ def log_run(
     }
     if pr_number is not None:
         entry["pr_number"] = pr_number
-    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(LOG_FILE, "a") as f:
+    log_file = Path.cwd() / "autoloop" / "run_history.jsonl"
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_file, "a") as f:
         f.write(json.dumps(entry) + "\n")
 
 
@@ -208,7 +210,7 @@ def detect_active_claude_session(project_dir: str | None = None) -> bool | None:
     detection is inconclusive (tools unavailable).
     """
     if project_dir is None:
-        project_dir = str(REPO_DIR)
+        project_dir = str(Path.cwd())
 
     project_dir = os.path.realpath(project_dir)
     logging.debug("detect_active_claude_session: resolved project_dir=%s", project_dir)
@@ -408,15 +410,15 @@ def dependencies_met(issue: dict) -> bool:
 def create_branch(issue: dict) -> str:
     """Create feature branch from latest main."""
     branch = build_branch_name(issue)
-    subprocess.run(["git", "checkout", "main"], cwd=REPO_DIR, check=True)
-    subprocess.run(["git", "pull", "origin", "main"], cwd=REPO_DIR, check=True)
-    subprocess.run(["git", "checkout", "-b", branch], cwd=REPO_DIR, check=True)
+    subprocess.run(["git", "checkout", "main"], cwd=Path.cwd(), check=True)
+    subprocess.run(["git", "pull", "origin", "main"], cwd=Path.cwd(), check=True)
+    subprocess.run(["git", "checkout", "-b", branch], cwd=Path.cwd(), check=True)
     return branch
 
 
 def build_implementation_prompt(issue: dict) -> str:
     """Build the full prompt for the implementation agent."""
-    claude_md = (REPO_DIR / "CLAUDE.md").read_text()
+    claude_md = (Path.cwd() / "CLAUDE.md").read_text()
 
     comments = subprocess.run(
         [
@@ -524,7 +526,7 @@ DESIGN_COMMENT_MARKER = "Implementation Design:"
 
 def design_issue(issue: dict) -> str:
     """Generate an implementation design proposal for the issue via Claude."""
-    claude_md = (REPO_DIR / "CLAUDE.md").read_text()
+    claude_md = (Path.cwd() / "CLAUDE.md").read_text()
     prompt = DESIGN_PROMPT.format(
         number=issue["number"],
         title=issue["title"],
@@ -649,7 +651,7 @@ def is_branch_empty(branch: str) -> bool:
         ["git", "rev-list", "--count", f"main..{branch}"],
         capture_output=True,
         text=True,
-        cwd=REPO_DIR,
+        cwd=Path.cwd(),
     )
     count = result.stdout.strip() if result.returncode == 0 else ""
     return count == "0" or count == ""
@@ -671,7 +673,7 @@ def mutation_gate(branch: str, issue_type: str) -> None:
         ["git", "diff", "--name-only", f"main..{branch}"],
         capture_output=True,
         text=True,
-        cwd=REPO_DIR,
+        cwd=Path.cwd(),
     )
     changed_files = [f for f in diff_result.stdout.strip().split("\n") if f]
 
@@ -682,7 +684,7 @@ def mutation_gate(branch: str, issue_type: str) -> None:
     try:
         subprocess.run(
             ["git", "checkout", "main", "--"] + source_files,
-            cwd=REPO_DIR,
+            cwd=Path.cwd(),
             check=True,
         )
         result = subprocess.run(
@@ -690,7 +692,7 @@ def mutation_gate(branch: str, issue_type: str) -> None:
             shell=True,
             capture_output=True,
             text=True,
-            cwd=REPO_DIR,
+            cwd=Path.cwd(),
             timeout=cfg.test_timeout,
         )
         if result.returncode == 0:
@@ -698,7 +700,7 @@ def mutation_gate(branch: str, issue_type: str) -> None:
     finally:
         subprocess.run(
             ["git", "checkout", branch, "--"] + source_files,
-            cwd=REPO_DIR,
+            cwd=Path.cwd(),
         )
 
 
@@ -708,14 +710,14 @@ def verify_implementation(branch: str, issue_body: str = "") -> tuple[bool, str]
         ["git", "rev-list", "--count", f"main..{branch}"],
         capture_output=True,
         text=True,
-        cwd=REPO_DIR,
+        cwd=Path.cwd(),
     )
     tests = subprocess.run(
         cfg.verify_cmd,
         shell=True,
         capture_output=True,
         text=True,
-        cwd=REPO_DIR,
+        cwd=Path.cwd(),
         timeout=cfg.test_timeout,
     )
     if cfg.lint_command:
@@ -724,7 +726,7 @@ def verify_implementation(branch: str, issue_body: str = "") -> tuple[bool, str]
             shell=True,
             capture_output=True,
             text=True,
-            cwd=REPO_DIR,
+            cwd=Path.cwd(),
         )
         lint_rc = lint.returncode
     else:
@@ -733,7 +735,7 @@ def verify_implementation(branch: str, issue_body: str = "") -> tuple[bool, str]
         ["git", "diff", "--name-only", "main"],
         capture_output=True,
         text=True,
-        cwd=REPO_DIR,
+        cwd=Path.cwd(),
     )
     changed = [f for f in diff.stdout.strip().split("\n") if f]
 
@@ -836,20 +838,20 @@ def review_implementation(
         subprocess.run(
             ["git", "fetch", "origin", "main"],
             capture_output=True,
-            cwd=REPO_DIR,
+            cwd=Path.cwd(),
         )
         diff = subprocess.run(
             ["git", "diff", f"main..{branch}"],
             capture_output=True,
             text=True,
-            cwd=REPO_DIR,
+            cwd=Path.cwd(),
         ).stdout
 
         name_only = subprocess.run(
             ["git", "diff", "--name-only", f"main..{branch}"],
             capture_output=True,
             text=True,
-            cwd=REPO_DIR,
+            cwd=Path.cwd(),
         ).stdout
     changed_files = [f for f in name_only.strip().split("\n") if f]
 
@@ -869,18 +871,18 @@ def review_implementation(
 
 def ensure_clean_main():
     """Reset to a clean main branch, discarding any leftover state."""
-    subprocess.run(["git", "checkout", "--", "."], cwd=REPO_DIR)
-    subprocess.run(["git", "checkout", "main"], cwd=REPO_DIR)
-    subprocess.run(["git", "pull", "--ff-only", "origin", "main"], cwd=REPO_DIR)
+    subprocess.run(["git", "checkout", "--", "."], cwd=Path.cwd())
+    subprocess.run(["git", "checkout", "main"], cwd=Path.cwd())
+    subprocess.run(["git", "pull", "--ff-only", "origin", "main"], cwd=Path.cwd())
 
 
 def cleanup_branch(branch: str):
     """Delete failed branch locally and remotely."""
-    subprocess.run(["git", "checkout", "main"], cwd=REPO_DIR)
-    subprocess.run(["git", "branch", "-D", branch], cwd=REPO_DIR)
+    subprocess.run(["git", "checkout", "main"], cwd=Path.cwd())
+    subprocess.run(["git", "branch", "-D", branch], cwd=Path.cwd())
     subprocess.run(
         ["git", "push", "origin", "--delete", branch],
-        cwd=REPO_DIR,
+        cwd=Path.cwd(),
         capture_output=True,
     )
 
@@ -925,7 +927,7 @@ def create_pr(
         ],
         capture_output=True,
         text=True,
-        cwd=REPO_DIR,
+        cwd=Path.cwd(),
     )
     if result.returncode == 0 and result.stdout.strip():
         match = re.search(r"/pull/(\d+)", result.stdout.strip())
@@ -1056,7 +1058,7 @@ def run_auto_fix_loop(pr_number: int, issue: dict, cfg: AutoLoopConfig) -> None:
             ["autoloop", "review-pr", str(pr_number)],
             capture_output=True,
             text=True,
-            cwd=REPO_DIR,
+            cwd=Path.cwd(),
         )
         last_review_output = review.stdout
         print(
@@ -1072,7 +1074,7 @@ def run_auto_fix_loop(pr_number: int, issue: dict, cfg: AutoLoopConfig) -> None:
                 ["autoloop", "fix-pr", str(pr_number)],
                 capture_output=True,
                 text=True,
-                cwd=REPO_DIR,
+                cwd=Path.cwd(),
             )
 
     subprocess.run(
@@ -1268,7 +1270,7 @@ def implement_single_issue(
             )
             return False
 
-        subprocess.run(["git", "push", "-u", "origin", branch], cwd=REPO_DIR)
+        subprocess.run(["git", "push", "-u", "origin", branch], cwd=Path.cwd())
         pr_number = create_pr(
             issue,
             branch,
@@ -1284,7 +1286,7 @@ def implement_single_issue(
         if auto_fix and pr_number is not None:
             run_auto_fix_loop(pr_number, issue, cfg)
 
-        subprocess.run(["git", "checkout", "main"], cwd=REPO_DIR)
+        subprocess.run(["git", "checkout", "main"], cwd=Path.cwd())
 
         print(f"\n--- AutoLoop Run Stats (#{issue['number']}) ---")
         print(f"  Duration: {elapsed:.0f}s")
