@@ -440,3 +440,171 @@ def test_status_invalid_repo_dir_raises(mcp_tools, tmp_path):
 
     with pytest.raises(FileNotFoundError):
         mcp_tools["autoloop_status"](repo_dir=str(bad_dir))
+
+
+# --- autoloop_triage flag parameters ---
+
+
+def test_triage_drain_mode(mcp_tools):
+    """autoloop_triage passes --drain and --max-rounds when drain=True."""
+    captured = []
+
+    def fake_popen(cmd, **kwargs):
+        captured.append({"cmd": cmd, "kwargs": kwargs})
+
+    with patch("autoloop.mcp_server.subprocess.Popen", fake_popen):
+        result = mcp_tools["autoloop_triage"](drain=True)
+
+    assert captured[0]["cmd"] == ["autoloop", "triage", "--drain", "--max-rounds", "5"]
+    assert "drain mode" in result
+    assert "max 5 rounds" in result
+
+
+def test_triage_drain_custom_max_rounds(mcp_tools):
+    """autoloop_triage passes custom --max-rounds value."""
+    captured = []
+
+    def fake_popen(cmd, **kwargs):
+        captured.append({"cmd": cmd, "kwargs": kwargs})
+
+    with patch("autoloop.mcp_server.subprocess.Popen", fake_popen):
+        result = mcp_tools["autoloop_triage"](drain=True, max_rounds=3)
+
+    assert captured[0]["cmd"] == ["autoloop", "triage", "--drain", "--max-rounds", "3"]
+    assert "max 3 rounds" in result
+
+
+def test_triage_single_issue(mcp_tools):
+    """autoloop_triage passes --issue for single-issue targeting."""
+    captured = []
+
+    def fake_popen(cmd, **kwargs):
+        captured.append({"cmd": cmd, "kwargs": kwargs})
+
+    with patch("autoloop.mcp_server.subprocess.Popen", fake_popen):
+        result = mcp_tools["autoloop_triage"](issue=42)
+
+    assert captured[0]["cmd"] == ["autoloop", "triage", "--issue", "42"]
+    assert "issue #42" in result
+
+
+def test_triage_no_flags_single_pass(mcp_tools):
+    """autoloop_triage with defaults produces base command and simple message."""
+    captured = []
+
+    def fake_popen(cmd, **kwargs):
+        captured.append({"cmd": cmd, "kwargs": kwargs})
+
+    with patch("autoloop.mcp_server.subprocess.Popen", fake_popen):
+        result = mcp_tools["autoloop_triage"]()
+
+    assert captured[0]["cmd"] == ["autoloop", "triage"]
+    assert result == "Started triage run."
+
+
+def test_triage_drain_with_issue(mcp_tools):
+    """autoloop_triage combines drain and issue flags."""
+    captured = []
+
+    def fake_popen(cmd, **kwargs):
+        captured.append({"cmd": cmd, "kwargs": kwargs})
+
+    with patch("autoloop.mcp_server.subprocess.Popen", fake_popen):
+        mcp_tools["autoloop_triage"](drain=True, issue=7)
+
+    cmd = captured[0]["cmd"]
+    assert "--drain" in cmd
+    assert "--max-rounds" in cmd
+    assert "--issue" in cmd
+    assert "7" in cmd
+
+
+def test_triage_max_rounds_ignored_without_drain(mcp_tools):
+    """max_rounds is not passed when drain is False."""
+    captured = []
+
+    def fake_popen(cmd, **kwargs):
+        captured.append({"cmd": cmd, "kwargs": kwargs})
+
+    with patch("autoloop.mcp_server.subprocess.Popen", fake_popen):
+        mcp_tools["autoloop_triage"](max_rounds=10)
+
+    assert captured[0]["cmd"] == ["autoloop", "triage"]
+
+
+# --- autoloop_implement auto-fix parameters ---
+
+
+def test_implement_auto_fix(mcp_tools):
+    """autoloop_implement passes --auto-fix and --max-pr-review-rounds."""
+    captured = []
+
+    def fake_popen(cmd, **kwargs):
+        captured.append({"cmd": cmd, "kwargs": kwargs})
+
+    with patch("autoloop.mcp_server.subprocess.Popen", fake_popen):
+        result = mcp_tools["autoloop_implement"](auto_fix=True)
+
+    cmd = captured[0]["cmd"]
+    assert "--auto-fix" in cmd
+    assert "--max-pr-review-rounds" in cmd
+    assert "3" in cmd
+    assert "auto-fix" in result
+    assert "max 3 review rounds" in result
+
+
+def test_implement_auto_fix_custom_rounds(mcp_tools):
+    """autoloop_implement passes custom --max-pr-review-rounds."""
+    captured = []
+
+    def fake_popen(cmd, **kwargs):
+        captured.append({"cmd": cmd, "kwargs": kwargs})
+
+    with patch("autoloop.mcp_server.subprocess.Popen", fake_popen):
+        result = mcp_tools["autoloop_implement"](auto_fix=True, max_pr_review_rounds=5)
+
+    cmd = captured[0]["cmd"]
+    assert cmd == [
+        "autoloop",
+        "implement",
+        "--max-issues",
+        "1",
+        "--auto-fix",
+        "--max-pr-review-rounds",
+        "5",
+    ]
+    assert "max 5 review rounds" in result
+
+
+def test_implement_auto_fix_with_issue(mcp_tools):
+    """autoloop_implement combines --issue and --auto-fix."""
+    captured = []
+
+    def fake_popen(cmd, **kwargs):
+        captured.append({"cmd": cmd, "kwargs": kwargs})
+
+    with patch("autoloop.mcp_server.subprocess.Popen", fake_popen):
+        result = mcp_tools["autoloop_implement"](issue=99, auto_fix=True)
+
+    cmd = captured[0]["cmd"]
+    assert "--issue" in cmd
+    assert "99" in cmd
+    assert "--auto-fix" in cmd
+    assert "issue #99" in result
+    assert "auto-fix" in result
+
+
+def test_implement_no_auto_fix_omits_flags(mcp_tools):
+    """--auto-fix and --max-pr-review-rounds are not passed when auto_fix is False."""
+    captured = []
+
+    def fake_popen(cmd, **kwargs):
+        captured.append({"cmd": cmd, "kwargs": kwargs})
+
+    with patch("autoloop.mcp_server.subprocess.Popen", fake_popen):
+        result = mcp_tools["autoloop_implement"](issue=10)
+
+    cmd = captured[0]["cmd"]
+    assert "--auto-fix" not in cmd
+    assert "--max-pr-review-rounds" not in cmd
+    assert "auto-fix" not in result
