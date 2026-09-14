@@ -49,6 +49,7 @@ class AutoLoopConfig:
         ]
     )
     max_pr_review_rounds: int = 3
+    max_decomposition_depth: int = 2
     project_dir: str = ""
 
 
@@ -104,6 +105,7 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
         "error_truncation",
         "spec_truncation",
         "max_pr_review_rounds",
+        "max_decomposition_depth",
     ):
         if key in data:
             setattr(config, key, int(data[key]))

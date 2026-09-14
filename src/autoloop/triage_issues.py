@@ -963,20 +963,31 @@ def fetch_issue_body(issue_number: int | str, cfg: AutoLoopConfig) -> str:
         return ""
 
 
+def _extract_parent_number(body: str) -> str | None:
+    """Extract the parent issue number from a body using Parent issue or Sub-issue markers."""
+    for pattern in (r"Parent issue: #(\d+)", r"Sub-issue of #(\d+)"):
+        match = re.search(pattern, body)
+        if match:
+            return match.group(1)
+    return None
+
+
 def get_decomposition_depth(issue: dict, cfg: AutoLoopConfig) -> int:
     """Determine how many levels of decomposition above this issue exist.
 
-    Returns 0 for root issues, 1 for direct children, 2+ for grandchildren.
+    Walks the full parent chain via Parent issue / Sub-issue references.
+    Returns 0 for root issues, 1 for direct children, 2+ for deeper nesting.
     """
     body = issue.get("body") or ""
-    match = re.search(r"Sub-issue of #(\d+)", body)
-    if not match:
-        return 0
-    parent_num = match.group(1)
-    parent_body = fetch_issue_body(parent_num, cfg)
-    if re.search(r"Sub-issue of #(\d+)", parent_body):
-        return 2
-    return 1
+    depth = 0
+    seen: set[str] = set()
+    parent_num = _extract_parent_number(body)
+    while parent_num and parent_num not in seen:
+        depth += 1
+        seen.add(parent_num)
+        parent_body = fetch_issue_body(parent_num, cfg)
+        parent_num = _extract_parent_number(parent_body)
+    return depth
 
 
 # --- Orchestration ---
@@ -1065,7 +1076,37 @@ def triage_issue(
     elif verdict["verdict"] == "needs-decomposition":
         depth = get_decomposition_depth(issue, cfg)
         points = verdict.get("points", 0)
-        if depth >= 2 or (depth >= 1 and points <= 5):
+        if depth >= cfg.max_decomposition_depth:
+            print(
+                f"  #{issue['number']}: depth {depth} >= max {cfg.max_decomposition_depth},"
+                " routing to needs-human"
+            )
+            subprocess.run(
+                [
+                    "gh",
+                    "issue",
+                    "edit",
+                    str(issue["number"]),
+                    "--repo",
+                    cfg.repo,
+                    "--add-label",
+                    "needs-human",
+                ],
+            )
+            subprocess.run(
+                [
+                    "gh",
+                    "issue",
+                    "comment",
+                    str(issue["number"]),
+                    "--repo",
+                    cfg.repo,
+                    "--body",
+                    f"**Auto-triage — needs-human:** decomposition depth {depth}"
+                    f" >= max {cfg.max_decomposition_depth}. Requires manual decomposition.",
+                ],
+            )
+        elif depth >= 1 and points <= 5:
             approve_issue(issue["number"], verdict["priority"], verdict["reason"], cfg)
         else:
             decompose_issue(issue["number"], verdict, cfg, issue.get("body") or "")
