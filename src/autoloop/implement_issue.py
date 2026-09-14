@@ -203,6 +203,23 @@ def log_run(
 # --- Active session detection ---
 
 
+def _get_own_pid_chain() -> set[int]:
+    """Collect PIDs from the current process up through all ancestors."""
+    chain = set()
+    pid = os.getpid()
+    while pid > 0:
+        chain.add(pid)
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text()
+            ppid = int(stat.split(")")[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            break
+        if ppid in chain or ppid <= 0:
+            break
+        pid = ppid
+    return chain
+
+
 def detect_active_claude_session(project_dir: str | None = None) -> bool | None:
     """Check if an interactive Claude Code session is active in the project directory.
 
@@ -239,6 +256,11 @@ def detect_active_claude_session(project_dir: str | None = None) -> bool | None:
         if len(parts) > 1 and "--dangerously-skip-permissions" not in parts[1]:
             pids.append(pid)
 
+    if not pids:
+        return False
+
+    own_chain = _get_own_pid_chain()
+    pids = [p for p in pids if p not in own_chain]
     if not pids:
         return False
 
