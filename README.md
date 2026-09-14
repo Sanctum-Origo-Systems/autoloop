@@ -19,14 +19,47 @@ cd your-repo
 autoloop init --repo your-org/your-repo --verify-cmd "npm test"
 autoloop doctor                           # verify environment
 # Create a GitHub issue with a clear title and acceptance criteria
-autoloop triage                           # evaluates and labels the issue
-autoloop triage --drain                   # loop until all sub-issues are triaged
-autoloop triage --issue 42                # triage a specific issue
-autoloop implement                        # builds it, opens a PR
+autoloop triage --drain                   # evaluates and labels issues
+autoloop implement --auto-fix             # builds, reviews, fixes if needed
 # Review and merge the PR
 ```
 
-That's it. Read on for [configuration](#configuration-reference), [scheduling](#running-unattended), and [issue writing tips](#4-create-an-issue).
+That's it. Read on for [common workflows](#common-workflows), [configuration](#configuration-reference), [scheduling](#running-unattended), and [issue writing tips](#4-create-an-issue).
+
+---
+
+## Common Workflows
+
+```bash
+# Triage
+autoloop triage                            # single pass, all untriaged issues
+autoloop triage --drain                    # loop until all sub-issues triaged
+autoloop triage --issue 42                 # triage a specific issue
+
+# Implement with automated review
+autoloop implement --auto-fix              # implement + review + fix loop
+autoloop implement --max-issues 5          # batch mode
+autoloop implement --auto-fix --max-issues 5  # batch with auto-fix
+
+# PR management
+autoloop review-pr 42                      # review an existing PR
+autoloop fix-pr 42                         # fix a broken PR
+
+# Diagnostics
+autoloop status                            # check pipeline state
+autoloop doctor                            # verify environment
+```
+
+## Pipeline
+
+```
+Issue --> Triage --> Implement --> Review PR
+                                      |
+                                 Pass? --> PR ready for human merge
+                                 Fail? --> Fix PR --> Review again (up to 3 rounds)
+                                              |
+                                 Exhausted? --> needs-human label
+```
 
 ---
 
