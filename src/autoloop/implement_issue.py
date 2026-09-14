@@ -15,10 +15,9 @@ import re
 import subprocess
 import time
 from datetime import UTC, datetime
-
-from autoloop.claude_runner import ClaudeResult, run_claude
 from pathlib import Path
 
+from autoloop.claude_runner import ClaudeResult, run_claude
 from autoloop.config import AutoLoopConfig, load_config
 
 cfg = None
