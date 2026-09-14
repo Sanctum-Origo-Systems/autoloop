@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import call, patch
 
@@ -403,11 +402,12 @@ class TestReviewPrBranchRestore:
 
 
 class TestReviewPrCostTracking:
-    def test_success_logs_review_entry_with_cost_fields(self, tmp_path):
+    def test_success_logs_review_entry_with_cost_fields(self, tmp_path, monkeypatch):
         cfg = _cfg()
         pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
         review_json = json.dumps({"approved": True, "summary": "looks good"})
         dispatch = _make_dispatcher(pr_data)
+        monkeypatch.chdir(tmp_path)
         log_file = tmp_path / "autoloop" / "run_history.jsonl"
 
         with (
@@ -422,7 +422,6 @@ class TestReviewPrCostTracking:
                     cache_read_tokens=100,
                 ),
             ),
-            patch("autoloop.implement_issue.LOG_FILE", log_file),
         ):
             result = review_pr(42, cfg)
 
@@ -443,13 +442,14 @@ class TestReviewPrCostTracking:
         assert "duration_seconds" in entry
         assert "timestamp" in entry
 
-    def test_failure_logs_review_entry(self, tmp_path):
+    def test_failure_logs_review_entry(self, tmp_path, monkeypatch):
         cfg = _cfg()
         pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
         review_json = json.dumps(
             {"approved": False, "issues": ["missing tests"], "summary": "needs work"}
         )
         dispatch = _make_dispatcher(pr_data)
+        monkeypatch.chdir(tmp_path)
         log_file = tmp_path / "autoloop" / "run_history.jsonl"
 
         with (
@@ -458,7 +458,6 @@ class TestReviewPrCostTracking:
                 "autoloop.claude_runner.run_claude",
                 return_value=_claude_result(text=review_json, cost_usd=0.08),
             ),
-            patch("autoloop.implement_issue.LOG_FILE", log_file),
         ):
             result = review_pr(42, cfg)
 
@@ -470,11 +469,12 @@ class TestReviewPrCostTracking:
         assert entry["success"] is False
         assert entry["cost_usd"] == 0.08
 
-    def test_success_comment_includes_cost_line(self):
+    def test_success_comment_includes_cost_line(self, tmp_path, monkeypatch):
         cfg = _cfg()
         pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
         review_json = json.dumps({"approved": True, "summary": "looks good"})
         dispatch = _make_dispatcher(pr_data)
+        monkeypatch.chdir(tmp_path)
 
         all_calls = []
         original_dispatch = dispatch
@@ -492,7 +492,6 @@ class TestReviewPrCostTracking:
                     text=review_json, cost_usd=0.15, input_tokens=2000, output_tokens=500
                 ),
             ),
-            patch("autoloop.implement_issue.LOG_FILE", Path("/dev/null")),
         ):
             review_pr(42, cfg)
 
@@ -507,11 +506,12 @@ class TestReviewPrCostTracking:
         assert "2,000 input" in body
         assert "500 output" in body
 
-    def test_failure_comment_includes_cost_line(self):
+    def test_failure_comment_includes_cost_line(self, tmp_path, monkeypatch):
         cfg = _cfg()
         pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
         review_json = json.dumps({"approved": False, "issues": ["bad tests"], "summary": "no"})
         dispatch = _make_dispatcher(pr_data)
+        monkeypatch.chdir(tmp_path)
 
         all_calls = []
         original_dispatch = dispatch
@@ -527,7 +527,6 @@ class TestReviewPrCostTracking:
                 "autoloop.claude_runner.run_claude",
                 return_value=_claude_result(text=review_json, cost_usd=0.10),
             ),
-            patch("autoloop.implement_issue.LOG_FILE", Path("/dev/null")),
         ):
             review_pr(42, cfg)
 
@@ -540,14 +539,14 @@ class TestReviewPrCostTracking:
         assert "Review cost:" in body
         assert "$0.10" in body
 
-    def test_checkout_failure_logs_run(self, tmp_path):
+    def test_checkout_failure_logs_run(self, tmp_path, monkeypatch):
         cfg = _cfg()
         pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix", "body": ""})
         dispatch = _make_dispatcher(pr_data, {("gh", "pr", "checkout"): _ok(returncode=1)})
-        log_file = tmp_path / "run_history.jsonl"
+        monkeypatch.chdir(tmp_path)
+        log_file = tmp_path / "autoloop" / "run_history.jsonl"
         with (
             patch("subprocess.run", side_effect=dispatch),
-            patch("autoloop.implement_issue.LOG_FILE", log_file),
         ):
             review_pr(42, cfg)
         entry = json.loads(log_file.read_text().strip())
@@ -556,13 +555,13 @@ class TestReviewPrCostTracking:
         assert entry["success"] is False
         assert entry["cost_usd"] == 0
 
-    def test_pr_view_failure_logs_run(self, tmp_path):
+    def test_pr_view_failure_logs_run(self, tmp_path, monkeypatch):
         cfg = _cfg()
         dispatch = _make_dispatcher("", {("gh", "pr", "view"): _ok(returncode=1)})
-        log_file = tmp_path / "run_history.jsonl"
+        monkeypatch.chdir(tmp_path)
+        log_file = tmp_path / "autoloop" / "run_history.jsonl"
         with (
             patch("subprocess.run", side_effect=dispatch),
-            patch("autoloop.implement_issue.LOG_FILE", log_file),
         ):
             review_pr(42, cfg)
         entry = json.loads(log_file.read_text().strip())

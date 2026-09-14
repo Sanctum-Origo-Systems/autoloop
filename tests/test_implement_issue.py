@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 import autoloop.claude_runner as claude_runner
 import autoloop.implement_issue as implement_issue
@@ -672,7 +673,7 @@ def test_implement_uses_cfg_model_and_timeout(monkeypatch):
 def test_design_issue_uses_cfg_model(monkeypatch, tmp_path):
     monkeypatch.setattr(implement_issue, "cfg", _test_cfg(impl_model="sonnet"))
     (tmp_path / "CLAUDE.md").write_text("# Project\nTest project")
-    monkeypatch.setattr(implement_issue, "REPO_DIR", tmp_path)
+    monkeypatch.chdir(tmp_path)
     captured = {}
 
     def _json_result(text):
@@ -725,7 +726,7 @@ def test_verify_implementation_uses_cfg_verify_cmd_with_shell(monkeypatch):
     test_calls = [c for c in captured_calls if c["cmd"] == "make test"]
     assert len(test_calls) == 1
     assert test_calls[0]["kwargs"]["shell"] is True
-    assert test_calls[0]["kwargs"]["cwd"] == implement_issue.REPO_DIR
+    assert test_calls[0]["kwargs"]["cwd"] == Path.cwd()
     assert test_calls[0]["kwargs"]["timeout"] == 30
 
     lint_calls = [c for c in captured_calls if c["cmd"] == "eslint ."]
@@ -808,7 +809,7 @@ def test_build_implementation_prompt_references_cfg_verify_cmd(monkeypatch, tmp_
     )
     claude_md = tmp_path / "CLAUDE.md"
     claude_md.write_text("# Project\nTest project")
-    monkeypatch.setattr(implement_issue, "REPO_DIR", tmp_path)
+    monkeypatch.chdir(tmp_path)
 
     def fake_run(cmd, **kwargs):
         return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
@@ -830,7 +831,7 @@ def test_build_implementation_prompt_uses_cfg_lint_command(monkeypatch, tmp_path
     )
     claude_md = tmp_path / "CLAUDE.md"
     claude_md.write_text("# Project\nTest project")
-    monkeypatch.setattr(implement_issue, "REPO_DIR", tmp_path)
+    monkeypatch.chdir(tmp_path)
 
     def fake_run(cmd, **kwargs):
         return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
@@ -848,7 +849,7 @@ def test_build_implementation_prompt_omits_lint_when_empty(monkeypatch, tmp_path
     monkeypatch.setattr(implement_issue, "cfg", _test_cfg(lint_command="", repo="my-org/my-repo"))
     claude_md = tmp_path / "CLAUDE.md"
     claude_md.write_text("# Project\nTest project")
-    monkeypatch.setattr(implement_issue, "REPO_DIR", tmp_path)
+    monkeypatch.chdir(tmp_path)
 
     def fake_run(cmd, **kwargs):
         return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
@@ -866,7 +867,7 @@ def test_build_implementation_prompt_omits_test_step_when_test_pattern_empty(mon
     monkeypatch.setattr(implement_issue, "cfg", _test_cfg(test_pattern="", repo="my-org/my-repo"))
     claude_md = tmp_path / "CLAUDE.md"
     claude_md.write_text("# Project\nTest project")
-    monkeypatch.setattr(implement_issue, "REPO_DIR", tmp_path)
+    monkeypatch.chdir(tmp_path)
 
     def fake_run(cmd, **kwargs):
         return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
@@ -890,7 +891,7 @@ def test_build_implementation_prompt_includes_test_step_when_test_pattern_set(
     )
     claude_md = tmp_path / "CLAUDE.md"
     claude_md.write_text("# Project\nTest project")
-    monkeypatch.setattr(implement_issue, "REPO_DIR", tmp_path)
+    monkeypatch.chdir(tmp_path)
 
     def fake_run(cmd, **kwargs):
         return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
@@ -912,7 +913,7 @@ def test_build_implementation_prompt_skip_rule_lint_only(monkeypatch, tmp_path):
     )
     claude_md = tmp_path / "CLAUDE.md"
     claude_md.write_text("# Project\nTest project")
-    monkeypatch.setattr(implement_issue, "REPO_DIR", tmp_path)
+    monkeypatch.chdir(tmp_path)
 
     def fake_run(cmd, **kwargs):
         return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
@@ -934,7 +935,7 @@ def test_build_implementation_prompt_no_skip_rule_when_both_empty(monkeypatch, t
     )
     claude_md = tmp_path / "CLAUDE.md"
     claude_md.write_text("# Project\nTest project")
-    monkeypatch.setattr(implement_issue, "REPO_DIR", tmp_path)
+    monkeypatch.chdir(tmp_path)
 
     def fake_run(cmd, **kwargs):
         return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
@@ -980,31 +981,31 @@ def test_review_implementation_uses_cfg_model(monkeypatch):
 
 
 def test_acquire_lock_succeeds_when_no_lockfile(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     lock_path = tmp_path / ".autoloop.lock"
-    monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
     assert acquire_lock() is True
     assert lock_path.exists()
     assert lock_path.read_text().strip() == str(os.getpid())
 
 
 def test_acquire_lock_fails_when_pid_alive(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     lock_path = tmp_path / ".autoloop.lock"
     lock_path.write_text(str(os.getpid()))
-    monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
     assert acquire_lock() is False
 
 
 def test_acquire_lock_succeeds_when_pid_stale(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     lock_path = tmp_path / ".autoloop.lock"
     lock_path.write_text("999999999")
-    monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
     assert acquire_lock() is True
 
 
 def test_release_lock_removes_file(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     lock_path = tmp_path / ".autoloop.lock"
     lock_path.write_text(str(os.getpid()))
-    monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
     release_lock()
     assert not lock_path.exists()
 
@@ -1013,8 +1014,8 @@ def test_release_lock_removes_file(tmp_path, monkeypatch):
 
 
 def test_log_run_writes_json_entry(tmp_path, monkeypatch):
-    log_path = tmp_path / "run_history.jsonl"
-    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+    monkeypatch.chdir(tmp_path)
+    log_path = tmp_path / "autoloop" / "run_history.jsonl"
     log_run(17, True, 2, 120.0, 5.00, 45000, 2300, 16832)
 
     lines = log_path.read_text().strip().splitlines()
@@ -1027,8 +1028,8 @@ def test_log_run_writes_json_entry(tmp_path, monkeypatch):
 
 
 def test_log_run_review_entry_includes_cost_fields(tmp_path, monkeypatch):
-    log_path = tmp_path / "run_history.jsonl"
-    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+    monkeypatch.chdir(tmp_path)
+    log_path = tmp_path / "autoloop" / "run_history.jsonl"
     log_run(0, True, 1, 30.0, 0.12, 1500, 300, 100, run_type="review", pr_number=42)
 
     lines = log_path.read_text().strip().splitlines()
@@ -1092,8 +1093,8 @@ _FAKE_ISSUE = {"number": 42, "title": "Add feature", "body": "## Type\nfeature",
 
 def test_implement_single_issue_returns_true_on_success(monkeypatch, tmp_path):
     monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
-    log_path = tmp_path / "run_history.jsonl"
-    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+    monkeypatch.chdir(tmp_path)
+    log_path = tmp_path / "autoloop" / "run_history.jsonl"
 
     def fake_run(cmd, **kwargs):
         if isinstance(cmd, list) and cmd[:3] == ["git", "rev-list", "--count"]:
@@ -1122,8 +1123,7 @@ def test_implement_single_issue_returns_true_on_success(monkeypatch, tmp_path):
 
 def test_implement_single_issue_uses_cfg_max_retries(monkeypatch, tmp_path):
     monkeypatch.setattr(implement_issue, "cfg", _test_cfg(max_retries=2))
-    log_path = tmp_path / "run_history.jsonl"
-    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+    monkeypatch.chdir(tmp_path)
 
     attempt_count = [0]
 
@@ -1153,8 +1153,7 @@ def test_implement_single_issue_uses_cfg_max_retries(monkeypatch, tmp_path):
 
 def test_implement_single_issue_returns_false_after_all_retries(monkeypatch, tmp_path):
     monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
-    log_path = tmp_path / "run_history.jsonl"
-    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+    monkeypatch.chdir(tmp_path)
 
     attempt_count = [0]
 
@@ -1201,8 +1200,8 @@ def test_implement_single_issue_catches_exception_returns_false(monkeypatch):
 
 def test_implement_single_issue_logs_summed_token_totals(monkeypatch, tmp_path):
     monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
-    log_path = tmp_path / "run_history.jsonl"
-    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+    monkeypatch.chdir(tmp_path)
+    log_path = tmp_path / "autoloop" / "run_history.jsonl"
 
     results = iter(
         [
@@ -1666,8 +1665,7 @@ def test_implement_targeted_issue_aborts_when_fetch_fails(monkeypatch, capsys):
 
 
 def test_main_default_implements_one_issue(monkeypatch, tmp_path, capsys):
-    lock_path = tmp_path / ".autoloop.lock"
-    monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(implement_issue, "load_config", lambda path=None: _test_cfg())
     monkeypatch.setattr(
         implement_issue, "detect_active_claude_session", lambda project_dir=None: False
@@ -1699,8 +1697,7 @@ def test_main_default_implements_one_issue(monkeypatch, tmp_path, capsys):
 
 
 def test_main_no_ready_issues_prints_message(monkeypatch, tmp_path, capsys):
-    lock_path = tmp_path / ".autoloop.lock"
-    monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(implement_issue, "load_config", lambda path=None: _test_cfg())
     monkeypatch.setattr(
         implement_issue, "detect_active_claude_session", lambda project_dir=None: False
@@ -1716,8 +1713,7 @@ def test_main_no_ready_issues_prints_message(monkeypatch, tmp_path, capsys):
 
 
 def test_main_issue_flag_targets_specific_issue(monkeypatch, tmp_path):
-    lock_path = tmp_path / ".autoloop.lock"
-    monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(implement_issue, "load_config", lambda path=None: _test_cfg())
     monkeypatch.setattr(
         implement_issue, "detect_active_claude_session", lambda project_dir=None: False
@@ -1806,8 +1802,7 @@ def test_is_branch_empty_false_when_commits_exist(monkeypatch):
 def test_implement_single_issue_empty_branch_no_retries(monkeypatch, tmp_path):
     """Empty branch after attempt 1 short-circuits with no retries."""
     monkeypatch.setattr(implement_issue, "cfg", _test_cfg(max_retries=3))
-    log_path = tmp_path / "run_history.jsonl"
-    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+    monkeypatch.chdir(tmp_path)
 
     attempt_count = [0]
 
@@ -1843,8 +1838,7 @@ def test_implement_single_issue_empty_branch_no_retries(monkeypatch, tmp_path):
 def test_implement_single_issue_empty_branch_posts_diagnostic(monkeypatch, tmp_path, capsys):
     """Diagnostic message is printed and posted, not lint/test noise."""
     monkeypatch.setattr(implement_issue, "cfg", _test_cfg(max_retries=3))
-    log_path = tmp_path / "run_history.jsonl"
-    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+    monkeypatch.chdir(tmp_path)
 
     monkeypatch.setattr(
         implement_issue, "implement", lambda issue, previous_errors=None: _claude_result()
@@ -1868,8 +1862,7 @@ def test_implement_single_issue_empty_branch_posts_diagnostic(monkeypatch, tmp_p
 def test_implement_single_issue_nonempty_branch_still_retries(monkeypatch, tmp_path):
     """Non-empty branch failures (real test/lint errors) retain retry behavior."""
     monkeypatch.setattr(implement_issue, "cfg", _test_cfg(max_retries=3))
-    log_path = tmp_path / "run_history.jsonl"
-    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+    monkeypatch.chdir(tmp_path)
 
     attempt_count = [0]
 
@@ -1903,8 +1896,7 @@ def test_implement_single_issue_nonempty_branch_still_retries(monkeypatch, tmp_p
 def test_implement_single_issue_timeout_posts_guidance(monkeypatch, tmp_path):
     """Timeout after attempt 1 posts actionable guidance and short-circuits."""
     monkeypatch.setattr(implement_issue, "cfg", _test_cfg(max_retries=3, impl_timeout=900))
-    log_path = tmp_path / "run_history.jsonl"
-    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+    monkeypatch.chdir(tmp_path)
 
     attempt_count = [0]
 
@@ -1937,8 +1929,7 @@ def test_implement_single_issue_timeout_posts_guidance(monkeypatch, tmp_path):
 def test_implement_single_issue_timeout_prints_message(monkeypatch, tmp_path, capsys):
     """Timeout prints the appropriate console message."""
     monkeypatch.setattr(implement_issue, "cfg", _test_cfg(max_retries=3, impl_timeout=600))
-    log_path = tmp_path / "run_history.jsonl"
-    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+    monkeypatch.chdir(tmp_path)
 
     monkeypatch.setattr(
         implement_issue,
@@ -1963,8 +1954,7 @@ def test_implement_single_issue_timeout_prints_message(monkeypatch, tmp_path, ca
 def test_implement_single_issue_non_timeout_failure_still_retries(monkeypatch, tmp_path):
     """Non-timeout failures (success=False but not timed_out) proceed normally."""
     monkeypatch.setattr(implement_issue, "cfg", _test_cfg(max_retries=3))
-    log_path = tmp_path / "run_history.jsonl"
-    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+    monkeypatch.chdir(tmp_path)
 
     attempt_count = [0]
 
@@ -2126,8 +2116,8 @@ def test_detect_active_claude_session_linux_proc(monkeypatch, tmp_path):
 
 def test_main_aborts_when_active_session_detected(monkeypatch, tmp_path, capsys):
     """main() aborts immediately when an active Claude session is detected."""
+    monkeypatch.chdir(tmp_path)
     lock_path = tmp_path / ".autoloop.lock"
-    monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
     monkeypatch.setattr(implement_issue, "load_config", lambda path=None: _test_cfg())
     monkeypatch.setattr(
         implement_issue, "detect_active_claude_session", lambda project_dir=None: True
@@ -2142,8 +2132,7 @@ def test_main_aborts_when_active_session_detected(monkeypatch, tmp_path, capsys)
 
 def test_main_proceeds_when_session_detection_inconclusive(monkeypatch, tmp_path, capsys):
     """main() proceeds normally when detection returns None (inconclusive)."""
-    lock_path = tmp_path / ".autoloop.lock"
-    monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(implement_issue, "load_config", lambda path=None: _test_cfg())
     monkeypatch.setattr(
         implement_issue, "detect_active_claude_session", lambda project_dir=None: None
@@ -2160,7 +2149,7 @@ def test_main_proceeds_when_session_detection_inconclusive(monkeypatch, tmp_path
 
 
 def test_detect_active_claude_session_uses_explicit_path_not_import_cwd(monkeypatch):
-    """Passing an explicit project_dir evaluates against that path, not REPO_DIR."""
+    """Passing an explicit project_dir evaluates against that path, not Path.cwd()."""
     monkeypatch.setattr(implement_issue.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(implement_issue.os.path, "realpath", lambda p: p)
 
@@ -2174,16 +2163,14 @@ def test_detect_active_claude_session_uses_explicit_path_not_import_cwd(monkeypa
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
-    monkeypatch.setattr(implement_issue, "REPO_DIR", "/import/time/cwd")
 
     assert detect_active_claude_session("/explicit/path") is True
     assert detect_active_claude_session("/different/path") is False
 
 
 def test_main_passes_cfg_project_dir_to_detect_active_claude_session(monkeypatch, tmp_path, capsys):
-    """main() passes cfg.project_dir, not REPO_DIR or None."""
-    lock_path = tmp_path / ".autoloop.lock"
-    monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
+    """main() passes cfg.project_dir, not Path.cwd() or None."""
+    monkeypatch.chdir(tmp_path)
 
     cfg_project = tmp_path / "cfg_project"
     cfg_project.mkdir()
@@ -2195,10 +2182,6 @@ def test_main_passes_cfg_project_dir_to_detect_active_claude_session(monkeypatch
     monkeypatch.setattr(implement_issue, "get_top_ready_issue", lambda: None)
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
     monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
-
-    import_time_repo = tmp_path / "import_time_repo"
-    import_time_repo.mkdir()
-    monkeypatch.setattr(implement_issue, "REPO_DIR", import_time_repo)
 
     captured_dirs = []
 
@@ -2212,8 +2195,7 @@ def test_main_passes_cfg_project_dir_to_detect_active_claude_session(monkeypatch
     implement_issue.main()
 
     assert len(captured_dirs) == 1
-    assert captured_dirs[0] == str(cfg_project), "main() must pass cfg.project_dir, not REPO_DIR"
-    assert captured_dirs[0] != str(import_time_repo), "main() must not use module-level REPO_DIR"
+    assert captured_dirs[0] == str(cfg_project), "main() must pass cfg.project_dir, not Path.cwd()"
 
 
 # --- truncate_spec tests ---
@@ -2277,7 +2259,7 @@ def test_build_implementation_prompt_truncates_large_body(monkeypatch, tmp_path)
     )
     claude_md = tmp_path / "CLAUDE.md"
     claude_md.write_text("# Project\nTest project")
-    monkeypatch.setattr(implement_issue, "REPO_DIR", tmp_path)
+    monkeypatch.chdir(tmp_path)
 
     def fake_run(cmd, **kwargs):
         return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
@@ -2301,7 +2283,7 @@ def test_build_implementation_prompt_no_truncation_when_body_fits(monkeypatch, t
     )
     claude_md = tmp_path / "CLAUDE.md"
     claude_md.write_text("# Project\nTest project")
-    monkeypatch.setattr(implement_issue, "REPO_DIR", tmp_path)
+    monkeypatch.chdir(tmp_path)
 
     def fake_run(cmd, **kwargs):
         return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
@@ -2471,8 +2453,7 @@ def test_mutation_gate_skip_types_bypasses(monkeypatch):
 def test_implement_single_issue_mutation_gate_triggers_retry(monkeypatch, tmp_path):
     """Mutation gate failure appends to last_errors and triggers retry."""
     monkeypatch.setattr(implement_issue, "cfg", _test_cfg(max_retries=2))
-    log_path = tmp_path / "run_history.jsonl"
-    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+    monkeypatch.chdir(tmp_path)
 
     attempt_count = [0]
     gate_call_count = [0]
@@ -2517,8 +2498,7 @@ def test_implement_single_issue_mutation_gate_timeout_triggers_retry(monkeypatch
     import subprocess
 
     monkeypatch.setattr(implement_issue, "cfg", _test_cfg(max_retries=2))
-    log_path = tmp_path / "run_history.jsonl"
-    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+    monkeypatch.chdir(tmp_path)
 
     attempt_count = [0]
     gate_call_count = [0]
@@ -2570,8 +2550,7 @@ def test_implement_single_issue_mutation_gate_called_process_error_triggers_retr
     import subprocess
 
     monkeypatch.setattr(implement_issue, "cfg", _test_cfg(max_retries=2))
-    log_path = tmp_path / "run_history.jsonl"
-    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+    monkeypatch.chdir(tmp_path)
 
     attempt_count = [0]
     gate_call_count = [0]
@@ -2627,7 +2606,7 @@ def test_build_implementation_prompt_truncates_body_plus_comments(monkeypatch, t
     )
     claude_md = tmp_path / "CLAUDE.md"
     claude_md.write_text("# Project\nTest project")
-    monkeypatch.setattr(implement_issue, "REPO_DIR", tmp_path)
+    monkeypatch.chdir(tmp_path)
 
     comments_json = json.dumps(
         {
@@ -2814,8 +2793,7 @@ def test_auto_fix_loop_uses_subprocess_calls(monkeypatch):
 def test_auto_fix_not_called_without_flag(monkeypatch, tmp_path):
     """When --auto-fix is not passed, review-pr and fix-pr subprocess calls are zero."""
     monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
-    log_path = tmp_path / "run_history.jsonl"
-    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+    monkeypatch.chdir(tmp_path)
     calls = []
 
     def fake_subprocess_run(cmd, **kwargs):
