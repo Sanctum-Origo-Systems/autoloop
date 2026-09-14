@@ -70,6 +70,22 @@ def parse_and_strip_metric_targets(body: str) -> tuple[str, list[str]]:
     return "".join(cleaned_lines), targets
 
 
+def extract_linked_issue_number(title: str, body: str) -> int | None:
+    """Extract linked issue number from PR title or body.
+
+    Looks for 'Closes #N', 'Fixes #N', 'Resolves #N' in body,
+    or '(#N)' in title.
+    """
+    for pattern in (
+        r"(?:closes|fixes|resolves)\s+#(\d+)",
+        r"\(#(\d+)\)",
+    ):
+        match = re.search(pattern, f"{body}\n{title}", re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+    return None
+
+
 def detect_issue_type(body: str) -> str:
     """Determine conventional commit type from issue body."""
     body_lower = (body or "").lower()
