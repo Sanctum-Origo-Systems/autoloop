@@ -19,12 +19,47 @@ cd your-repo
 autoloop init --repo your-org/your-repo --verify-cmd "npm test"
 autoloop doctor                           # verify environment
 # Create a GitHub issue with a clear title and acceptance criteria
-autoloop triage                           # evaluates and labels the issue
-autoloop implement                        # builds it, opens a PR
+autoloop triage --drain                   # evaluates and labels issues
+autoloop implement --auto-fix             # builds, reviews, fixes if needed
 # Review and merge the PR
 ```
 
-That's it. Read on for [configuration](#configuration-reference), [scheduling](#running-unattended), and [issue writing tips](#4-create-an-issue).
+That's it. Read on for [common workflows](#common-workflows), [configuration](#configuration-reference), [scheduling](#running-unattended), and [issue writing tips](#4-create-an-issue).
+
+---
+
+## Common Workflows
+
+```bash
+# Triage
+autoloop triage                            # single pass, all untriaged issues
+autoloop triage --drain                    # loop until all sub-issues triaged
+autoloop triage --issue 42                 # triage a specific issue
+
+# Implement with automated review
+autoloop implement --auto-fix              # implement + review + fix loop
+autoloop implement --max-issues 5          # batch mode
+autoloop implement --auto-fix --max-issues 5  # batch with auto-fix
+
+# PR management
+autoloop review-pr 42                      # review an existing PR
+autoloop fix-pr 42                         # fix a broken PR
+
+# Diagnostics
+autoloop status                            # check pipeline state
+autoloop doctor                            # verify environment
+```
+
+## Pipeline
+
+```
+Issue --> Triage --> Implement --> Review PR
+                                      |
+                                 Pass? --> PR ready for human merge
+                                 Fail? --> Fix PR --> Review again (up to 3 rounds)
+                                              |
+                                 Exhausted? --> needs-human label
+```
 
 ---
 
@@ -200,8 +235,13 @@ Issues can be any size. If an issue is too large, triage automatically decompose
 ### 5. Triage
 
 ```bash
-autoloop triage
+autoloop triage                         # triage all untriaged issues (single pass)
+autoloop triage --drain                 # loop until all sub-issues are triaged
+autoloop triage --drain --max-rounds 3  # custom safety limit (default: 5)
+autoloop triage --issue 42              # triage a specific issue
 ```
+
+By default, triage runs a single pass over untriaged issues. Use `--drain` to loop until no untriaged issues remain — this is useful when decomposition creates new sub-issues that themselves need triage. The `--max-rounds` flag sets a safety limit on drain iterations (default 5).
 
 Triage evaluates each untriaged issue and applies a label:
 
