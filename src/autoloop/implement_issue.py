@@ -17,7 +17,7 @@ import time
 from datetime import UTC, datetime
 
 from autoloop.claude_runner import ClaudeResult, run_claude
-from autoloop.config import REPO_DIR, load_config
+from autoloop.config import AutoLoopConfig, REPO_DIR, load_config
 
 cfg = None
 
@@ -893,8 +893,8 @@ def create_pr(
     cost_usd: float = 0.0,
     input_tokens: int = 0,
     output_tokens: int = 0,
-):
-    """Create PR with conventional format."""
+) -> int | None:
+    """Create PR with conventional format. Returns PR number or None."""
     issue_type = detect_issue_type(issue.get("body", ""))
     title = f"{issue_type}: {issue['title'][:60]} (#{issue['number']})"
     body = build_pr_body(
@@ -905,7 +905,7 @@ def create_pr(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
     )
-    subprocess.run(
+    result = subprocess.run(
         [
             "gh",
             "pr",
@@ -923,8 +923,15 @@ def create_pr(
             "--assignee",
             cfg.pr_reviewer,
         ],
+        capture_output=True,
+        text=True,
         cwd=REPO_DIR,
     )
+    if result.returncode == 0 and result.stdout.strip():
+        match = re.search(r"/pull/(\d+)", result.stdout.strip())
+        if match:
+            return int(match.group(1))
+    return None
 
 
 def unblock_ready_issues():
@@ -1034,10 +1041,88 @@ def label_in_review(number: int):
     )
 
 
+# --- Auto-fix loop ---
+
+
+def run_auto_fix_loop(pr_number: int, issue: dict, cfg: AutoLoopConfig) -> None:
+    """Bounded review→fix loop on a PR. Labels needs-human on exhaustion."""
+    labels = {lbl["name"] for lbl in issue.get("labels", [])}
+    if "needs-human" in labels:
+        return
+
+    last_review_output = ""
+    for round_num in range(1, cfg.max_pr_review_rounds + 1):
+        review = subprocess.run(
+            ["autoloop", "review-pr", str(pr_number)],
+            capture_output=True,
+            text=True,
+            cwd=REPO_DIR,
+        )
+        last_review_output = review.stdout
+        print(
+            f"  Auto-fix round {round_num}/{cfg.max_pr_review_rounds}: "
+            f"review {'passed' if review.returncode == 0 else 'failed'}"
+        )
+
+        if review.returncode == 0:
+            return
+
+        if round_num < cfg.max_pr_review_rounds:
+            subprocess.run(
+                ["autoloop", "fix-pr", str(pr_number)],
+                capture_output=True,
+                text=True,
+                cwd=REPO_DIR,
+            )
+
+    subprocess.run(
+        [
+            "gh",
+            "issue",
+            "edit",
+            str(issue["number"]),
+            "--repo",
+            cfg.repo,
+            "--add-label",
+            "needs-human",
+        ],
+    )
+    subprocess.run(
+        [
+            "gh",
+            "pr",
+            "edit",
+            str(pr_number),
+            "--repo",
+            cfg.repo,
+            "--add-label",
+            "needs-human",
+        ],
+    )
+    comment = (
+        f"**AutoLoop auto-fix exhausted ({cfg.max_pr_review_rounds} rounds):**\n\n"
+        f"```\n{last_review_output[-2000:]}\n```"
+    )
+    subprocess.run(
+        [
+            "gh",
+            "pr",
+            "comment",
+            str(pr_number),
+            "--repo",
+            cfg.repo,
+            "--body",
+            comment,
+        ],
+    )
+
+
 # --- Orchestration ---
 
 
-def implement_single_issue(issue: dict, require_design: bool = False) -> bool:
+def implement_single_issue(
+    issue: dict, require_design: bool = False, auto_fix: bool = False
+) -> bool:
     """Implement one issue end-to-end. Returns True if PR created successfully."""
     try:
         from autoloop.config import touches_protected_path
@@ -1184,7 +1269,7 @@ def implement_single_issue(issue: dict, require_design: bool = False) -> bool:
             return False
 
         subprocess.run(["git", "push", "-u", "origin", branch], cwd=REPO_DIR)
-        create_pr(
+        pr_number = create_pr(
             issue,
             branch,
             attempts=final_attempt,
@@ -1195,6 +1280,9 @@ def implement_single_issue(issue: dict, require_design: bool = False) -> bool:
         )
         label_in_review(issue["number"])
         print(f"  PR created for #{issue['number']}.")
+
+        if auto_fix and pr_number is not None:
+            run_auto_fix_loop(pr_number, issue, cfg)
 
         subprocess.run(["git", "checkout", "main"], cwd=REPO_DIR)
 
@@ -1221,7 +1309,9 @@ def implement_single_issue(issue: dict, require_design: bool = False) -> bool:
         return False
 
 
-def implement_targeted_issue(number: int, require_design: bool = False) -> bool:
+def implement_targeted_issue(
+    number: int, require_design: bool = False, auto_fix: bool = False
+) -> bool:
     """Implement a specific issue by number, bypassing label and point checks."""
     issue = get_issue_by_number(number)
     if not issue:
@@ -1232,7 +1322,7 @@ def implement_targeted_issue(number: int, require_design: bool = False) -> bool:
         print(f"#{number}: dependencies not met, aborting.")
         return False
 
-    success = implement_single_issue(issue, require_design=require_design)
+    success = implement_single_issue(issue, require_design=require_design, auto_fix=auto_fix)
     print(f"\nImplemented {1 if success else 0} issue(s) this run.")
     return success
 
@@ -1260,7 +1350,7 @@ def main(issue=None, max_issues=1, require_design=False, auto_fix=False):
         unblock_ready_issues()
 
         if issue is not None:
-            implement_targeted_issue(issue, require_design=require_design)
+            implement_targeted_issue(issue, require_design=require_design, auto_fix=auto_fix)
             return
 
         implemented = 0
@@ -1270,7 +1360,9 @@ def main(issue=None, max_issues=1, require_design=False, auto_fix=False):
                 print("No more ready issues.")
                 break
 
-            success = implement_single_issue(top_issue, require_design=require_design)
+            success = implement_single_issue(
+                top_issue, require_design=require_design, auto_fix=auto_fix
+            )
             if success:
                 implemented += 1
             else:

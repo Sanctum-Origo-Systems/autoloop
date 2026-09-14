@@ -43,6 +43,7 @@ from autoloop.implement_issue import (
     priority_rank,
     release_lock,
     review_implementation,
+    run_auto_fix_loop,
     select_top_issue,
     truncate_spec,
     unblock_ready_issues,
@@ -1634,7 +1635,9 @@ def test_implement_targeted_issue_bypasses_ready_and_points(monkeypatch, capsys)
     monkeypatch.setattr(
         implement_issue,
         "implement_single_issue",
-        lambda issue, require_design=False: implemented.append(issue["number"]) or True,
+        lambda issue, require_design=False, auto_fix=False: (
+            implemented.append(issue["number"]) or True
+        ),
     )
 
     assert implement_targeted_issue(28) is True
@@ -1682,7 +1685,7 @@ def test_main_default_implements_one_issue(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
     monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
 
-    def fake_implement_single(issue, require_design=False):
+    def fake_implement_single(issue, require_design=False, auto_fix=False):
         call_count[0] += 1
         return True
 
@@ -1726,7 +1729,7 @@ def test_main_issue_flag_targets_specific_issue(monkeypatch, tmp_path):
     monkeypatch.setattr(
         implement_issue,
         "implement_targeted_issue",
-        lambda number, require_design=False: targeted.append(number) or True,
+        lambda number, require_design=False, auto_fix=False: targeted.append(number) or True,
     )
 
     implement_issue.cfg = None
@@ -2647,3 +2650,264 @@ def test_build_implementation_prompt_truncates_body_plus_comments(monkeypatch, t
 
     assert "[Issue body truncated." in prompt
     assert "x" * 200 not in prompt
+
+
+# --- run_auto_fix_loop tests ---
+
+
+def test_auto_fix_loop_review_passes_first_round(monkeypatch):
+    """Review passes on first try: one review-pr call, zero fix-pr calls."""
+    test_cfg = _test_cfg(max_pr_review_rounds=3)
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if isinstance(cmd, list) and cmd[:2] == ["autoloop", "review-pr"]:
+            return type("R", (), {"returncode": 0, "stdout": "passed", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    issue = {"number": 42, "title": "Test", "body": "", "labels": []}
+    run_auto_fix_loop(99, issue, test_cfg)
+
+    review_calls = [c for c in calls if c[:2] == ["autoloop", "review-pr"]]
+    fix_calls = [c for c in calls if c[:2] == ["autoloop", "fix-pr"]]
+    assert len(review_calls) == 1
+    assert len(fix_calls) == 0
+
+
+def test_auto_fix_loop_fails_then_passes(monkeypatch):
+    """Review fails N-1 times then passes: fix-pr called N-1 times, review-pr N times."""
+    test_cfg = _test_cfg(max_pr_review_rounds=5)
+    calls = []
+    review_count = [0]
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if isinstance(cmd, list) and cmd[:2] == ["autoloop", "review-pr"]:
+            review_count[0] += 1
+            rc = 0 if review_count[0] == 3 else 1
+            return type("R", (), {"returncode": rc, "stdout": "output", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    issue = {"number": 42, "title": "Test", "body": "", "labels": []}
+    run_auto_fix_loop(99, issue, test_cfg)
+
+    review_calls = [c for c in calls if c[:2] == ["autoloop", "review-pr"]]
+    fix_calls = [c for c in calls if c[:2] == ["autoloop", "fix-pr"]]
+    assert len(review_calls) == 3
+    assert len(fix_calls) == 2
+    # No needs-human labeling since review eventually passed
+    label_calls = [
+        c
+        for c in calls
+        if isinstance(c, list)
+        and len(c) >= 3
+        and c[:3] in (["gh", "issue", "edit"], ["gh", "pr", "edit"])
+    ]
+    assert len(label_calls) == 0
+
+
+def test_auto_fix_loop_exhaustion_labels_needs_human(monkeypatch):
+    """All rounds fail: labels needs-human on both issue and PR, posts comment."""
+    test_cfg = _test_cfg(max_pr_review_rounds=3, repo="acme-corp/widget")
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if isinstance(cmd, list) and cmd[:2] == ["autoloop", "review-pr"]:
+            return type("R", (), {"returncode": 1, "stdout": "review findings", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    issue = {"number": 42, "title": "Test", "body": "", "labels": []}
+    run_auto_fix_loop(99, issue, test_cfg)
+
+    review_calls = [c for c in calls if c[:2] == ["autoloop", "review-pr"]]
+    fix_calls = [c for c in calls if c[:2] == ["autoloop", "fix-pr"]]
+    assert len(review_calls) == 3
+    assert len(fix_calls) == 2
+
+    issue_edit_calls = [
+        c
+        for c in calls
+        if isinstance(c, list)
+        and c[:3] == ["gh", "issue", "edit"]
+        and "--add-label" in c
+        and "needs-human" in c
+    ]
+    assert len(issue_edit_calls) == 1
+    assert str(42) in issue_edit_calls[0]
+
+    pr_edit_calls = [
+        c
+        for c in calls
+        if isinstance(c, list)
+        and c[:3] == ["gh", "pr", "edit"]
+        and "--add-label" in c
+        and "needs-human" in c
+    ]
+    assert len(pr_edit_calls) == 1
+    assert str(99) in pr_edit_calls[0]
+
+    comment_calls = [c for c in calls if isinstance(c, list) and c[:3] == ["gh", "pr", "comment"]]
+    assert len(comment_calls) == 1
+    body_idx = comment_calls[0].index("--body") + 1
+    assert "auto-fix exhausted" in comment_calls[0][body_idx].lower()
+
+
+def test_auto_fix_loop_never_merges(monkeypatch):
+    """No code path calls gh pr merge."""
+    test_cfg = _test_cfg(max_pr_review_rounds=3)
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if isinstance(cmd, list) and cmd[:2] == ["autoloop", "review-pr"]:
+            return type("R", (), {"returncode": 1, "stdout": "findings", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    issue = {"number": 42, "title": "Test", "body": "", "labels": []}
+    run_auto_fix_loop(99, issue, test_cfg)
+
+    merge_calls = [
+        c for c in calls if isinstance(c, list) and len(c) >= 3 and c[:3] == ["gh", "pr", "merge"]
+    ]
+    assert len(merge_calls) == 0
+
+
+def test_auto_fix_loop_uses_subprocess_calls(monkeypatch):
+    """Each review-pr and fix-pr invocation is a separate subprocess call."""
+    test_cfg = _test_cfg(max_pr_review_rounds=2)
+    calls = []
+    review_count = [0]
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if isinstance(cmd, list) and cmd[:2] == ["autoloop", "review-pr"]:
+            review_count[0] += 1
+            rc = 0 if review_count[0] == 2 else 1
+            return type("R", (), {"returncode": rc, "stdout": "", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    issue = {"number": 42, "title": "Test", "body": "", "labels": []}
+    run_auto_fix_loop(99, issue, test_cfg)
+
+    review_calls = [c for c in calls if c[:2] == ["autoloop", "review-pr"]]
+    fix_calls = [c for c in calls if c[:2] == ["autoloop", "fix-pr"]]
+    assert len(review_calls) == 2
+    assert len(fix_calls) == 1
+    for c in review_calls:
+        assert c == ["autoloop", "review-pr", "99"]
+    for c in fix_calls:
+        assert c == ["autoloop", "fix-pr", "99"]
+
+
+def test_auto_fix_not_called_without_flag(monkeypatch, tmp_path):
+    """When --auto-fix is not passed, review-pr and fix-pr subprocess calls are zero."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
+    log_path = tmp_path / "run_history.jsonl"
+    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+    calls = []
+
+    def fake_subprocess_run(cmd, **kwargs):
+        calls.append(cmd)
+        if isinstance(cmd, list) and cmd[:3] == ["git", "rev-list", "--count"]:
+            return type("R", (), {"returncode": 0, "stdout": "1\n", "stderr": ""})()
+        if isinstance(cmd, str):
+            return type("R", (), {"returncode": 0, "stdout": "passed", "stderr": ""})()
+        if isinstance(cmd, list) and cmd[:3] == ["git", "diff", "--name-only"]:
+            return type("R", (), {"returncode": 0, "stdout": "tests/test_x.py\n", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(
+        implement_issue, "implement", lambda issue, previous_errors=None: _claude_result()
+    )
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-add-feature")
+    monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: 99)
+    monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
+    monkeypatch.setattr(implement_issue, "review_implementation", lambda issue, branch: (True, ""))
+
+    result = implement_single_issue(_FAKE_ISSUE, auto_fix=False)
+    assert result is True
+
+    review_calls = [c for c in calls if isinstance(c, list) and c[:2] == ["autoloop", "review-pr"]]
+    fix_calls = [c for c in calls if isinstance(c, list) and c[:2] == ["autoloop", "fix-pr"]]
+    assert len(review_calls) == 0
+    assert len(fix_calls) == 0
+
+
+def test_auto_fix_loop_skips_needs_human_issues(monkeypatch):
+    """Issues labeled needs-human are skipped — loop body never entered."""
+    test_cfg = _test_cfg(max_pr_review_rounds=3)
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    issue = {"number": 42, "title": "Test", "body": "", "labels": [{"name": "needs-human"}]}
+    run_auto_fix_loop(99, issue, test_cfg)
+
+    review_calls = [c for c in calls if isinstance(c, list) and c[:2] == ["autoloop", "review-pr"]]
+    fix_calls = [c for c in calls if isinstance(c, list) and c[:2] == ["autoloop", "fix-pr"]]
+    assert len(review_calls) == 0
+    assert len(fix_calls) == 0
+
+
+def test_auto_fix_protected_path_skips_loop(monkeypatch):
+    """Protected-path issues return False from implement_single_issue, never entering the loop."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(protected_paths=["autoloop/"]))
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    import autoloop.create_issue as create_issue_mod
+
+    monkeypatch.setattr(
+        create_issue_mod, "extract_files_from_spec", lambda body: ["autoloop/config.py"]
+    )
+
+    issue = {"number": 42, "title": "Modify config", "body": "", "labels": []}
+    result = implement_single_issue(issue, auto_fix=True)
+    assert result is False
+
+    review_calls = [c for c in calls if isinstance(c, list) and c[:2] == ["autoloop", "review-pr"]]
+    assert len(review_calls) == 0
+
+
+def test_auto_fix_loop_logs_per_round(monkeypatch, capsys):
+    """Each round logs cost/stats output."""
+    test_cfg = _test_cfg(max_pr_review_rounds=3)
+    review_count = [0]
+
+    def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list) and cmd[:2] == ["autoloop", "review-pr"]:
+            review_count[0] += 1
+            rc = 0 if review_count[0] == 2 else 1
+            return type("R", (), {"returncode": rc, "stdout": "", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    issue = {"number": 42, "title": "Test", "body": "", "labels": []}
+    run_auto_fix_loop(99, issue, test_cfg)
+
+    output = capsys.readouterr().out
+    assert "Auto-fix round 1/3" in output
+    assert "Auto-fix round 2/3" in output
