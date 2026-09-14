@@ -45,6 +45,7 @@ class AutoLoopConfig:
             "needs-human",
         ]
     )
+    max_pr_review_rounds: int = 3
     project_dir: str = ""
 
 
@@ -99,6 +100,7 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
         "diff_truncation",
         "error_truncation",
         "spec_truncation",
+        "max_pr_review_rounds",
     ):
         if key in data:
             setattr(config, key, int(data[key]))

@@ -1237,7 +1237,7 @@ def implement_targeted_issue(number: int, require_design: bool = False) -> bool:
     return success
 
 
-def main(issue=None, max_issues=1, require_design=False):
+def main(issue=None, max_issues=1, require_design=False, auto_fix=False):
     global cfg
     if cfg is None:
         cfg = load_config()

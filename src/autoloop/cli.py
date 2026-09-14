@@ -10,7 +10,7 @@ import sys
 from autoloop import __version__
 
 
-def main():
+def build_parser():
     parser = argparse.ArgumentParser(
         prog="autoloop",
         description="Config-driven AI pipeline for triaging and implementing GitHub issues",
@@ -65,6 +65,18 @@ def main():
     impl_parser.add_argument(
         "--require-design", action="store_true", help="Require design review first"
     )
+    impl_parser.add_argument(
+        "--auto-fix",
+        action="store_true",
+        help="Automatically fix PR review findings up to max-pr-review-rounds",
+    )
+    impl_parser.add_argument(
+        "--max-pr-review-rounds",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Max rounds of PR review+fix (default: 3, from config)",
+    )
 
     # status
     subparsers.add_parser("status", help="Show last run, ready issues, next scheduled timers")
@@ -96,6 +108,11 @@ def main():
     # version (also accessible via --version)
     subparsers.add_parser("version", help="Print installed version")
 
+    return parser
+
+
+def main():
+    parser = build_parser()
     args = parser.parse_args()
 
     if args.command is None:
@@ -123,12 +140,18 @@ def main():
         triage_main(issue=args.issue, drain=args.drain, max_rounds=args.max_rounds)
 
     elif args.command == "implement":
-        from autoloop.implement_issue import main as implement_main
+        import autoloop.implement_issue as impl
+        from autoloop.config import load_config
 
-        implement_main(
+        cfg = load_config()
+        if args.max_pr_review_rounds is not None:
+            cfg.max_pr_review_rounds = args.max_pr_review_rounds
+        impl.cfg = cfg
+        impl.main(
             issue=args.issue,
             max_issues=args.max_issues,
             require_design=args.require_design,
+            auto_fix=args.auto_fix,
         )
 
     elif args.command == "status":

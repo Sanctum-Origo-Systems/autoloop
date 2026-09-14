@@ -218,6 +218,8 @@ Triage evaluates each untriaged issue and applies a label:
 autoloop implement              # implements the top ready issue
 autoloop implement --issue 42   # implements a specific issue
 autoloop implement --max-issues 5  # implements up to 5 issues in sequence
+autoloop implement --auto-fix   # auto-fix PR review findings (up to max_pr_review_rounds)
+autoloop implement --auto-fix --max-pr-review-rounds 5  # override max rounds
 ```
 
 For each issue, autoloop:
@@ -421,6 +423,7 @@ Example workflow from your phone:
 | `timer_prefix` | `autoloop` | Systemd timer prefix for status detection (use your app name, e.g. `myapp`) |
 | `protected_paths` | `["autoloop/"]` | Paths the bot must never modify |
 | `test_gate_skip_types` | `["refactor", "docs", "chore"]` | Issue types that skip the "must add test files" verification check |
+| `max_pr_review_rounds` | `3` | Max rounds of automated PR review+fix when `--auto-fix` is used |
 | `triage_labels` | `["ready", "rejected", ...]` | Labels that indicate an issue has been triaged |
 
 All fields can be overridden by environment variables (e.g. `AUTOLOOP_IMPL_MODEL`, `AUTOLOOP_TIMEOUT`).
