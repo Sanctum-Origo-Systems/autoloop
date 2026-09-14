@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.5.0
+
+- `implement --auto-fix`: bounded review-fix loop until PR passes review (up to `max_pr_review_rounds`)
+- `max_pr_review_rounds` config field for auto-fix cycle limit (default 3)
+- MCP tools synced with CLI flags: triage `--drain`/`--issue`, implement `--auto-fix`/`--max-pr-review-rounds`
+- Fix: `DEFAULT_CONFIG_PATH` and `REPO_DIR` resolved at call time, not import time (fixes embedded shell detection)
+- Fix: session detection excludes own process tree (no longer self-blocks from embedded bash)
+- Fix: review-pr mutation gate respects `test_gate_skip_types` for docs/chore/refactor PRs
+- Fix: drain loop skips issues already processed in the current run
+- Fix: decomposition depth check handles grandparent references correctly
+- Fix: run stats surface cache-read/write and total tokens
+- README: common workflows section, pipeline diagram, `--auto-fix` in TLDR
+
 ## v0.4.2
 
 - `--issue N` flag for triage: target a specific issue instead of the full queue
