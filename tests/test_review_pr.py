@@ -34,7 +34,13 @@ def _ok(stdout="", returncode=0):
 
 
 def _claude_result(
-    text="", success=True, cost_usd=0, input_tokens=0, output_tokens=0, cache_read_tokens=0
+    text="",
+    success=True,
+    cost_usd=0,
+    input_tokens=0,
+    output_tokens=0,
+    cache_read_tokens=0,
+    cache_creation_tokens=0,
 ):
     return SimpleNamespace(
         text=text,
@@ -42,6 +48,7 @@ def _claude_result(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cache_read_tokens=cache_read_tokens,
+        cache_creation_tokens=cache_creation_tokens,
         success=success,
         timed_out=False,
     )
@@ -420,6 +427,7 @@ class TestReviewPrCostTracking:
                     input_tokens=1500,
                     output_tokens=300,
                     cache_read_tokens=100,
+                    cache_creation_tokens=50,
                 ),
             ),
         ):
@@ -430,6 +438,7 @@ class TestReviewPrCostTracking:
         assert result["input_tokens"] == 1500
         assert result["output_tokens"] == 300
         assert result["cache_read_tokens"] == 100
+        assert result["cache_creation_tokens"] == 50
         assert log_file.exists()
         entry = json.loads(log_file.read_text().strip())
         assert entry["type"] == "review"
@@ -439,6 +448,7 @@ class TestReviewPrCostTracking:
         assert entry["input_tokens"] == 1500
         assert entry["output_tokens"] == 300
         assert entry["cache_read_tokens"] == 100
+        assert entry["cache_creation_tokens"] == 50
         assert "duration_seconds" in entry
         assert "timestamp" in entry
 

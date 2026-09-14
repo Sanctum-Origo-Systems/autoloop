@@ -45,6 +45,7 @@ def test_run_claude_parses_full_json(monkeypatch):
     assert result.input_tokens == 2335
     assert result.output_tokens == 62
     assert result.cache_read_tokens == 16832
+    assert result.cache_creation_tokens == 2903
 
 
 def test_run_claude_invokes_json_output_format(monkeypatch):
@@ -73,6 +74,7 @@ def test_run_claude_missing_usage_defaults_to_zero(monkeypatch):
     assert result.input_tokens == 0
     assert result.output_tokens == 0
     assert result.cache_read_tokens == 0
+    assert result.cache_creation_tokens == 0
 
 
 def test_run_claude_uses_repo_dir_as_cwd(monkeypatch):
@@ -108,7 +110,7 @@ def test_run_claude_timeout_returns_failure(monkeypatch):
 
     result = run_claude("p", "opus", 1)
 
-    assert result == ClaudeResult("", 0, 0, 0, 0, success=False, timed_out=True)
+    assert result == ClaudeResult("", 0, 0, 0, 0, 0, success=False, timed_out=True)
     assert result.timed_out is True
 
 
@@ -144,3 +146,4 @@ def test_run_claude_invalid_json_falls_back_to_text(monkeypatch):
     assert result.input_tokens == 0
     assert result.output_tokens == 0
     assert result.cache_read_tokens == 0
+    assert result.cache_creation_tokens == 0
