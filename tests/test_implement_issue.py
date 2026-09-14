@@ -11,6 +11,7 @@ from autoloop.config import AutoLoopConfig
 from autoloop.implement_issue import (
     EMPTY_BRANCH_DIAGNOSTIC,
     REVIEW_PROMPT,
+    _get_own_pid_chain,
     acquire_lock,
     build_branch_name,
     build_changed_files_manifest,
@@ -2196,6 +2197,154 @@ def test_main_passes_cfg_project_dir_to_detect_active_claude_session(monkeypatch
 
     assert len(captured_dirs) == 1
     assert captured_dirs[0] == str(cfg_project), "main() must pass cfg.project_dir, not Path.cwd()"
+
+
+# --- _get_own_pid_chain tests ---
+
+
+def test_get_own_pid_chain_includes_current_pid():
+    chain = _get_own_pid_chain()
+    assert os.getpid() in chain
+
+
+def test_get_own_pid_chain_includes_parent_pid():
+    chain = _get_own_pid_chain()
+    assert os.getppid() in chain
+
+
+def test_get_own_pid_chain_returns_set_of_ints():
+    chain = _get_own_pid_chain()
+    assert isinstance(chain, set)
+    assert all(isinstance(p, int) for p in chain)
+    assert len(chain) >= 2
+
+
+def test_get_own_pid_chain_handles_missing_proc(monkeypatch, tmp_path):
+    """Falls back gracefully when /proc/<pid>/stat is unreadable."""
+    original_read_text = Path.read_text
+
+    def patched_read_text(self, *args, **kwargs):
+        if "/proc/" in str(self) and str(self).endswith("/stat"):
+            raise OSError("Permission denied")
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", patched_read_text)
+    chain = _get_own_pid_chain()
+    assert os.getpid() in chain
+
+
+# --- session detection excludes own process tree ---
+
+
+def test_detect_session_excludes_own_pid_chain_linux(monkeypatch):
+    """Session detection ignores claude processes in the current process tree."""
+    monkeypatch.setattr(implement_issue.platform, "system", lambda: "Linux")
+    own_pid = os.getpid()
+    own_ppid = os.getppid()
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "pgrep":
+            return type(
+                "R",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": f"{own_pid} claude\n{own_ppid} claude\n",
+                    "stderr": "",
+                },
+            )()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    result = detect_active_claude_session("/my/project")
+    assert result is False
+
+
+def test_detect_session_still_detects_external_session_linux(monkeypatch):
+    """A claude process outside the current process tree is still detected."""
+    monkeypatch.setattr(implement_issue.platform, "system", lambda: "Linux")
+    own_chain = _get_own_pid_chain()
+    external_pid = max(own_chain) + 9999
+
+    monkeypatch.setattr(
+        implement_issue.os.path, "realpath", lambda p: "/my/project" if "proc" in p else p
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "pgrep":
+            return type(
+                "R",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": f"{external_pid} claude\n",
+                    "stderr": "",
+                },
+            )()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    result = detect_active_claude_session("/my/project")
+    assert result is True
+
+
+def test_detect_session_mixed_own_and_external_pids_linux(monkeypatch):
+    """Own-tree PIDs filtered, but external claude in same dir still detected."""
+    monkeypatch.setattr(implement_issue.platform, "system", lambda: "Linux")
+    own_pid = os.getpid()
+    own_chain = _get_own_pid_chain()
+    external_pid = max(own_chain) + 9999
+
+    monkeypatch.setattr(
+        implement_issue.os.path, "realpath", lambda p: "/my/project" if "proc" in p else p
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "pgrep":
+            return type(
+                "R",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": f"{own_pid} claude\n{external_pid} claude\n",
+                    "stderr": "",
+                },
+            )()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    result = detect_active_claude_session("/my/project")
+    assert result is True
+
+
+def test_detect_session_excludes_own_pid_chain_darwin(monkeypatch):
+    """Own-tree PIDs are excluded on macOS (lsof path) too."""
+    monkeypatch.setattr(implement_issue.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(implement_issue.os.path, "realpath", lambda p: p)
+    own_pid = os.getpid()
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "pgrep":
+            return type(
+                "R",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": f"{own_pid} claude\n",
+                    "stderr": "",
+                },
+            )()
+        if cmd[0] == "lsof":
+            return type(
+                "R",
+                (),
+                {"returncode": 0, "stdout": f"p{own_pid}\nn/my/project\n", "stderr": ""},
+            )()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    result = detect_active_claude_session("/my/project")
+    assert result is False
 
 
 # --- truncate_spec tests ---
