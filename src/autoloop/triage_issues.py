@@ -1096,21 +1096,24 @@ def main(issue=None, drain=False, max_rounds=None):
         if max_rounds is None:
             max_rounds = 5
         completed_passes = 0
+        triaged_this_run: set[int] = set()
         for round_num in range(1, max_rounds + 1):
             untriaged = list_untriaged_issues(cfg)
-            if not untriaged:
+            new_issues = [i for i in untriaged if i["number"] not in triaged_this_run]
+            if not new_issues:
                 if completed_passes == 0:
                     print("No untriaged issues found.")
                 else:
                     print(f"No untriaged issues remaining. Done in {completed_passes} passes.")
                 break
             pass_stats = {"decomposed": 0}
-            for iss in untriaged:
+            for iss in new_issues:
                 print(f"Triaging #{iss['number']}: {iss['title']}")
                 results.extend(triage_issue(iss, cfg, _pass_stats=pass_stats))
+                triaged_this_run.add(iss["number"])
             completed_passes += 1
-            num_triaged += len(untriaged)
-            n = len(untriaged)
+            num_triaged += len(new_issues)
+            n = len(new_issues)
             d = pass_stats["decomposed"]
             print(
                 f"Pass {round_num}: triaged {n} {'issue' if n == 1 else 'issues'} ({d} decomposed)"

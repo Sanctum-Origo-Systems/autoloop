@@ -2534,8 +2534,18 @@ def test_main_drain_hits_max_rounds(monkeypatch, capsys):
     cfg = _cfg()
     monkeypatch.setattr("autoloop.config.load_config", lambda: cfg)
 
+    call_count = {"n": 0}
+
     def fake_list(cfg):
-        return [{"number": 1, "title": "Always present", "body": "body", "labels": []}]
+        call_count["n"] += 1
+        return [
+            {
+                "number": call_count["n"],
+                "title": f"Issue {call_count['n']}",
+                "body": "body",
+                "labels": [],
+            }
+        ]
 
     monkeypatch.setattr("autoloop.triage_issues.list_untriaged_issues", fake_list)
 
@@ -2576,8 +2586,18 @@ def test_main_drain_default_max_rounds_is_five(monkeypatch, capsys):
     cfg = _cfg()
     monkeypatch.setattr("autoloop.config.load_config", lambda: cfg)
 
+    call_count = {"n": 0}
+
     def fake_list(cfg):
-        return [{"number": 1, "title": "Sticky", "body": "body", "labels": []}]
+        call_count["n"] += 1
+        return [
+            {
+                "number": call_count["n"] + 100,
+                "title": f"Issue {call_count['n']}",
+                "body": "body",
+                "labels": [],
+            }
+        ]
 
     monkeypatch.setattr("autoloop.triage_issues.list_untriaged_issues", fake_list)
 
@@ -2625,6 +2645,78 @@ def test_main_without_drain_unchanged(monkeypatch, capsys):
     output = capsys.readouterr().out
     assert "Triaging #10" in output
     assert "Pass" not in output
+
+
+def test_main_drain_skips_already_triaged_issue(monkeypatch, capsys):
+    """Drain loop skips issues already triaged in an earlier round of the same run."""
+    cfg = _cfg()
+    monkeypatch.setattr("autoloop.config.load_config", lambda: cfg)
+
+    call_count = {"n": 0}
+    issue_50 = {"number": 50, "title": "Sticky issue", "body": "body", "labels": []}
+
+    def fake_list(cfg):
+        call_count["n"] += 1
+        if call_count["n"] <= 2:
+            return [issue_50]
+        return []
+
+    monkeypatch.setattr("autoloop.triage_issues.list_untriaged_issues", fake_list)
+
+    triaged_numbers = []
+
+    def fake_triage_issue(issue, cfg, _pass_stats=None):
+        triaged_numbers.append(issue["number"])
+        return [ClaudeResult("ok", 0.01, 100, 50, 0, 0, True)]
+
+    monkeypatch.setattr("autoloop.triage_issues.triage_issue", fake_triage_issue)
+    monkeypatch.setattr("autoloop.triage_issues.log_run", lambda *a, **k: None)
+
+    from autoloop.triage_issues import main
+
+    main(drain=True)
+
+    assert triaged_numbers == [50]
+
+
+def test_main_drain_picks_up_new_sub_issues(monkeypatch, capsys):
+    """Sub-issues created by decomposition ARE picked up in subsequent rounds."""
+    cfg = _cfg()
+    monkeypatch.setattr("autoloop.config.load_config", lambda: cfg)
+
+    call_count = {"n": 0}
+
+    def fake_list(cfg):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return [{"number": 50, "title": "Parent", "body": "body", "labels": []}]
+        elif call_count["n"] == 2:
+            return [
+                {"number": 50, "title": "Parent", "body": "body", "labels": []},
+                {"number": 51, "title": "Sub 1", "body": "body", "labels": []},
+                {"number": 52, "title": "Sub 2", "body": "body", "labels": []},
+            ]
+        return []
+
+    monkeypatch.setattr("autoloop.triage_issues.list_untriaged_issues", fake_list)
+
+    triaged_numbers = []
+
+    def fake_triage_issue(issue, cfg, _pass_stats=None):
+        triaged_numbers.append(issue["number"])
+        if issue["number"] == 50 and _pass_stats is not None:
+            _pass_stats["decomposed"] += 1
+        return [ClaudeResult("ok", 0.01, 100, 50, 0, 0, True)]
+
+    monkeypatch.setattr("autoloop.triage_issues.triage_issue", fake_triage_issue)
+    monkeypatch.setattr("autoloop.triage_issues.log_run", lambda *a, **k: None)
+
+    from autoloop.triage_issues import main
+
+    main(drain=True)
+
+    assert triaged_numbers == [50, 51, 52]
+    assert triaged_numbers.count(50) == 1
 
 
 def test_main_drain_aggregates_stats(monkeypatch, capsys):
