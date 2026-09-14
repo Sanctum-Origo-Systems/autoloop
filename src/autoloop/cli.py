@@ -218,7 +218,7 @@ def review_pr(pr_number, cfg):
     Never merges. Applies needs-human label on failure.
     Restores the previous branch after review.
     Returns a dict with keys: success, cost_usd, input_tokens, output_tokens,
-    cache_read_tokens.
+    cache_read_tokens, cache_creation_tokens.
     """
     import time
 
@@ -231,6 +231,7 @@ def review_pr(pr_number, cfg):
         "input_tokens": 0,
         "output_tokens": 0,
         "cache_read_tokens": 0,
+        "cache_creation_tokens": 0,
     }
 
     impl.cfg = cfg
@@ -393,6 +394,7 @@ def review_pr(pr_number, cfg):
             input_tokens=result.input_tokens,
             output_tokens=result.output_tokens,
             cache_read_tokens=result.cache_read_tokens,
+            cache_creation_tokens=result.cache_creation_tokens,
             run_type="review",
             pr_number=pr_number,
         )
@@ -418,6 +420,7 @@ def review_pr(pr_number, cfg):
             "input_tokens": result.input_tokens,
             "output_tokens": result.output_tokens,
             "cache_read_tokens": result.cache_read_tokens,
+            "cache_creation_tokens": result.cache_creation_tokens,
         }
     finally:
         subprocess.run(

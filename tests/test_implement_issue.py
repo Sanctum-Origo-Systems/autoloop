@@ -72,6 +72,7 @@ def _claude_result(
     input_tokens=1000,
     output_tokens=200,
     cache_read_tokens=500,
+    cache_creation_tokens=300,
     success=True,
     timed_out=False,
 ):
@@ -81,6 +82,7 @@ def _claude_result(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cache_read_tokens=cache_read_tokens,
+        cache_creation_tokens=cache_creation_tokens,
         success=success,
         timed_out=timed_out,
     )
@@ -392,8 +394,16 @@ def test_build_pr_body_includes_autoloop_stats(monkeypatch):
         cost_usd=3.42,
         input_tokens=45000,
         output_tokens=2300,
+        cache_creation_tokens=5000,
+        cache_read_tokens=16000,
     )
     assert "## AutoLoop Run Stats" in body
+    assert "Input tokens: 45,000" in body
+    assert "Cache creation tokens: 5,000" in body
+    assert "Cache read tokens: 16,000" in body
+    assert "Output tokens: 2,300" in body
+    assert "Total tokens: 68,300" in body
+    assert "Cost: $3.42" in body
     assert "Automated implementation by AutoLoop" in body
 
 
@@ -1017,7 +1027,7 @@ def test_release_lock_removes_file(tmp_path, monkeypatch):
 def test_log_run_writes_json_entry(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     log_path = tmp_path / "autoloop" / "run_history.jsonl"
-    log_run(17, True, 2, 120.0, 5.00, 45000, 2300, 16832)
+    log_run(17, True, 2, 120.0, 5.00, 45000, 2300, 16832, 2903)
 
     lines = log_path.read_text().strip().splitlines()
     assert len(lines) == 1
@@ -1025,13 +1035,15 @@ def test_log_run_writes_json_entry(tmp_path, monkeypatch):
     assert entry["issue"] == 17
     assert entry["success"] is True
     assert entry["type"] == "implement"
+    assert entry["cache_creation_tokens"] == 2903
+    assert entry["cache_read_tokens"] == 16832
     assert "pr_number" not in entry
 
 
 def test_log_run_review_entry_includes_cost_fields(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     log_path = tmp_path / "autoloop" / "run_history.jsonl"
-    log_run(0, True, 1, 30.0, 0.12, 1500, 300, 100, run_type="review", pr_number=42)
+    log_run(0, True, 1, 30.0, 0.12, 1500, 300, 100, 50, run_type="review", pr_number=42)
 
     lines = log_path.read_text().strip().splitlines()
     assert len(lines) == 1
@@ -1043,6 +1055,7 @@ def test_log_run_review_entry_includes_cost_fields(tmp_path, monkeypatch):
     assert entry["input_tokens"] == 1500
     assert entry["output_tokens"] == 300
     assert entry["cache_read_tokens"] == 100
+    assert entry["cache_creation_tokens"] == 50
     assert entry["duration_seconds"] == 30
     assert "timestamp" in entry
 
@@ -1206,8 +1219,20 @@ def test_implement_single_issue_logs_summed_token_totals(monkeypatch, tmp_path):
 
     results = iter(
         [
-            _claude_result(cost_usd=1.0, input_tokens=100, output_tokens=10, cache_read_tokens=5),
-            _claude_result(cost_usd=2.5, input_tokens=250, output_tokens=30, cache_read_tokens=15),
+            _claude_result(
+                cost_usd=1.0,
+                input_tokens=100,
+                output_tokens=10,
+                cache_read_tokens=5,
+                cache_creation_tokens=50,
+            ),
+            _claude_result(
+                cost_usd=2.5,
+                input_tokens=250,
+                output_tokens=30,
+                cache_read_tokens=15,
+                cache_creation_tokens=75,
+            ),
         ]
     )
     monkeypatch.setattr(
@@ -1242,6 +1267,7 @@ def test_implement_single_issue_logs_summed_token_totals(monkeypatch, tmp_path):
     assert entry["input_tokens"] == 350
     assert entry["output_tokens"] == 40
     assert entry["cache_read_tokens"] == 20
+    assert entry["cache_creation_tokens"] == 125
 
 
 # --- implement with previous_errors ---

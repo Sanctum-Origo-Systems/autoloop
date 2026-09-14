@@ -478,6 +478,7 @@ def log_run(
     input_tokens: int = 0,
     output_tokens: int = 0,
     cache_read_tokens: int = 0,
+    cache_creation_tokens: int = 0,
 ):
     """Append a JSON entry to the run history log."""
     entry = {
@@ -490,6 +491,7 @@ def log_run(
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "cache_read_tokens": cache_read_tokens,
+        "cache_creation_tokens": cache_creation_tokens,
     }
     log_file = Path.cwd() / "autoloop" / "run_history.jsonl"
     log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -1134,11 +1136,16 @@ def main(issue=None, drain=False, max_rounds=None):
         total_input = sum(r.input_tokens for r in results)
         total_output = sum(r.output_tokens for r in results)
         total_cache_read = sum(r.cache_read_tokens for r in results)
+        total_cache_creation = sum(r.cache_creation_tokens for r in results)
+        total_all = total_input + total_cache_creation + total_cache_read + total_output
         print("\n--- AutoLoop Triage Stats ---")
         print(f"  Duration: {elapsed:.0f}s")
         print(f"  Claude calls: {len(results)}")
         print(f"  Input tokens: {total_input:,}")
+        print(f"  Cache creation tokens: {total_cache_creation:,}")
+        print(f"  Cache read tokens: {total_cache_read:,}")
         print(f"  Output tokens: {total_output:,}")
+        print(f"  Total tokens: {total_all:,}")
         print(f"  Cost: ${total_cost:.2f}")
         log_run(
             0,
@@ -1149,6 +1156,7 @@ def main(issue=None, drain=False, max_rounds=None):
             total_input,
             total_output,
             total_cache_read,
+            total_cache_creation,
         )
 
 

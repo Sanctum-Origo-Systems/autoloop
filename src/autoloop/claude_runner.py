@@ -17,6 +17,7 @@ class ClaudeResult:
     input_tokens: int
     output_tokens: int
     cache_read_tokens: int
+    cache_creation_tokens: int
     success: bool
     timed_out: bool = False
 
@@ -37,10 +38,10 @@ def run_claude(prompt: str, model: str, timeout: int) -> ClaudeResult:
             timeout=timeout,
         )
     except subprocess.TimeoutExpired:
-        return ClaudeResult("", 0, 0, 0, 0, success=False, timed_out=True)
+        return ClaudeResult("", 0, 0, 0, 0, 0, success=False, timed_out=True)
 
     if result.returncode != 0:
-        return ClaudeResult("", 0, 0, 0, 0, success=False)
+        return ClaudeResult("", 0, 0, 0, 0, 0, success=False)
 
     try:
         data = json.loads(result.stdout)
@@ -51,7 +52,8 @@ def run_claude(prompt: str, model: str, timeout: int) -> ClaudeResult:
             input_tokens=usage.get("input_tokens", 0),
             output_tokens=usage.get("output_tokens", 0),
             cache_read_tokens=usage.get("cache_read_input_tokens", 0),
+            cache_creation_tokens=usage.get("cache_creation_input_tokens", 0),
             success=True,
         )
     except (json.JSONDecodeError, KeyError):
-        return ClaudeResult(result.stdout, 0, 0, 0, 0, success=True)
+        return ClaudeResult(result.stdout, 0, 0, 0, 0, 0, success=True)

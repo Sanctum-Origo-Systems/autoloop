@@ -611,6 +611,7 @@ def test_evaluate_issue_uses_cfg_triage_model(monkeypatch):
             100,
             50,
             0,
+            0,
             True,
         )
 
@@ -643,6 +644,7 @@ def test_evaluate_issue_uses_cfg_triage_timeout(monkeypatch):
             100,
             50,
             0,
+            0,
             True,
         )
 
@@ -672,6 +674,7 @@ def test_evaluate_issue_uses_cfg_tree_truncation(monkeypatch):
             0.01,
             100,
             50,
+            0,
             0,
             True,
         )
@@ -721,6 +724,21 @@ def test_log_run_writes_jsonl(tmp_path, monkeypatch):
     entry = json.loads(lines[0])
     assert entry["issue"] == 42
     assert entry["success"] is True
+
+
+def test_log_run_includes_cache_creation_tokens(tmp_path, monkeypatch):
+    monkeypatch.setattr("autoloop.triage_issues.Path.cwd", lambda: tmp_path)
+
+    from autoloop.triage_issues import log_run
+
+    log_run(42, True, 1, 10.0, 0.05, 1000, 200, 500, 300)
+
+    log_file = tmp_path / "autoloop" / "run_history.jsonl"
+    entry = json.loads(log_file.read_text().strip())
+    assert entry["input_tokens"] == 1000
+    assert entry["output_tokens"] == 200
+    assert entry["cache_read_tokens"] == 500
+    assert entry["cache_creation_tokens"] == 300
 
 
 # --- _merge_steps ---
@@ -1284,6 +1302,7 @@ def test_triage_issue_caps_depth_2_routes_to_ready(monkeypatch):
             100,
             50,
             0,
+            0,
             True,
         )
 
@@ -1341,6 +1360,7 @@ def test_triage_issue_caps_depth_1_small_points_routes_to_ready(monkeypatch):
             100,
             50,
             0,
+            0,
             True,
         )
 
@@ -1397,6 +1417,7 @@ def test_triage_issue_allows_decomposition_depth_0(monkeypatch):
             0.01,
             100,
             50,
+            0,
             0,
             True,
         )
@@ -1672,6 +1693,7 @@ def test_triage_issue_collapsed_decomposition_routes_to_ready(monkeypatch):
             100,
             50,
             0,
+            0,
             True,
         )
 
@@ -1771,6 +1793,7 @@ def test_suggest_sub_issue_fields_passes_project_commands(monkeypatch):
             0.01,
             100,
             50,
+            0,
             0,
             True,
         )
@@ -2092,6 +2115,7 @@ def test_triage_issue_detects_duplicate_routes_to_needs_human(monkeypatch):
             100,
             50,
             0,
+            0,
             True,
         )
 
@@ -2163,6 +2187,7 @@ def test_triage_issue_no_duplicate_approves_normally(monkeypatch):
             100,
             50,
             0,
+            0,
             True,
         )
 
@@ -2221,6 +2246,7 @@ def test_triage_issue_duplicate_check_excludes_self(monkeypatch):
             0.01,
             100,
             50,
+            0,
             0,
             True,
         )
@@ -2288,6 +2314,7 @@ def test_triage_issue_uses_discovered_files_for_duplicate_check(monkeypatch):
             100,
             50,
             0,
+            0,
             True,
         )
 
@@ -2295,7 +2322,7 @@ def test_triage_issue_uses_discovered_files_for_duplicate_check(monkeypatch):
 
     def fake_discover(issue, cfg):
         return [{"path": "src/autoloop/config.py", "reason": "main"}], ClaudeResult(
-            "ok", 0.01, 50, 25, 0, True
+            "ok", 0.01, 50, 25, 0, 0, True
         )
 
     monkeypatch.setattr("autoloop.triage_issues.discover_files", fake_discover)
@@ -2405,7 +2432,7 @@ def test_main_with_issue_triages_single_issue(monkeypatch):
 
     def fake_triage_issue(issue, cfg):
         triaged.append(issue["number"])
-        return [ClaudeResult("ok", 0.01, 100, 50, 0, True)]
+        return [ClaudeResult("ok", 0.01, 100, 50, 0, 0, True)]
 
     monkeypatch.setattr("autoloop.triage_issues.triage_issue", fake_triage_issue)
 
@@ -2485,7 +2512,7 @@ def test_main_drain_converges_in_two_passes(monkeypatch, capsys):
     def fake_triage_issue(issue, cfg, _pass_stats=None):
         if issue["number"] == 50 and _pass_stats is not None:
             _pass_stats["decomposed"] += 1
-        return [ClaudeResult("ok", 0.01, 100, 50, 0, True)]
+        return [ClaudeResult("ok", 0.01, 100, 50, 0, 0, True)]
 
     monkeypatch.setattr("autoloop.triage_issues.triage_issue", fake_triage_issue)
     monkeypatch.setattr("autoloop.triage_issues.log_run", lambda *a, **k: None)
@@ -2513,7 +2540,7 @@ def test_main_drain_hits_max_rounds(monkeypatch, capsys):
     monkeypatch.setattr("autoloop.triage_issues.list_untriaged_issues", fake_list)
 
     def fake_triage_issue(issue, cfg, _pass_stats=None):
-        return [ClaudeResult("ok", 0.01, 100, 50, 0, True)]
+        return [ClaudeResult("ok", 0.01, 100, 50, 0, 0, True)]
 
     monkeypatch.setattr("autoloop.triage_issues.triage_issue", fake_triage_issue)
     monkeypatch.setattr("autoloop.triage_issues.log_run", lambda *a, **k: None)
@@ -2555,7 +2582,7 @@ def test_main_drain_default_max_rounds_is_five(monkeypatch, capsys):
     monkeypatch.setattr("autoloop.triage_issues.list_untriaged_issues", fake_list)
 
     def fake_triage_issue(issue, cfg, _pass_stats=None):
-        return [ClaudeResult("ok", 0.01, 100, 50, 0, True)]
+        return [ClaudeResult("ok", 0.01, 100, 50, 0, 0, True)]
 
     monkeypatch.setattr("autoloop.triage_issues.triage_issue", fake_triage_issue)
     monkeypatch.setattr("autoloop.triage_issues.log_run", lambda *a, **k: None)
@@ -2585,7 +2612,7 @@ def test_main_without_drain_unchanged(monkeypatch, capsys):
     monkeypatch.setattr("autoloop.triage_issues.list_untriaged_issues", fake_list)
 
     def fake_triage_issue(issue, cfg, _pass_stats=None):
-        return [ClaudeResult("ok", 0.01, 100, 50, 0, True)]
+        return [ClaudeResult("ok", 0.01, 100, 50, 0, 0, True)]
 
     monkeypatch.setattr("autoloop.triage_issues.triage_issue", fake_triage_issue)
     monkeypatch.setattr("autoloop.triage_issues.log_run", lambda *a, **k: None)
@@ -2618,7 +2645,7 @@ def test_main_drain_aggregates_stats(monkeypatch, capsys):
     monkeypatch.setattr("autoloop.triage_issues.list_untriaged_issues", fake_list)
 
     def fake_triage_issue(issue, cfg, _pass_stats=None):
-        return [ClaudeResult("ok", 0.05, 200, 100, 0, True)]
+        return [ClaudeResult("ok", 0.05, 200, 100, 0, 0, True)]
 
     monkeypatch.setattr("autoloop.triage_issues.triage_issue", fake_triage_issue)
     monkeypatch.setattr("autoloop.triage_issues.log_run", lambda *a, **k: None)

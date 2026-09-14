@@ -93,6 +93,8 @@ def build_pr_body(
     cost_usd: float = 0.0,
     input_tokens: int = 0,
     output_tokens: int = 0,
+    cache_creation_tokens: int = 0,
+    cache_read_tokens: int = 0,
 ) -> str:
     """Build the PR description markdown."""
     body = (
@@ -106,12 +108,16 @@ def build_pr_body(
         body += f"- `{cfg.lint_command}` — clean\n"
     body += "\n"
     if attempts > 0:
+        total_tokens = input_tokens + cache_creation_tokens + cache_read_tokens + output_tokens
         body += (
             f"## AutoLoop Run Stats\n"
             f"- Attempts: {attempts}/{cfg.max_retries}\n"
             f"- Duration: {duration:.0f}s\n"
             f"- Input tokens: {input_tokens:,}\n"
+            f"- Cache creation tokens: {cache_creation_tokens:,}\n"
+            f"- Cache read tokens: {cache_read_tokens:,}\n"
             f"- Output tokens: {output_tokens:,}\n"
+            f"- Total tokens: {total_tokens:,}\n"
             f"- Cost: ${cost_usd:.2f}\n\n"
         )
     body += "Automated implementation by AutoLoop."
@@ -176,6 +182,7 @@ def log_run(
     input_tokens: int = 0,
     output_tokens: int = 0,
     cache_read_tokens: int = 0,
+    cache_creation_tokens: int = 0,
     run_type: str = "implement",
     pr_number: int | None = None,
 ):
@@ -191,6 +198,7 @@ def log_run(
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "cache_read_tokens": cache_read_tokens,
+        "cache_creation_tokens": cache_creation_tokens,
     }
     if pr_number is not None:
         entry["pr_number"] = pr_number
@@ -917,6 +925,8 @@ def create_pr(
     cost_usd: float = 0.0,
     input_tokens: int = 0,
     output_tokens: int = 0,
+    cache_creation_tokens: int = 0,
+    cache_read_tokens: int = 0,
 ) -> int | None:
     """Create PR with conventional format. Returns PR number or None."""
     issue_type = detect_issue_type(issue.get("body", ""))
@@ -928,6 +938,8 @@ def create_pr(
         cost_usd=cost_usd,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
+        cache_creation_tokens=cache_creation_tokens,
+        cache_read_tokens=cache_read_tokens,
     )
     result = subprocess.run(
         [
@@ -1255,6 +1267,8 @@ def implement_single_issue(
         total_input = sum(r.input_tokens for r in claude_results)
         total_output = sum(r.output_tokens for r in claude_results)
         total_cache_read = sum(r.cache_read_tokens for r in claude_results)
+        total_cache_creation = sum(r.cache_creation_tokens for r in claude_results)
+        total_all = total_input + total_cache_creation + total_cache_read + total_output
 
         if not success:
             if timeout_failure:
@@ -1289,6 +1303,7 @@ def implement_single_issue(
                 total_input,
                 total_output,
                 total_cache_read,
+                total_cache_creation,
             )
             return False
 
@@ -1301,6 +1316,8 @@ def implement_single_issue(
             cost_usd=total_cost,
             input_tokens=total_input,
             output_tokens=total_output,
+            cache_creation_tokens=total_cache_creation,
+            cache_read_tokens=total_cache_read,
         )
         label_in_review(issue["number"])
         print(f"  PR created for #{issue['number']}.")
@@ -1314,7 +1331,10 @@ def implement_single_issue(
         print(f"  Duration: {elapsed:.0f}s")
         print(f"  Claude calls: {len(claude_results)}")
         print(f"  Input tokens: {total_input:,}")
+        print(f"  Cache creation tokens: {total_cache_creation:,}")
+        print(f"  Cache read tokens: {total_cache_read:,}")
         print(f"  Output tokens: {total_output:,}")
+        print(f"  Total tokens: {total_all:,}")
         print(f"  Cost: ${total_cost:.2f}")
         log_run(
             issue["number"],
@@ -1325,6 +1345,7 @@ def implement_single_issue(
             total_input,
             total_output,
             total_cache_read,
+            total_cache_creation,
         )
 
         return True
