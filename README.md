@@ -20,6 +20,8 @@ autoloop init --repo your-org/your-repo --verify-cmd "npm test"
 autoloop doctor                           # verify environment
 # Create a GitHub issue with a clear title and acceptance criteria
 autoloop triage                           # evaluates and labels the issue
+autoloop triage --drain                   # loop until all sub-issues are triaged
+autoloop triage --issue 42                # triage a specific issue
 autoloop implement                        # builds it, opens a PR
 # Review and merge the PR
 ```
@@ -200,8 +202,13 @@ Issues can be any size. If an issue is too large, triage automatically decompose
 ### 5. Triage
 
 ```bash
-autoloop triage
+autoloop triage                         # triage all untriaged issues (single pass)
+autoloop triage --drain                 # loop until all sub-issues are triaged
+autoloop triage --drain --max-rounds 3  # custom safety limit (default: 5)
+autoloop triage --issue 42              # triage a specific issue
 ```
+
+By default, triage runs a single pass over untriaged issues. Use `--drain` to loop until no untriaged issues remain — this is useful when decomposition creates new sub-issues that themselves need triage. The `--max-rounds` flag sets a safety limit on drain iterations (default 5).
 
 Triage evaluates each untriaged issue and applies a label:
 
