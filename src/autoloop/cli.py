@@ -10,7 +10,7 @@ import sys
 from autoloop import __version__
 
 
-def main():
+def build_parser():
     parser = argparse.ArgumentParser(
         prog="autoloop",
         description="Config-driven AI pipeline for triaging and implementing GitHub issues",
@@ -108,6 +108,11 @@ def main():
     # version (also accessible via --version)
     subparsers.add_parser("version", help="Print installed version")
 
+    return parser
+
+
+def main():
+    parser = build_parser()
     args = parser.parse_args()
 
     if args.command is None:
@@ -135,13 +140,14 @@ def main():
         triage_main(issue=args.issue, drain=args.drain, max_rounds=args.max_rounds)
 
     elif args.command == "implement":
+        import autoloop.implement_issue as impl
         from autoloop.config import load_config
-        from autoloop.implement_issue import main as implement_main
 
         cfg = load_config()
         if args.max_pr_review_rounds is not None:
             cfg.max_pr_review_rounds = args.max_pr_review_rounds
-        implement_main(
+        impl.cfg = cfg
+        impl.main(
             issue=args.issue,
             max_issues=args.max_issues,
             require_design=args.require_design,
