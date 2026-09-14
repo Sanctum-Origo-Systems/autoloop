@@ -8,8 +8,11 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-REPO_DIR = Path.cwd()
-DEFAULT_CONFIG_PATH = Path.cwd() / "autoloop.toml"
+
+def __getattr__(name: str):
+    if name == "REPO_DIR":
+        return Path.cwd()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 @dataclass
@@ -67,7 +70,7 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
 
     Raises FileNotFoundError when the resolved config path does not exist.
     """
-    config_path = path or DEFAULT_CONFIG_PATH
+    config_path = path or Path.cwd() / "autoloop.toml"
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
     config = AutoLoopConfig()

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+
 import pytest
 from autoloop.config import (
     AutoLoopConfig,
@@ -342,3 +344,58 @@ def test_max_pr_review_rounds_omitted_uses_default(tmp_path, monkeypatch):
     toml_path.write_text('repo = "acme-corp/widget"\n')
     config = load_config(toml_path)
     assert config.max_pr_review_rounds == 3
+
+
+def test_no_default_config_path_at_module_scope():
+    """DEFAULT_CONFIG_PATH must not exist as a module-level constant in config.py."""
+    import autoloop.config as mod
+
+    source = ast.parse(open(mod.__file__).read())
+    names = {
+        target.id
+        for node in ast.walk(source)
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    assert "DEFAULT_CONFIG_PATH" not in names
+
+
+def test_no_repo_dir_assigned_at_module_scope():
+    """REPO_DIR must not be assigned via Path.cwd() at module scope."""
+    import autoloop.config as mod
+
+    source = ast.parse(open(mod.__file__).read())
+    names = {
+        target.id
+        for node in ast.walk(source)
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    assert "REPO_DIR" not in names
+
+
+def test_load_config_resolves_from_cwd(tmp_path, monkeypatch):
+    """load_config() without a path loads autoloop.toml from the current directory."""
+    for var in (
+        "AUTOLOOP_TRIAGE_MODEL",
+        "AUTOLOOP_IMPL_MODEL",
+        "AUTOLOOP_TIMEOUT",
+        "AUTOLOOP_REVIEWER",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    toml = tmp_path / "autoloop.toml"
+    toml.write_text('repo = "cwd-org/cwd-repo"\n')
+    monkeypatch.chdir(tmp_path)
+
+    config = load_config()
+    assert config.repo == "cwd-org/cwd-repo"
+    assert config.project_dir == str(tmp_path.resolve())
+
+
+def test_load_config_no_path_missing_toml(tmp_path, monkeypatch):
+    """load_config() raises FileNotFoundError when cwd has no autoloop.toml."""
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(FileNotFoundError, match="Config file not found"):
+        load_config()
