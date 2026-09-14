@@ -309,3 +309,36 @@ def test_protected_paths_loaded_from_toml(tmp_path, monkeypatch):
     toml_path.write_text('protected_paths = ["autoloop/", "autoloop.toml", ".github/"]\n')
     config = load_config(toml_path)
     assert config.protected_paths == ["autoloop/", "autoloop.toml", ".github/"]
+
+
+def test_max_pr_review_rounds_default():
+    config = AutoLoopConfig()
+    assert config.max_pr_review_rounds == 3
+
+
+def test_max_pr_review_rounds_loaded_from_toml(tmp_path, monkeypatch):
+    for var in (
+        "AUTOLOOP_TRIAGE_MODEL",
+        "AUTOLOOP_IMPL_MODEL",
+        "AUTOLOOP_TIMEOUT",
+        "AUTOLOOP_REVIEWER",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text("max_pr_review_rounds = 7\n")
+    config = load_config(toml_path)
+    assert config.max_pr_review_rounds == 7
+
+
+def test_max_pr_review_rounds_omitted_uses_default(tmp_path, monkeypatch):
+    for var in (
+        "AUTOLOOP_TRIAGE_MODEL",
+        "AUTOLOOP_IMPL_MODEL",
+        "AUTOLOOP_TIMEOUT",
+        "AUTOLOOP_REVIEWER",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('repo = "acme-corp/widget"\n')
+    config = load_config(toml_path)
+    assert config.max_pr_review_rounds == 3
