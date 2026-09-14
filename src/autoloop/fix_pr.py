@@ -21,8 +21,6 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from autoloop.config import AutoLoopConfig
 
-REPO_DIR = Path.cwd()
-
 CONFLICT_PROMPT = """\
 The following files have merge conflicts after rebasing on main.
 Resolve each conflict by choosing the correct code. Keep both sides
@@ -100,16 +98,16 @@ def get_pr_info(pr_number: int, repo: str) -> PrState | None:
 
 def checkout_branch(branch: str) -> bool:
     """Fetch and checkout the PR branch."""
-    subprocess.run(["git", "fetch", "origin", branch], cwd=REPO_DIR, capture_output=True)
+    subprocess.run(["git", "fetch", "origin", branch], cwd=Path.cwd(), capture_output=True)
     result = subprocess.run(
-        ["git", "checkout", branch], cwd=REPO_DIR, capture_output=True, text=True
+        ["git", "checkout", branch], cwd=Path.cwd(), capture_output=True, text=True
     )
     return result.returncode == 0
 
 
 def update_main() -> None:
     """Fetch latest main."""
-    subprocess.run(["git", "fetch", "origin", "main"], cwd=REPO_DIR, capture_output=True)
+    subprocess.run(["git", "fetch", "origin", "main"], cwd=Path.cwd(), capture_output=True)
 
 
 def _parse_conflicting_files(rebase_output: str) -> list[str]:
@@ -126,7 +124,7 @@ def _get_unmerged_files() -> list[str]:
     """Get files with unresolved merge conflicts from git status."""
     result = subprocess.run(
         ["git", "status", "--porcelain"],
-        cwd=REPO_DIR,
+        cwd=Path.cwd(),
         capture_output=True,
         text=True,
     )
@@ -141,7 +139,7 @@ def is_behind_main(branch: str) -> bool:
     """Check if the branch is behind origin/main."""
     result = subprocess.run(
         ["git", "rev-list", "--count", f"{branch}..origin/main"],
-        cwd=REPO_DIR,
+        cwd=Path.cwd(),
         capture_output=True,
         text=True,
     )
@@ -154,7 +152,7 @@ def rebase_on_main() -> tuple[bool, list[str]]:
     """Attempt to rebase on main. Returns (clean, conflicting_files)."""
     result = subprocess.run(
         ["git", "rebase", "origin/main"],
-        cwd=REPO_DIR,
+        cwd=Path.cwd(),
         capture_output=True,
         text=True,
     )
@@ -189,7 +187,7 @@ def continue_rebase(max_rounds: int = 10) -> bool:
     for _ in range(max_rounds):
         result = subprocess.run(
             ["git", "rebase", "--continue"],
-            cwd=REPO_DIR,
+            cwd=Path.cwd(),
             capture_output=True,
             text=True,
             env={**os.environ, "GIT_EDITOR": "true"},
@@ -198,7 +196,7 @@ def continue_rebase(max_rounds: int = 10) -> bool:
             return True
         if _get_unmerged_files():
             return False
-        rebase_dir = REPO_DIR / ".git" / "rebase-merge"
+        rebase_dir = Path.cwd() / ".git" / "rebase-merge"
         if not rebase_dir.exists():
             return True
     return False
@@ -208,13 +206,13 @@ def run_lint_fix(cfg: AutoLoopConfig) -> tuple[bool, str]:
     """Run ruff fix and format to auto-fix lint issues. Returns (fixed, output)."""
     fix_result = subprocess.run(
         ["uv", "run", "ruff", "check", "--fix"],
-        cwd=REPO_DIR,
+        cwd=Path.cwd(),
         capture_output=True,
         text=True,
     )
     fmt_result = subprocess.run(
         ["uv", "run", "ruff", "format", "."],
-        cwd=REPO_DIR,
+        cwd=Path.cwd(),
         capture_output=True,
         text=True,
     )
@@ -222,7 +220,7 @@ def run_lint_fix(cfg: AutoLoopConfig) -> tuple[bool, str]:
     check_result = subprocess.run(
         cfg.lint_command,
         shell=True,
-        cwd=REPO_DIR,
+        cwd=Path.cwd(),
         capture_output=True,
         text=True,
     )
@@ -250,7 +248,7 @@ def verify(cfg: AutoLoopConfig) -> tuple[bool, str]:
         shell=True,
         capture_output=True,
         text=True,
-        cwd=REPO_DIR,
+        cwd=Path.cwd(),
         timeout=cfg.test_timeout,
     )
     return result.returncode == 0, result.stdout + result.stderr
@@ -263,7 +261,7 @@ def lint_check(cfg: AutoLoopConfig) -> tuple[bool, str]:
         shell=True,
         capture_output=True,
         text=True,
-        cwd=REPO_DIR,
+        cwd=Path.cwd(),
     )
     return result.returncode == 0, result.stdout + result.stderr
 
@@ -272,7 +270,7 @@ def has_staged_changes() -> bool:
     """Check if there are staged or unstaged changes to commit."""
     result = subprocess.run(
         ["git", "status", "--porcelain"],
-        cwd=REPO_DIR,
+        cwd=Path.cwd(),
         capture_output=True,
         text=True,
     )
@@ -281,10 +279,10 @@ def has_staged_changes() -> bool:
 
 def commit_fixes() -> bool:
     """Stage all changes and commit."""
-    subprocess.run(["git", "add", "-A"], cwd=REPO_DIR, capture_output=True)
+    subprocess.run(["git", "add", "-A"], cwd=Path.cwd(), capture_output=True)
     result = subprocess.run(
         ["git", "commit", "-m", "fix: resolve failing checks after rebase"],
-        cwd=REPO_DIR,
+        cwd=Path.cwd(),
         capture_output=True,
         text=True,
     )
@@ -295,7 +293,7 @@ def force_push(branch: str) -> bool:
     """Force-push the rebased branch."""
     result = subprocess.run(
         ["git", "push", "--force-with-lease", "origin", branch],
-        cwd=REPO_DIR,
+        cwd=Path.cwd(),
         capture_output=True,
         text=True,
     )
@@ -312,12 +310,12 @@ def post_pr_comment(pr_number: int, repo: str, message: str) -> None:
 
 def abort_rebase() -> None:
     """Abort an in-progress rebase."""
-    subprocess.run(["git", "rebase", "--abort"], cwd=REPO_DIR, capture_output=True)
+    subprocess.run(["git", "rebase", "--abort"], cwd=Path.cwd(), capture_output=True)
 
 
 def restore_main() -> None:
     """Return to main branch."""
-    subprocess.run(["git", "checkout", "main"], cwd=REPO_DIR, capture_output=True)
+    subprocess.run(["git", "checkout", "main"], cwd=Path.cwd(), capture_output=True)
 
 
 def _handle_rebase(cfg: AutoLoopConfig) -> bool:

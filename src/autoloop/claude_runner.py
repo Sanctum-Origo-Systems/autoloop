@@ -5,8 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 from dataclasses import dataclass
-
-from autoloop.config import REPO_DIR
+from pathlib import Path
 
 
 @dataclass
@@ -32,7 +31,7 @@ def run_claude(prompt: str, model: str, timeout: int) -> ClaudeResult:
     try:
         result = subprocess.run(
             ["claude", "-p", "--model", model, "--output-format", "json", prompt],
-            cwd=REPO_DIR,
+            cwd=Path.cwd(),
             capture_output=True,
             text=True,
             timeout=timeout,
