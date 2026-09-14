@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from pathlib import Path
 
 import autoloop.claude_runner as claude_runner
 from autoloop.claude_runner import ClaudeResult, run_claude
@@ -80,7 +81,25 @@ def test_run_claude_uses_repo_dir_as_cwd(monkeypatch):
 
     run_claude("p", "opus", 10)
 
-    assert captured["kwargs"]["cwd"] == claude_runner.REPO_DIR
+    assert captured["kwargs"]["cwd"] == Path.cwd()
+
+
+def test_run_claude_no_module_level_repo_dir():
+    """claude_runner should not have a module-level REPO_DIR attribute."""
+    assert not hasattr(claude_runner, "REPO_DIR"), (
+        "claude_runner should not have REPO_DIR; cwd is resolved at call time"
+    )
+
+
+def test_run_claude_resolves_cwd_at_call_time(tmp_path, monkeypatch):
+    """run_claude should use Path.cwd() at call time, not a frozen constant."""
+    fake_run, captured = _fake_run(stdout=json.dumps(_FULL_RESPONSE))
+    monkeypatch.setattr(claude_runner.subprocess, "run", fake_run)
+    monkeypatch.setattr("autoloop.claude_runner.Path.cwd", lambda: tmp_path)
+
+    run_claude("p", "opus", 10)
+
+    assert captured["kwargs"]["cwd"] == tmp_path
 
 
 def test_run_claude_timeout_returns_failure(monkeypatch):

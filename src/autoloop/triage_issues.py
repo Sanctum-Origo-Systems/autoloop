@@ -15,11 +15,8 @@ if TYPE_CHECKING:
     from autoloop.config import AutoLoopConfig
 
 from autoloop.claude_runner import ClaudeResult, run_claude
-from autoloop.config import REPO_DIR
 from autoloop.create_issue import build_issue_body
 from autoloop.implement_issue import detect_issue_type
-
-LOG_FILE = REPO_DIR / "autoloop" / "run_history.jsonl"
 
 
 def build_triage_prompt(cfg: AutoLoopConfig) -> str:
@@ -494,8 +491,9 @@ def log_run(
         "output_tokens": output_tokens,
         "cache_read_tokens": cache_read_tokens,
     }
-    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(LOG_FILE, "a") as f:
+    log_file = Path.cwd() / "autoloop" / "run_history.jsonl"
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_file, "a") as f:
         f.write(json.dumps(entry) + "\n")
 
 
@@ -504,13 +502,14 @@ def log_run(
 
 def load_project_context() -> tuple[str, str]:
     """Return the project source tree and CLAUDE.md contents for prompt context."""
+    repo_dir = Path.cwd()
     tree = subprocess.run(
         ["find", "src/", "tests/", "-name", "*.py", "-not", "-path", "*__pycache__*"],
         capture_output=True,
         text=True,
-        cwd=REPO_DIR,
+        cwd=repo_dir,
     ).stdout
-    claude_md = (REPO_DIR / "CLAUDE.md").read_text()
+    claude_md = (repo_dir / "CLAUDE.md").read_text()
     return tree, claude_md
 
 
@@ -605,7 +604,7 @@ def discover_files(issue: dict, cfg: AutoLoopConfig) -> tuple[list[dict], Claude
         return [], result
 
     files = parse_file_discovery_response(result.text)
-    return validate_discovered_files(files, REPO_DIR), result
+    return validate_discovered_files(files, Path.cwd()), result
 
 
 def list_issues_with_labels(cfg: AutoLoopConfig, labels: list[str]) -> list[dict]:

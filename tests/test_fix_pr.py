@@ -46,6 +46,17 @@ def _ok(stdout="", returncode=0):
     return type("R", (), {"returncode": returncode, "stdout": stdout, "stderr": ""})()
 
 
+# --- No module-level REPO_DIR ---
+
+
+def test_no_module_level_repo_dir():
+    import autoloop.fix_pr as mod
+
+    assert not hasattr(mod, "REPO_DIR"), (
+        "fix_pr should not have a module-level REPO_DIR; use Path.cwd() at call time"
+    )
+
+
 # --- get_pr_info ---
 
 
@@ -325,7 +336,7 @@ def test_continue_rebase_fails_with_unresolved():
         assert continue_rebase() is False
 
 
-def test_continue_rebase_respects_max_rounds(tmp_path):
+def test_continue_rebase_respects_max_rounds(tmp_path, monkeypatch):
     def fake_run(cmd, **kwargs):
         if cmd[:3] == ["git", "rebase", "--continue"]:
             return _ok(returncode=1)
@@ -333,11 +344,9 @@ def test_continue_rebase_respects_max_rounds(tmp_path):
             return _ok(stdout="")
         return _ok()
 
-    with (
-        patch("autoloop.fix_pr.subprocess.run", fake_run),
-        patch("autoloop.fix_pr.REPO_DIR", tmp_path),
-    ):
-        (tmp_path / ".git" / "rebase-merge").mkdir(parents=True)
+    (tmp_path / ".git" / "rebase-merge").mkdir(parents=True)
+    monkeypatch.setattr("autoloop.fix_pr.Path.cwd", lambda: tmp_path)
+    with patch("autoloop.fix_pr.subprocess.run", fake_run):
         assert continue_rebase(max_rounds=3) is False
 
 

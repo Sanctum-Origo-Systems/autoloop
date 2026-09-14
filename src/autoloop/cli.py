@@ -6,6 +6,7 @@ import argparse
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 from autoloop import __version__
 
@@ -223,7 +224,6 @@ def review_pr(pr_number, cfg):
 
     import autoloop.implement_issue as impl
     from autoloop.claude_runner import run_claude
-    from autoloop.config import REPO_DIR
 
     _zero_result = {
         "success": False,
@@ -240,7 +240,7 @@ def review_pr(pr_number, cfg):
         ["git", "rev-parse", "--abbrev-ref", "HEAD"],
         capture_output=True,
         text=True,
-        cwd=REPO_DIR,
+        cwd=Path.cwd(),
     ).stdout.strip()
 
     checkout = subprocess.run(
@@ -423,7 +423,7 @@ def review_pr(pr_number, cfg):
         subprocess.run(
             ["git", "checkout", original_branch],
             capture_output=True,
-            cwd=REPO_DIR,
+            cwd=Path.cwd(),
         )
 
 

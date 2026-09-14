@@ -289,6 +289,20 @@ def test_build_triage_prompt_includes_project_commands_section():
 # --- No bare constants at module level ---
 
 
+def test_no_module_level_repo_dir():
+    import autoloop.triage_issues as mod
+
+    assert not hasattr(mod, "REPO_DIR"), "Module should not import or define REPO_DIR"
+
+
+def test_no_module_level_log_file():
+    import autoloop.triage_issues as mod
+
+    assert not hasattr(mod, "LOG_FILE"), (
+        "LOG_FILE should be computed at call time, not module level"
+    )
+
+
 def test_no_bare_repo_constant():
     import autoloop.triage_issues as mod
 
@@ -671,17 +685,37 @@ def test_evaluate_issue_uses_cfg_tree_truncation(monkeypatch):
     assert "a" * 10 in captured["prompt"]
 
 
-# --- log_run writes to the correct file ---
+# --- log_run resolves path at call time ---
+
+
+def test_log_run_resolves_path_at_call_time(tmp_path, monkeypatch):
+    """log_run uses Path.cwd() at call time, not a frozen module-level constant."""
+    from autoloop.triage_issues import log_run
+
+    monkeypatch.setattr("autoloop.triage_issues.Path.cwd", lambda: tmp_path)
+    log_run(1, True, 1, 1.0, 0.01)
+
+    second_dir = tmp_path / "other"
+    second_dir.mkdir()
+    monkeypatch.setattr("autoloop.triage_issues.Path.cwd", lambda: second_dir)
+    log_run(2, True, 1, 1.0, 0.01)
+
+    log1 = tmp_path / "autoloop" / "run_history.jsonl"
+    log2 = second_dir / "autoloop" / "run_history.jsonl"
+    assert log1.exists()
+    assert log2.exists()
+    assert json.loads(log1.read_text().strip())["issue"] == 1
+    assert json.loads(log2.read_text().strip())["issue"] == 2
 
 
 def test_log_run_writes_jsonl(tmp_path, monkeypatch):
-    log_file = tmp_path / "run_history.jsonl"
-    monkeypatch.setattr("autoloop.triage_issues.LOG_FILE", log_file)
+    monkeypatch.setattr("autoloop.triage_issues.Path.cwd", lambda: tmp_path)
 
     from autoloop.triage_issues import log_run
 
     log_run(42, True, 1, 10.0, 0.05)
 
+    log_file = tmp_path / "autoloop" / "run_history.jsonl"
     lines = log_file.read_text().strip().split("\n")
     assert len(lines) == 1
     entry = json.loads(lines[0])
