@@ -99,35 +99,70 @@ def main():
 
     @server.tool()
     def autoloop_implement(
-        issue: int | None = None, max_issues: int = 1, repo_dir: str | None = None
+        issue: int | None = None,
+        max_issues: int = 1,
+        auto_fix: bool = False,
+        max_pr_review_rounds: int = 3,
+        repo_dir: str | None = None,
     ) -> str:
         """Trigger autoloop implementation. Starts async, returns immediately.
 
         Args:
             issue: Specific issue number to implement.
             max_issues: Maximum number of issues to implement.
+            auto_fix: Enable auto-fix mode (rebase, lint-fix, re-review loop).
+            max_pr_review_rounds: Max review-fix cycles when auto_fix is True.
             repo_dir: Target repository directory. Defaults to server's working directory.
         """
         cmd = ["autoloop", "implement"]
         if issue is not None:
             cmd.extend(["--issue", str(issue)])
         cmd.extend(["--max-issues", str(max_issues)])
+        if auto_fix:
+            cmd.append("--auto-fix")
+            cmd.extend(["--max-pr-review-rounds", str(max_pr_review_rounds)])
 
         _spawn(cmd, cwd=repo_dir)
 
         if issue:
-            return f"Started implementation of issue #{issue}."
-        return f"Started implementation (max {max_issues} issue(s))."
+            msg = f"Started implementation of issue #{issue}"
+        else:
+            msg = f"Started implementation (max {max_issues} issue(s))"
+        if auto_fix:
+            msg += f" (auto-fix, max {max_pr_review_rounds} review rounds)"
+        return msg + "."
 
     @server.tool()
-    def autoloop_triage(repo_dir: str | None = None) -> str:
+    def autoloop_triage(
+        drain: bool = False,
+        max_rounds: int = 5,
+        issue: int | None = None,
+        repo_dir: str | None = None,
+    ) -> str:
         """Trigger autoloop triage of untriaged issues.
 
         Args:
+            drain: Enable drain mode (loop until no untriaged issues remain).
+            max_rounds: Max triage rounds when drain is True.
+            issue: Specific issue number to triage.
             repo_dir: Target repository directory. Defaults to server's working directory.
         """
-        _spawn(["autoloop", "triage"], cwd=repo_dir)
-        return "Started triage run."
+        cmd = ["autoloop", "triage"]
+        if drain:
+            cmd.append("--drain")
+            cmd.extend(["--max-rounds", str(max_rounds)])
+        if issue is not None:
+            cmd.extend(["--issue", str(issue)])
+
+        _spawn(cmd, cwd=repo_dir)
+
+        if issue is not None:
+            msg = f"Started triage of issue #{issue}"
+        elif drain:
+            msg = f"Started triage run (drain mode, max {max_rounds} rounds)"
+        else:
+            msg = "Started triage run"
+        return msg + "."
 
     @server.tool()
     def autoloop_fix_pr(pr_number: int, repo_dir: str | None = None) -> str:
