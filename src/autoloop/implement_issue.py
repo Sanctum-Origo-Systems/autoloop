@@ -716,23 +716,38 @@ def mutation_gate(branch: str, issue_type: str) -> None:
         return
 
     diff_result = subprocess.run(
-        ["git", "diff", "--name-only", f"main..{branch}"],
+        ["git", "diff", "--name-status", f"main..{branch}"],
         capture_output=True,
         text=True,
         cwd=Path.cwd(),
     )
-    changed_files = [f for f in diff_result.stdout.strip().split("\n") if f]
+    changed_files: list[tuple[str, str]] = []
+    for line in diff_result.stdout.strip().split("\n"):
+        if not line:
+            continue
+        parts = line.split("\t", 1)
+        if len(parts) == 2:
+            changed_files.append((parts[0], parts[1]))
 
-    source_files = [f for f in changed_files if not fnmatch.fnmatch(f, cfg.test_pattern)]
+    source_files = [
+        (status, f) for status, f in changed_files if not fnmatch.fnmatch(f, cfg.test_pattern)
+    ]
     if not source_files:
         return
 
+    modified = [f for status, f in source_files if status != "A"]
+    added = [f for status, f in source_files if status == "A"]
+    all_paths = [f for _, f in source_files]
+
     try:
-        subprocess.run(
-            ["git", "checkout", "main", "--"] + source_files,
-            cwd=Path.cwd(),
-            check=True,
-        )
+        if modified:
+            subprocess.run(
+                ["git", "checkout", "main", "--"] + modified,
+                cwd=Path.cwd(),
+                check=True,
+            )
+        for f in added:
+            os.remove(Path.cwd() / f)
         result = subprocess.run(
             cfg.verify_cmd,
             shell=True,
@@ -745,7 +760,7 @@ def mutation_gate(branch: str, issue_type: str) -> None:
             raise RuntimeError("tests pass without the implementation")
     finally:
         subprocess.run(
-            ["git", "checkout", branch, "--"] + source_files,
+            ["git", "checkout", branch, "--"] + all_paths,
             cwd=Path.cwd(),
         )
 
