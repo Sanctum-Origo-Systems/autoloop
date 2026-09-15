@@ -2515,8 +2515,8 @@ def test_mutation_gate_rejects_dead_green_test(monkeypatch):
     )
 
     def fake_run(cmd_or_str, **kwargs):
-        if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "diff", "--name-only"]:
-            return type("R", (), {"returncode": 0, "stdout": "src/app.py\ntests/test_app.py\n"})()
+        if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "diff", "--name-status"]:
+            return type("R", (), {"returncode": 0, "stdout": "M\tsrc/app.py\nA\ttests/test_app.py\n"})()
         if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "checkout", "main"]:
             return type("R", (), {"returncode": 0})()
         if isinstance(cmd_or_str, str):
@@ -2538,8 +2538,8 @@ def test_mutation_gate_accepts_exercising_test(monkeypatch):
     )
 
     def fake_run(cmd_or_str, **kwargs):
-        if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "diff", "--name-only"]:
-            return type("R", (), {"returncode": 0, "stdout": "src/app.py\ntests/test_app.py\n"})()
+        if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "diff", "--name-status"]:
+            return type("R", (), {"returncode": 0, "stdout": "M\tsrc/app.py\nA\ttests/test_app.py\n"})()
         if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "checkout", "main"]:
             return type("R", (), {"returncode": 0})()
         if isinstance(cmd_or_str, str):
@@ -2558,8 +2558,8 @@ def test_mutation_gate_restores_tree_on_success(monkeypatch):
     restore_calls = []
 
     def fake_run(cmd_or_str, **kwargs):
-        if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "diff", "--name-only"]:
-            return type("R", (), {"returncode": 0, "stdout": "src/app.py\ntests/test_app.py\n"})()
+        if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "diff", "--name-status"]:
+            return type("R", (), {"returncode": 0, "stdout": "M\tsrc/app.py\nA\ttests/test_app.py\n"})()
         if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "checkout", "main"]:
             return type("R", (), {"returncode": 0})()
         if isinstance(cmd_or_str, list) and "checkout" in cmd_or_str and "main" not in cmd_or_str:
@@ -2584,8 +2584,8 @@ def test_mutation_gate_restores_tree_on_failure(monkeypatch):
     restore_calls = []
 
     def fake_run(cmd_or_str, **kwargs):
-        if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "diff", "--name-only"]:
-            return type("R", (), {"returncode": 0, "stdout": "src/app.py\ntests/test_app.py\n"})()
+        if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "diff", "--name-status"]:
+            return type("R", (), {"returncode": 0, "stdout": "M\tsrc/app.py\nA\ttests/test_app.py\n"})()
         if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "checkout", "main"]:
             return type("R", (), {"returncode": 0})()
         if isinstance(cmd_or_str, list) and "checkout" in cmd_or_str and "main" not in cmd_or_str:
@@ -2614,8 +2614,8 @@ def test_mutation_gate_restores_tree_on_exception(monkeypatch):
     restore_calls = []
 
     def fake_run(cmd_or_str, **kwargs):
-        if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "diff", "--name-only"]:
-            return type("R", (), {"returncode": 0, "stdout": "src/app.py\ntests/test_app.py\n"})()
+        if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "diff", "--name-status"]:
+            return type("R", (), {"returncode": 0, "stdout": "M\tsrc/app.py\nA\ttests/test_app.py\n"})()
         if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "checkout", "main"]:
             return type("R", (), {"returncode": 0})()
         if isinstance(cmd_or_str, list) and "checkout" in cmd_or_str and "main" not in cmd_or_str:
@@ -2655,6 +2655,99 @@ def test_mutation_gate_skip_types_bypasses(monkeypatch):
     mutation_gate("autoloop/42-refactor", "refactor")
 
     assert len(calls) == 0
+
+
+def test_mutation_gate_new_source_file_passes(monkeypatch, tmp_path):
+    """Gate passes when a newly added source file + test file exercises the code."""
+    monkeypatch.setattr(
+        implement_issue, "cfg", _test_cfg(test_pattern="tests/*.py", test_timeout=60)
+    )
+    monkeypatch.chdir(tmp_path)
+    new_file = tmp_path / "src" / "eval.py"
+    new_file.parent.mkdir(parents=True)
+    new_file.write_text("def evaluate(): pass\n")
+
+    checkout_main_calls = []
+    remove_calls = []
+    restore_calls = []
+
+    def fake_run(cmd_or_str, **kwargs):
+        if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "diff", "--name-status"]:
+            return type(
+                "R",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": "A\tsrc/eval.py\nA\ttests/test_eval.py\n",
+                },
+            )()
+        if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "checkout", "main"]:
+            checkout_main_calls.append(cmd_or_str)
+            return type("R", (), {"returncode": 0})()
+        if isinstance(cmd_or_str, list) and "checkout" in cmd_or_str and "main" not in cmd_or_str:
+            restore_calls.append(cmd_or_str)
+            return type("R", (), {"returncode": 0})()
+        if isinstance(cmd_or_str, str):
+            return type("R", (), {"returncode": 1, "stdout": "FAILED", "stderr": ""})()
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    monkeypatch.setattr(implement_issue.os, "remove", lambda p: remove_calls.append(str(p)))
+
+    mutation_gate("autoloop/42-feat", "feat")
+
+    assert len(checkout_main_calls) == 0
+    assert any("src/eval.py" in str(p) for p in remove_calls)
+    assert len(restore_calls) == 1
+    assert "src/eval.py" in restore_calls[0]
+
+
+def test_mutation_gate_new_source_file_dead_test_fails(monkeypatch, tmp_path):
+    """Gate rejects when a newly added source file has a dead test."""
+    monkeypatch.setattr(
+        implement_issue, "cfg", _test_cfg(test_pattern="tests/*.py", test_timeout=60)
+    )
+    monkeypatch.chdir(tmp_path)
+    new_file = tmp_path / "src" / "eval.py"
+    new_file.parent.mkdir(parents=True)
+    new_file.write_text("def evaluate(): pass\n")
+
+    checkout_main_calls = []
+    remove_calls = []
+    restore_calls = []
+
+    def fake_run(cmd_or_str, **kwargs):
+        if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "diff", "--name-status"]:
+            return type(
+                "R",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": "A\tsrc/eval.py\nA\ttests/test_eval.py\n",
+                },
+            )()
+        if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "checkout", "main"]:
+            checkout_main_calls.append(cmd_or_str)
+            return type("R", (), {"returncode": 0})()
+        if isinstance(cmd_or_str, list) and "checkout" in cmd_or_str and "main" not in cmd_or_str:
+            restore_calls.append(cmd_or_str)
+            return type("R", (), {"returncode": 0})()
+        if isinstance(cmd_or_str, str):
+            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    monkeypatch.setattr(implement_issue.os, "remove", lambda p: remove_calls.append(str(p)))
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match="tests pass without the implementation"):
+        mutation_gate("autoloop/42-feat", "feat")
+
+    assert len(checkout_main_calls) == 0
+    assert any("src/eval.py" in str(p) for p in remove_calls)
+    assert len(restore_calls) == 1
+    assert "src/eval.py" in restore_calls[0]
 
 
 def test_implement_single_issue_mutation_gate_triggers_retry(monkeypatch, tmp_path):
