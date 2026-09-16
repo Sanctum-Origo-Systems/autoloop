@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.5.1
+
+- `autoloop eval`: deterministic performance tracking from run history + PR data (zero LLM cost)
+- Eval snapshots: first-attempt success rate, cost, duration, retry hotspots per module
+- `eval --compare latest` and `eval --trend` for tracking improvement over time
+- Fix: mutation gate handles newly created files (git rm instead of checkout for added files)
+- Fix: review-pr mutation gate respects test_gate_skip_types for docs/chore PRs
+
 ## v0.5.0
 
 - `implement --auto-fix`: bounded review-fix loop until PR passes review (up to `max_pr_review_rounds`)
