@@ -6,11 +6,13 @@ import json
 
 from autoloop.eval import (
     _detect_module_prefixes,
+    _detect_post_merge_fixups,
     _extract_issue_from_branch,
     classify_module,
     compare_snapshots,
     compute_snapshot,
     enrich_pr_data_with_runs,
+    fetch_pr_data,
     format_comparison,
     format_snapshot,
     format_trend,
@@ -221,6 +223,7 @@ def test_compute_snapshot_with_pr_data():
     snap = compute_snapshot(runs, pr_data, date="2026-09-14")
     assert snap["human_edit_rate"] == 0.5
     assert snap["human_edit_count"] == 1
+    assert snap["merged_pr_count"] == 2
     assert "src/autoloop/" in snap["modules"]
 
 
@@ -391,6 +394,7 @@ def test_format_snapshot_output():
         "attempt_distribution": {"1": 31, "2": 3, "3+": 1},
         "human_edit_rate": 0.08,
         "human_edit_count": 3,
+        "merged_pr_count": 38,
         "closed_without_merge": 0,
         "modules": {
             "src/mcp/": {"implementations": 12, "first_attempt_rate": 1.0},
@@ -404,7 +408,7 @@ def test_format_snapshot_output():
     assert "$1.12" in output
     assert "4m 22s" in output
     assert "1-try: 31" in output
-    assert "8%" in output
+    assert "3/38 PRs had post-merge fixups" in output
     assert "src/ingest/" in output
     assert "src/mcp/" in output
 
@@ -419,6 +423,7 @@ def test_format_snapshot_no_modules():
         "attempt_distribution": {},
         "human_edit_rate": 0.0,
         "human_edit_count": 0,
+        "merged_pr_count": 0,
         "closed_without_merge": 0,
         "modules": {},
     }
@@ -664,3 +669,133 @@ def test_cli_eval_trend_flag():
     parser = build_parser()
     args = parser.parse_args(["eval", "--trend"])
     assert args.trend is True
+
+
+# --- _detect_post_merge_fixups ---
+
+
+def test_detect_post_merge_fixups_finds_fixup():
+    autoloop_prs = [
+        ({"number": 10, "mergedAt": "2026-09-10T00:00:00Z"}, {"src/autoloop/eval.py"}),
+    ]
+    non_autoloop_merged = [
+        {"merged_at": "2026-09-12T00:00:00Z", "files": {"src/autoloop/eval.py"}},
+    ]
+    fixups = _detect_post_merge_fixups(autoloop_prs, non_autoloop_merged)
+    assert 10 in fixups
+
+
+def test_detect_post_merge_fixups_no_overlap():
+    autoloop_prs = [
+        ({"number": 10, "mergedAt": "2026-09-10T00:00:00Z"}, {"src/autoloop/eval.py"}),
+    ]
+    non_autoloop_merged = [
+        {"merged_at": "2026-09-12T00:00:00Z", "files": {"src/autoloop/cli.py"}},
+    ]
+    fixups = _detect_post_merge_fixups(autoloop_prs, non_autoloop_merged)
+    assert len(fixups) == 0
+
+
+def test_detect_post_merge_fixups_ignores_earlier_merge():
+    autoloop_prs = [
+        ({"number": 10, "mergedAt": "2026-09-12T00:00:00Z"}, {"src/autoloop/eval.py"}),
+    ]
+    non_autoloop_merged = [
+        {"merged_at": "2026-09-10T00:00:00Z", "files": {"src/autoloop/eval.py"}},
+    ]
+    fixups = _detect_post_merge_fixups(autoloop_prs, non_autoloop_merged)
+    assert len(fixups) == 0
+
+
+def test_detect_post_merge_fixups_skips_unmerged():
+    autoloop_prs = [
+        ({"number": 10, "mergedAt": None}, {"src/autoloop/eval.py"}),
+    ]
+    non_autoloop_merged = [
+        {"merged_at": "2026-09-12T00:00:00Z", "files": {"src/autoloop/eval.py"}},
+    ]
+    fixups = _detect_post_merge_fixups(autoloop_prs, non_autoloop_merged)
+    assert len(fixups) == 0
+
+
+# --- fetch_pr_data FileNotFoundError ---
+
+
+def test_fetch_pr_data_returns_empty_on_missing_gh(monkeypatch):
+    def fake_run(*args, **kwargs):
+        raise FileNotFoundError("gh not found")
+
+    monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
+    assert fetch_pr_data("owner/repo") == []
+
+
+# --- first_attempt_success default ---
+
+
+def test_enrich_pr_data_no_matching_run_keeps_false():
+    pr_data = [{"number": 10, "issue": 99, "first_attempt_success": False}]
+    runs = [{"type": "implement", "issue": 1, "attempts": 2}]
+    enriched = enrich_pr_data_with_runs(pr_data, runs)
+    assert enriched[0]["first_attempt_success"] is False
+
+
+# --- format_comparison dollar format ---
+
+
+def test_format_comparison_dollar_shows_percentage():
+    comp = {
+        "old_date": "2026-09-13",
+        "new_date": "2026-09-14",
+        "changes": {
+            "first_attempt_rate": {"old": 0.86, "new": 0.89, "delta": 0.03},
+            "avg_cost_usd": {"old": 1.15, "new": 1.12, "delta": -0.03},
+            "avg_duration_seconds": {"old": 280, "new": 262, "delta": -18},
+            "human_edit_rate": {"old": 0.10, "new": 0.08, "delta": -0.02},
+            "total_implementations": {"old": 30, "new": 35, "delta": 5},
+        },
+        "module_changes": {},
+    }
+    output = format_comparison(comp)
+    assert "$1.15" in output
+    assert "$1.12" in output
+    assert "-3%" in output
+    assert "-0%" not in output
+
+
+def test_format_comparison_dollar_zero_old():
+    comp = {
+        "old_date": "2026-09-13",
+        "new_date": "2026-09-14",
+        "changes": {
+            "first_attempt_rate": {"old": 0.0, "new": 0.5, "delta": 0.5},
+            "avg_cost_usd": {"old": 0.0, "new": 1.0, "delta": 1.0},
+            "avg_duration_seconds": {"old": 0, "new": 100, "delta": 100},
+            "human_edit_rate": {"old": 0.0, "new": 0.1, "delta": 0.1},
+            "total_implementations": {"old": 0, "new": 5, "delta": 5},
+        },
+        "module_changes": {},
+    }
+    output = format_comparison(comp)
+    assert "$1.00" in output
+
+
+# --- format_snapshot uses merged_pr_count ---
+
+
+def test_format_snapshot_uses_merged_pr_count():
+    snap = {
+        "date": "2026-09-14",
+        "total_implementations": 35,
+        "first_attempt_rate": 0.89,
+        "avg_cost_usd": 1.12,
+        "avg_duration_seconds": 262,
+        "attempt_distribution": {},
+        "human_edit_rate": 0.1,
+        "human_edit_count": 4,
+        "merged_pr_count": 40,
+        "closed_without_merge": 0,
+        "modules": {},
+    }
+    output = format_snapshot(snap)
+    assert "4/40 PRs had post-merge fixups" in output
+    assert "4/35" not in output

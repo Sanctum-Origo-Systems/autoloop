@@ -99,11 +99,13 @@ def compute_snapshot(
 
     human_edit_rate = 0.0
     human_edit_count = 0
+    merged_pr_count = 0
     closed_without_merge = 0
     if pr_data:
         merged_prs = [p for p in pr_data if p.get("merged", False)]
+        merged_pr_count = len(merged_prs)
         human_edit_count = sum(1 for p in merged_prs if p.get("human_edited", False))
-        human_edit_rate = human_edit_count / len(merged_prs) if merged_prs else 0.0
+        human_edit_rate = human_edit_count / merged_pr_count if merged_pr_count else 0.0
         closed_without_merge = sum(
             1 for p in pr_data if not p.get("merged", False) and p.get("closed", False)
         )
@@ -117,6 +119,7 @@ def compute_snapshot(
         "attempt_distribution": attempt_dist,
         "human_edit_rate": round(human_edit_rate, 2),
         "human_edit_count": human_edit_count,
+        "merged_pr_count": merged_pr_count,
         "closed_without_merge": closed_without_merge,
         "modules": module_stats,
     }
@@ -124,63 +127,79 @@ def compute_snapshot(
 
 
 def fetch_pr_data(repo: str) -> list[dict]:
-    result = subprocess.run(
-        [
-            "gh",
-            "pr",
-            "list",
-            "--repo",
-            repo,
-            "--state",
-            "all",
-            "--limit",
-            "500",
-            "--json",
-            "number,state,mergedAt,closedAt,headRefName,files,commits,author",
-        ],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            [
+                "gh",
+                "pr",
+                "list",
+                "--repo",
+                repo,
+                "--state",
+                "all",
+                "--limit",
+                "500",
+                "--json",
+                "number,state,mergedAt,closedAt,headRefName,files,author",
+            ],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        return []
     if result.returncode != 0:
         return []
 
     raw_prs = json.loads(result.stdout)
-    pr_data = []
+
+    autoloop_prs = []
+    non_autoloop_merged = []
     for pr in raw_prs:
         branch = pr.get("headRefName", "")
-        if not branch.startswith("autoloop/"):
-            continue
+        merged_at = pr.get("mergedAt")
+        files = set(f.get("path", "") for f in (pr.get("files") or []))
+        if branch.startswith("autoloop/"):
+            autoloop_prs.append((pr, files))
+        elif merged_at:
+            non_autoloop_merged.append({"merged_at": merged_at, "files": files})
 
+    fixup_numbers = _detect_post_merge_fixups(autoloop_prs, non_autoloop_merged)
+
+    pr_data = []
+    for pr, files in autoloop_prs:
+        branch = pr.get("headRefName", "")
         merged = pr.get("mergedAt") is not None
         closed = pr.get("state") == "CLOSED"
-        changed_files = [f.get("path", "") for f in (pr.get("files") or [])]
-
-        human_edited = False
-        if merged:
-            commits = pr.get("commits") or []
-            for commit in commits:
-                authors = commit.get("authors") or []
-                for author in authors:
-                    login = author.get("login", "")
-                    if login and login not in ("github-actions[bot]", "autoloop[bot]"):
-                        human_edited = True
-                        break
-
-        issue_match = _extract_issue_from_branch(branch)
 
         pr_data.append(
             {
                 "number": pr.get("number"),
                 "merged": merged,
                 "closed": closed and not merged,
-                "changed_files": changed_files,
-                "human_edited": human_edited,
-                "first_attempt_success": True,
-                "issue": issue_match,
+                "changed_files": list(files),
+                "human_edited": pr["number"] in fixup_numbers,
+                "first_attempt_success": False,
+                "issue": _extract_issue_from_branch(branch),
             }
         )
 
     return pr_data
+
+
+def _detect_post_merge_fixups(
+    autoloop_prs: list[tuple[dict, set[str]]],
+    non_autoloop_merged: list[dict],
+) -> set[int]:
+    fixup_numbers: set[int] = set()
+    for pr, files in autoloop_prs:
+        merged_at = pr.get("mergedAt")
+        if not merged_at or not files:
+            continue
+        for nap in non_autoloop_merged:
+            if nap["merged_at"] > merged_at and nap["files"] & files:
+                fixup_numbers.add(pr["number"])
+                break
+    return fixup_numbers
 
 
 def _extract_issue_from_branch(branch: str) -> int | None:
@@ -304,7 +323,10 @@ def format_snapshot(snapshot: dict) -> str:
 
     hr = snapshot["human_edit_rate"]
     hc = snapshot.get("human_edit_count", 0)
-    lines.append(f"  Human edit rate:        {hr:.0%} ({hc}/{total} PRs had post-merge fixups)")
+    merged_count = snapshot.get("merged_pr_count", 0)
+    lines.append(
+        f"  Human edit rate:        {hr:.0%} ({hc}/{merged_count} PRs had post-merge fixups)"
+    )
 
     cwm = snapshot.get("closed_without_merge", 0)
     if cwm:
@@ -341,9 +363,16 @@ def format_comparison(comparison: dict) -> str:
 
     def _dollar(key: str, label: str) -> str:
         c = changes[key]
-        delta = c["delta"]
-        sign = "+" if delta >= 0 else ""
-        return f"  {label:<24s} ${c['old']:.2f} → ${c['new']:.2f} ({sign}{delta:.0f}%)"
+        old_val = c["old"]
+        new_val = c["new"]
+        if old_val != 0:
+            pct = (new_val - old_val) / old_val * 100
+            sign = "+" if pct >= 0 else ""
+            return f"  {label:<24s} ${old_val:.2f} → ${new_val:.2f} ({sign}{pct:.0f}%)"
+        else:
+            delta = c["delta"]
+            sign = "+" if delta >= 0 else ""
+            return f"  {label:<24s} ${old_val:.2f} → ${new_val:.2f} ({sign}${abs(delta):.2f})"
 
     def _int(key: str, label: str) -> str:
         c = changes[key]
