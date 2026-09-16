@@ -2516,7 +2516,9 @@ def test_mutation_gate_rejects_dead_green_test(monkeypatch):
 
     def fake_run(cmd_or_str, **kwargs):
         if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "diff", "--name-status"]:
-            return type("R", (), {"returncode": 0, "stdout": "M\tsrc/app.py\nA\ttests/test_app.py\n"})()
+            return type(
+                "R", (), {"returncode": 0, "stdout": "M\tsrc/app.py\nA\ttests/test_app.py\n"}
+            )()
         if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "checkout", "main"]:
             return type("R", (), {"returncode": 0})()
         if isinstance(cmd_or_str, str):
@@ -2539,7 +2541,9 @@ def test_mutation_gate_accepts_exercising_test(monkeypatch):
 
     def fake_run(cmd_or_str, **kwargs):
         if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "diff", "--name-status"]:
-            return type("R", (), {"returncode": 0, "stdout": "M\tsrc/app.py\nA\ttests/test_app.py\n"})()
+            return type(
+                "R", (), {"returncode": 0, "stdout": "M\tsrc/app.py\nA\ttests/test_app.py\n"}
+            )()
         if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "checkout", "main"]:
             return type("R", (), {"returncode": 0})()
         if isinstance(cmd_or_str, str):
@@ -2559,7 +2563,9 @@ def test_mutation_gate_restores_tree_on_success(monkeypatch):
 
     def fake_run(cmd_or_str, **kwargs):
         if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "diff", "--name-status"]:
-            return type("R", (), {"returncode": 0, "stdout": "M\tsrc/app.py\nA\ttests/test_app.py\n"})()
+            return type(
+                "R", (), {"returncode": 0, "stdout": "M\tsrc/app.py\nA\ttests/test_app.py\n"}
+            )()
         if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "checkout", "main"]:
             return type("R", (), {"returncode": 0})()
         if isinstance(cmd_or_str, list) and "checkout" in cmd_or_str and "main" not in cmd_or_str:
@@ -2585,7 +2591,9 @@ def test_mutation_gate_restores_tree_on_failure(monkeypatch):
 
     def fake_run(cmd_or_str, **kwargs):
         if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "diff", "--name-status"]:
-            return type("R", (), {"returncode": 0, "stdout": "M\tsrc/app.py\nA\ttests/test_app.py\n"})()
+            return type(
+                "R", (), {"returncode": 0, "stdout": "M\tsrc/app.py\nA\ttests/test_app.py\n"}
+            )()
         if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "checkout", "main"]:
             return type("R", (), {"returncode": 0})()
         if isinstance(cmd_or_str, list) and "checkout" in cmd_or_str and "main" not in cmd_or_str:
@@ -2615,7 +2623,9 @@ def test_mutation_gate_restores_tree_on_exception(monkeypatch):
 
     def fake_run(cmd_or_str, **kwargs):
         if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "diff", "--name-status"]:
-            return type("R", (), {"returncode": 0, "stdout": "M\tsrc/app.py\nA\ttests/test_app.py\n"})()
+            return type(
+                "R", (), {"returncode": 0, "stdout": "M\tsrc/app.py\nA\ttests/test_app.py\n"}
+            )()
         if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "checkout", "main"]:
             return type("R", (), {"returncode": 0})()
         if isinstance(cmd_or_str, list) and "checkout" in cmd_or_str and "main" not in cmd_or_str:
