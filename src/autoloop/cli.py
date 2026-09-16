@@ -106,6 +106,21 @@ def build_parser():
     # preflight
     subparsers.add_parser("preflight", help="Run verify and lint commands on the current branch")
 
+    # eval
+    eval_parser = subparsers.add_parser(
+        "eval", help="Compute builder performance metrics from run history + PR data"
+    )
+    eval_parser.add_argument(
+        "--compare",
+        metavar="latest",
+        const="latest",
+        nargs="?",
+        help="Compare current snapshot to the most recent saved snapshot",
+    )
+    eval_parser.add_argument(
+        "--trend", action="store_true", help="Show metrics trend over all saved snapshots"
+    )
+
     # version (also accessible via --version)
     subparsers.add_parser("version", help="Print installed version")
 
@@ -185,6 +200,13 @@ def main():
             print(f"Closed parent issue #{result}")
         else:
             print("No parent issue to close.")
+
+    elif args.command == "eval":
+        from autoloop.config import load_config
+        from autoloop.eval import main as eval_main
+
+        cfg = load_config()
+        eval_main(compare=args.compare, trend=args.trend, repo=cfg.repo)
 
     elif args.command == "doctor":
         from autoloop.doctor import get_checks, run_checks
