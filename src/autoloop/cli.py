@@ -120,6 +120,12 @@ def build_parser():
     eval_parser.add_argument(
         "--trend", action="store_true", help="Show metrics trend over all saved snapshots"
     )
+    eval_parser.add_argument(
+        "--output",
+        choices=["json"],
+        default=None,
+        help="Output format: json for raw JSON to stdout",
+    )
 
     # version (also accessible via --version)
     subparsers.add_parser("version", help="Print installed version")
@@ -206,7 +212,7 @@ def main():
         from autoloop.eval import main as eval_main
 
         cfg = load_config()
-        eval_main(compare=args.compare, trend=args.trend, repo=cfg.repo)
+        eval_main(compare=args.compare, trend=args.trend, repo=cfg.repo, output=args.output)
 
     elif args.command == "doctor":
         from autoloop.doctor import get_checks, run_checks

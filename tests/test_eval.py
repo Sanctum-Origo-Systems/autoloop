@@ -671,6 +671,22 @@ def test_cli_eval_trend_flag():
     assert args.trend is True
 
 
+def test_cli_eval_output_json_flag():
+    from autoloop.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(["eval", "--output", "json"])
+    assert args.output == "json"
+
+
+def test_cli_eval_output_default_is_none():
+    from autoloop.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(["eval"])
+    assert args.output is None
+
+
 # --- _detect_post_merge_fixups ---
 
 
@@ -799,3 +815,154 @@ def test_format_snapshot_uses_merged_pr_count():
     output = format_snapshot(snap)
     assert "4/40 PRs had post-merge fixups" in output
     assert "4/35" not in output
+
+
+# --- --output json ---
+
+
+def test_main_output_json_snapshot(tmp_path, capsys):
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    log_file = log_dir / "run_history.jsonl"
+    log_file.write_text(
+        json.dumps(
+            {
+                "type": "implement",
+                "issue": 1,
+                "success": True,
+                "attempts": 1,
+                "cost_usd": 1.0,
+                "duration_seconds": 120,
+            }
+        )
+        + "\n"
+    )
+
+    main(base=tmp_path, output="json")
+
+    out = capsys.readouterr().out
+    data = json.loads(out)
+    assert data["total_implementations"] == 1
+    assert data["first_attempt_rate"] == 1.0
+    assert "Eval Snapshot" not in out
+    assert "Snapshot saved" not in out
+
+
+def test_main_output_json_trend(tmp_path, capsys):
+    snap_dir = tmp_path / "autoloop" / "eval_snapshots"
+    snap_dir.mkdir(parents=True)
+    for d in ("2026-09-12", "2026-09-13"):
+        (snap_dir / f"{d}.json").write_text(
+            json.dumps(
+                {
+                    "date": d,
+                    "total_implementations": 10,
+                    "first_attempt_rate": 0.9,
+                    "avg_cost_usd": 1.0,
+                    "human_edit_rate": 0.0,
+                }
+            )
+        )
+
+    main(trend=True, base=tmp_path, output="json")
+
+    out = capsys.readouterr().out
+    data = json.loads(out)
+    assert isinstance(data, list)
+    assert len(data) == 2
+    assert data[0]["date"] == "2026-09-12"
+    assert "Eval Trend" not in out
+
+
+def test_main_output_json_compare_no_previous(tmp_path, capsys):
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    log_file = log_dir / "run_history.jsonl"
+    log_file.write_text(
+        json.dumps(
+            {
+                "type": "implement",
+                "issue": 1,
+                "success": True,
+                "attempts": 1,
+                "cost_usd": 1.0,
+                "duration_seconds": 60,
+            }
+        )
+        + "\n"
+    )
+
+    main(compare="latest", base=tmp_path, output="json")
+
+    out = capsys.readouterr().out
+    data = json.loads(out)
+    assert data["total_implementations"] == 1
+    assert "No previous snapshot" not in out
+
+
+def test_main_output_json_compare_with_previous(tmp_path, capsys):
+    snap_dir = tmp_path / "autoloop" / "eval_snapshots"
+    snap_dir.mkdir(parents=True)
+    (snap_dir / "2026-09-13.json").write_text(
+        json.dumps(
+            {
+                "date": "2026-09-13",
+                "total_implementations": 10,
+                "first_attempt_rate": 0.8,
+                "avg_cost_usd": 1.5,
+                "avg_duration_seconds": 200,
+                "human_edit_rate": 0.1,
+                "modules": {},
+            }
+        )
+    )
+
+    log_dir = tmp_path / "autoloop"
+    log_file = log_dir / "run_history.jsonl"
+    log_file.write_text(
+        json.dumps(
+            {
+                "type": "implement",
+                "issue": 1,
+                "success": True,
+                "attempts": 1,
+                "cost_usd": 1.0,
+                "duration_seconds": 60,
+            }
+        )
+        + "\n"
+    )
+
+    main(compare="latest", base=tmp_path, output="json")
+
+    out = capsys.readouterr().out
+    data = json.loads(out)
+    assert data["old_date"] == "2026-09-13"
+    assert "changes" in data
+    assert "Snapshot saved" not in out
+
+
+def test_main_default_output_unchanged(tmp_path, capsys):
+    """Default (no --output) still produces human-readable format."""
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    log_file = log_dir / "run_history.jsonl"
+    log_file.write_text(
+        json.dumps(
+            {
+                "type": "implement",
+                "issue": 1,
+                "success": True,
+                "attempts": 1,
+                "cost_usd": 1.0,
+                "duration_seconds": 120,
+            }
+        )
+        + "\n"
+    )
+
+    main(base=tmp_path)
+
+    out = capsys.readouterr().out
+    assert "Eval Snapshot" in out
+    assert "Snapshot saved" in out

@@ -437,11 +437,15 @@ def main(
     trend: bool = False,
     repo: str | None = None,
     base: Path | None = None,
+    output: str | None = None,
 ):
     effective_base = base or Path.cwd()
 
     if trend:
         snapshots = load_all_snapshots(effective_base)
+        if output == "json":
+            print(json.dumps(snapshots))
+            return
         print(format_trend(snapshots))
         return
 
@@ -453,17 +457,25 @@ def main(
 
         previous = load_latest_snapshot(effective_base)
         if previous is None:
-            print("No previous snapshot to compare against.")
+            if output == "json":
+                print(json.dumps(current))
+            else:
+                print("No previous snapshot to compare against.")
+                print(format_snapshot(current))
             path = save_snapshot(current, effective_base)
-            print(format_snapshot(current))
-            print(f"\nSnapshot saved to {path}")
+            if output != "json":
+                print(f"\nSnapshot saved to {path}")
             return
 
         comparison = compare_snapshots(previous, current)
-        print(format_comparison(comparison))
+        if output == "json":
+            print(json.dumps(comparison))
+        else:
+            print(format_comparison(comparison))
 
         path = save_snapshot(current, effective_base)
-        print(f"\nSnapshot saved to {path}")
+        if output != "json":
+            print(f"\nSnapshot saved to {path}")
         return
 
     runs = load_run_history(effective_base)
@@ -471,6 +483,10 @@ def main(
     pr_data = enrich_pr_data_with_runs(pr_data, runs)
     snapshot = compute_snapshot(runs, pr_data)
 
-    print(format_snapshot(snapshot))
+    if output == "json":
+        print(json.dumps(snapshot))
+    else:
+        print(format_snapshot(snapshot))
     path = save_snapshot(snapshot, effective_base)
-    print(f"\nSnapshot saved to {path}")
+    if output != "json":
+        print(f"\nSnapshot saved to {path}")
