@@ -126,6 +126,11 @@ def build_parser():
         default=None,
         help="Output format: json for raw JSON to stdout",
     )
+    eval_parser.add_argument(
+        "--publish",
+        action="store_true",
+        help="Generate EVAL.md and commit to main",
+    )
 
     # version (also accessible via --version)
     subparsers.add_parser("version", help="Print installed version")
@@ -212,7 +217,13 @@ def main():
         from autoloop.eval import main as eval_main
 
         cfg = load_config()
-        eval_main(compare=args.compare, trend=args.trend, repo=cfg.repo, output=args.output)
+        eval_main(
+            compare=args.compare,
+            trend=args.trend,
+            repo=cfg.repo,
+            output=args.output,
+            publish=args.publish,
+        )
 
     elif args.command == "doctor":
         from autoloop.doctor import get_checks, run_checks

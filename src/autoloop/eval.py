@@ -80,24 +80,46 @@ def compute_snapshot(
         else:
             attempt_dist["3+"] += 1
 
+    issue_cost: dict[int, float] = {}
+    for r in impl_runs:
+        issue = r.get("issue", 0)
+        if issue:
+            issue_cost[issue] = r.get("cost_usd", 0)
+
     modules: dict[str, dict] = {}
     if pr_data:
         for pr in pr_data:
             files = pr.get("changed_files", [])
             mod = classify_module(files, module_prefixes)
             if mod not in modules:
-                modules[mod] = {"implementations": 0, "first_attempt_successes": 0}
+                modules[mod] = {
+                    "implementations": 0,
+                    "first_attempt_successes": 0,
+                    "total_cost": 0.0,
+                    "merged_count": 0,
+                    "human_edit_count": 0,
+                }
             modules[mod]["implementations"] += 1
             if pr.get("first_attempt_success", False):
                 modules[mod]["first_attempt_successes"] += 1
+            issue = pr.get("issue")
+            if issue and issue in issue_cost:
+                modules[mod]["total_cost"] += issue_cost[issue]
+            if pr.get("merged", False):
+                modules[mod]["merged_count"] += 1
+                if pr.get("human_edited", False):
+                    modules[mod]["human_edit_count"] += 1
 
     module_stats = {}
     for mod, stats in sorted(modules.items()):
         imp = stats["implementations"]
         fa = stats["first_attempt_successes"]
+        merged = stats["merged_count"]
         module_stats[mod] = {
             "implementations": imp,
             "first_attempt_rate": round(fa / imp, 2) if imp else 0.0,
+            "avg_cost_usd": round(stats["total_cost"] / imp, 2) if imp else 0.0,
+            "human_edit_rate": round(stats["human_edit_count"] / merged, 2) if merged else 0.0,
         }
 
     human_edit_rate = 0.0
@@ -495,14 +517,122 @@ def format_eval_md(snapshot: dict) -> str:
     return "\n".join(lines)
 
 
+def is_auto_merge_ready(success_rate: float, edit_rate: float, pr_count: int) -> str:
+    if success_rate > 0.9 and edit_rate == 0.0 and pr_count >= 20:
+        return "Yes"
+    return "No"
+
+
+def generate_eval_md(snapshot: dict, all_snapshots: list[dict]) -> str:
+    lines = ["# EVAL Report", ""]
+
+    lines.append("## Overall")
+    lines.append("")
+    lines.append("| Metric | Value |")
+    lines.append("|--------|-------|")
+    rate = snapshot.get("first_attempt_rate", 0)
+    lines.append(f"| First-attempt success | {rate:.0%} |")
+    cost = snapshot.get("avg_cost_usd", 0)
+    lines.append(f"| Avg cost/PR | ${cost:.2f} |")
+    hr = snapshot.get("human_edit_rate", 0)
+    lines.append(f"| Human edit rate | {hr:.0%} |")
+    lines.append("")
+
+    modules = snapshot.get("modules", {})
+    if modules:
+        lines.append("## Per-Module Breakdown")
+        lines.append("")
+        lines.append("| Module | Success | Avg Cost | PRs | Auto-merge ready? |")
+        lines.append("|--------|---------|----------|-----|--------------------|")
+        for mod, stats in sorted(modules.items()):
+            success = stats.get("first_attempt_rate", 0)
+            avg_c = stats.get("avg_cost_usd", 0)
+            prs = stats.get("implementations", 0)
+            edit_r = stats.get("human_edit_rate", 0)
+            auto = is_auto_merge_ready(success, edit_r, prs)
+            lines.append(f"| {mod} | {success:.0%} | ${avg_c:.2f} | {prs} | {auto} |")
+        lines.append("")
+
+    recent = all_snapshots[-4:] if len(all_snapshots) > 4 else all_snapshots
+    if recent:
+        lines.append("## Trend")
+        lines.append("")
+        lines.append("| Date | Implementations | First-attempt | Avg Cost | Human Edits |")
+        lines.append("|------|----------------|---------------|----------|-------------|")
+        for s in recent:
+            lines.append(
+                f"| {s['date']} | {s.get('total_implementations', 0)} "
+                f"| {s.get('first_attempt_rate', 0):.0%} "
+                f"| ${s.get('avg_cost_usd', 0):.2f} "
+                f"| {s.get('human_edit_rate', 0):.0%} |"
+            )
+        lines.append("")
+
+    if recent:
+        dates = ", ".join(f'"{s["date"]}"' for s in recent)
+        success_vals = ", ".join(str(round(s.get("first_attempt_rate", 0) * 100)) for s in recent)
+        lines.append("```mermaid")
+        lines.append("xychart-beta")
+        lines.append('    title "First-Attempt Success Rate"')
+        lines.append(f"    x-axis [{dates}]")
+        lines.append('    y-axis "Success %" 0 --> 100')
+        lines.append(f"    line [{success_vals}]")
+        lines.append("```")
+        lines.append("")
+
+        cost_vals = ", ".join(f"{s.get('avg_cost_usd', 0):.2f}" for s in recent)
+        lines.append("```mermaid")
+        lines.append("xychart-beta")
+        lines.append('    title "Avg Cost/PR"')
+        lines.append(f"    x-axis [{dates}]")
+        lines.append('    y-axis "Cost ($)"')
+        lines.append(f"    line [{cost_vals}]")
+        lines.append("```")
+        lines.append("")
+
+    if modules:
+        lines.append("```mermaid")
+        lines.append("pie title Per-Module Success Distribution")
+        for mod, stats in sorted(modules.items()):
+            prs = stats.get("implementations", 0)
+            lines.append(f'    "{mod}" : {prs}')
+        lines.append("```")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 def main(
     compare: str | None = None,
     trend: bool = False,
     repo: str | None = None,
     base: Path | None = None,
     output: str | None = None,
+    publish: bool = False,
 ):
     effective_base = base or Path.cwd()
+
+    if publish:
+        runs = load_run_history(effective_base)
+        pr_data = fetch_pr_data(repo) if repo else []
+        pr_data = enrich_pr_data_with_runs(pr_data, runs)
+        snapshot = compute_snapshot(runs, pr_data)
+        path = save_snapshot(snapshot, effective_base)
+        print(f"Snapshot saved to {path}")
+
+        all_snaps = load_all_snapshots(effective_base)
+        content = generate_eval_md(snapshot, all_snaps)
+        eval_path = effective_base / "EVAL.md"
+        eval_path.write_text(content)
+
+        date = snapshot["date"]
+        subprocess.run(["git", "add", str(path), str(eval_path)], cwd=str(effective_base))
+        subprocess.run(
+            ["git", "commit", "-m", f"chore: update eval report ({date})"],
+            cwd=str(effective_base),
+        )
+        print(f"EVAL.md committed: chore: update eval report ({date})")
+        return
 
     if trend:
         snapshots = load_all_snapshots(effective_base)

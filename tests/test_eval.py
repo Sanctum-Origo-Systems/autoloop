@@ -18,6 +18,8 @@ from autoloop.eval import (
     format_eval_md,
     format_snapshot,
     format_trend,
+    generate_eval_md,
+    is_auto_merge_ready,
     load_all_snapshots,
     load_latest_snapshot,
     load_run_history,
@@ -1091,3 +1093,433 @@ def test_format_eval_md_closed_without_merge():
     }
     output = format_eval_md(snap)
     assert "Closed without merge | 2" in output
+
+
+# --- is_auto_merge_ready ---
+
+
+def test_auto_merge_ready_all_conditions_met():
+    assert is_auto_merge_ready(0.91, 0.0, 20) == "Yes"
+
+
+def test_auto_merge_ready_high_success_many_prs():
+    assert is_auto_merge_ready(0.95, 0.0, 50) == "Yes"
+
+
+def test_auto_merge_ready_boundary_success_at_90():
+    assert is_auto_merge_ready(0.90, 0.0, 20) == "No"
+
+
+def test_auto_merge_ready_boundary_success_above_90():
+    assert is_auto_merge_ready(0.91, 0.0, 20) == "Yes"
+
+
+def test_auto_merge_ready_boundary_edit_rate_nonzero():
+    assert is_auto_merge_ready(0.95, 0.01, 20) == "No"
+
+
+def test_auto_merge_ready_boundary_edit_rate_zero():
+    assert is_auto_merge_ready(0.95, 0.0, 20) == "Yes"
+
+
+def test_auto_merge_ready_boundary_pr_count_19():
+    assert is_auto_merge_ready(0.95, 0.0, 19) == "No"
+
+
+def test_auto_merge_ready_boundary_pr_count_20():
+    assert is_auto_merge_ready(0.95, 0.0, 20) == "Yes"
+
+
+def test_auto_merge_ready_all_fail():
+    assert is_auto_merge_ready(0.50, 0.10, 5) == "No"
+
+
+# --- generate_eval_md ---
+
+
+def _make_snapshot(
+    date="2026-09-14",
+    rate=0.89,
+    cost=1.12,
+    hr=0.08,
+    total=35,
+    modules=None,
+):
+    return {
+        "date": date,
+        "total_implementations": total,
+        "first_attempt_rate": rate,
+        "avg_cost_usd": cost,
+        "human_edit_rate": hr,
+        "modules": modules or {},
+    }
+
+
+def test_generate_eval_md_overall_stats():
+    snap = _make_snapshot(rate=0.89, cost=1.12, hr=0.08)
+    content = generate_eval_md(snap, [snap])
+    assert "# EVAL Report" in content
+    assert "## Overall" in content
+    assert "| First-attempt success | 89% |" in content
+    assert "| Avg cost/PR | $1.12 |" in content
+    assert "| Human edit rate | 8% |" in content
+
+
+def test_generate_eval_md_module_table():
+    modules = {
+        "src/autoloop/": {
+            "implementations": 25,
+            "first_attempt_rate": 0.92,
+            "avg_cost_usd": 1.05,
+            "human_edit_rate": 0.0,
+        },
+        "src/other/": {
+            "implementations": 10,
+            "first_attempt_rate": 0.70,
+            "avg_cost_usd": 2.0,
+            "human_edit_rate": 0.1,
+        },
+    }
+    snap = _make_snapshot(modules=modules)
+    content = generate_eval_md(snap, [snap])
+    assert "## Per-Module Breakdown" in content
+    assert "| Module | Success | Avg Cost | PRs | Auto-merge ready? |" in content
+    assert "| src/autoloop/ | 92% | $1.05 | 25 | Yes |" in content
+    assert "| src/other/ | 70% | $2.00 | 10 | No |" in content
+
+
+def test_generate_eval_md_auto_merge_boundary_in_table():
+    modules = {
+        "src/a/": {
+            "implementations": 20,
+            "first_attempt_rate": 0.90,
+            "avg_cost_usd": 1.0,
+            "human_edit_rate": 0.0,
+        },
+        "src/b/": {
+            "implementations": 20,
+            "first_attempt_rate": 0.91,
+            "avg_cost_usd": 1.0,
+            "human_edit_rate": 0.0,
+        },
+    }
+    snap = _make_snapshot(modules=modules)
+    content = generate_eval_md(snap, [snap])
+    assert "| src/a/ | 90% | $1.00 | 20 | No |" in content
+    assert "| src/b/ | 91% | $1.00 | 20 | Yes |" in content
+
+
+def test_generate_eval_md_trend_table():
+    snaps = [
+        _make_snapshot(date="2026-08-24", rate=0.80, cost=1.50, hr=0.12, total=28),
+        _make_snapshot(date="2026-08-31", rate=0.83, cost=1.35, hr=0.10, total=30),
+        _make_snapshot(date="2026-09-07", rate=0.87, cost=1.20, hr=0.09, total=33),
+        _make_snapshot(date="2026-09-14", rate=0.89, cost=1.12, hr=0.08, total=35),
+    ]
+    content = generate_eval_md(snaps[-1], snaps)
+    assert "## Trend" in content
+    assert "| 2026-08-24 |" in content
+    assert "| 2026-09-14 |" in content
+
+
+def test_generate_eval_md_trend_table_limits_to_4():
+    snaps = [_make_snapshot(date=f"2026-09-{i:02d}") for i in range(1, 7)]
+    content = generate_eval_md(snaps[-1], snaps)
+    assert "2026-09-01" not in content
+    assert "2026-09-02" not in content
+    assert "2026-09-03" in content
+    assert "2026-09-06" in content
+
+
+def test_generate_eval_md_mermaid_success_chart():
+    snaps = [
+        _make_snapshot(date="2026-09-07", rate=0.87),
+        _make_snapshot(date="2026-09-14", rate=0.89),
+    ]
+    content = generate_eval_md(snaps[-1], snaps)
+    assert "```mermaid" in content
+    assert "xychart-beta" in content
+    assert 'title "First-Attempt Success Rate"' in content
+    assert '"2026-09-07"' in content
+    assert '"2026-09-14"' in content
+    assert 'y-axis "Success %" 0 --> 100' in content
+    assert "line [87, 89]" in content
+
+
+def test_generate_eval_md_mermaid_cost_chart():
+    snaps = [
+        _make_snapshot(date="2026-09-07", cost=1.50),
+        _make_snapshot(date="2026-09-14", cost=1.12),
+    ]
+    content = generate_eval_md(snaps[-1], snaps)
+    assert 'title "Avg Cost/PR"' in content
+    assert 'y-axis "Cost ($)"' in content
+    assert "line [1.50, 1.12]" in content
+
+
+def test_generate_eval_md_mermaid_pie_chart():
+    modules = {
+        "src/autoloop/": {
+            "implementations": 25,
+            "first_attempt_rate": 0.92,
+            "avg_cost_usd": 1.0,
+            "human_edit_rate": 0.0,
+        },
+        "src/other/": {
+            "implementations": 10,
+            "first_attempt_rate": 0.80,
+            "avg_cost_usd": 1.5,
+            "human_edit_rate": 0.05,
+        },
+    }
+    snap = _make_snapshot(modules=modules)
+    content = generate_eval_md(snap, [snap])
+    assert "pie title Per-Module Success Distribution" in content
+    assert '"src/autoloop/" : 25' in content
+    assert '"src/other/" : 10' in content
+
+
+def test_generate_eval_md_no_modules_skips_module_sections():
+    snap = _make_snapshot(modules={})
+    content = generate_eval_md(snap, [snap])
+    assert "## Per-Module Breakdown" not in content
+    assert "pie title" not in content
+
+
+def test_generate_eval_md_mermaid_charts_from_data():
+    snaps = [
+        _make_snapshot(date="2026-09-07", rate=0.75, cost=2.00),
+        _make_snapshot(date="2026-09-14", rate=0.90, cost=1.00),
+    ]
+    content = generate_eval_md(snaps[-1], snaps)
+    assert "line [75, 90]" in content
+    assert "line [2.00, 1.00]" in content
+
+
+# --- compute_snapshot module enhancements ---
+
+
+def test_compute_snapshot_module_avg_cost():
+    runs = [
+        {
+            "type": "implement",
+            "issue": 1,
+            "success": True,
+            "attempts": 1,
+            "cost_usd": 2.0,
+            "duration_seconds": 60,
+        },
+        {
+            "type": "implement",
+            "issue": 2,
+            "success": True,
+            "attempts": 1,
+            "cost_usd": 4.0,
+            "duration_seconds": 60,
+        },
+    ]
+    pr_data = [
+        {
+            "number": 10,
+            "merged": True,
+            "closed": False,
+            "changed_files": ["src/autoloop/eval.py"],
+            "human_edited": False,
+            "first_attempt_success": True,
+            "issue": 1,
+        },
+        {
+            "number": 11,
+            "merged": True,
+            "closed": False,
+            "changed_files": ["src/autoloop/cli.py"],
+            "human_edited": False,
+            "first_attempt_success": True,
+            "issue": 2,
+        },
+    ]
+    snap = compute_snapshot(runs, pr_data, date="2026-09-14")
+    mod = snap["modules"]["src/autoloop/"]
+    assert mod["avg_cost_usd"] == 3.0
+    assert mod["human_edit_rate"] == 0.0
+
+
+def test_compute_snapshot_module_human_edit_rate():
+    runs = [
+        {
+            "type": "implement",
+            "issue": 1,
+            "success": True,
+            "attempts": 1,
+            "cost_usd": 1.0,
+            "duration_seconds": 60,
+        },
+    ]
+    pr_data = [
+        {
+            "number": 10,
+            "merged": True,
+            "closed": False,
+            "changed_files": ["src/autoloop/eval.py"],
+            "human_edited": True,
+            "first_attempt_success": True,
+            "issue": 1,
+        },
+        {
+            "number": 11,
+            "merged": True,
+            "closed": False,
+            "changed_files": ["src/autoloop/cli.py"],
+            "human_edited": False,
+            "first_attempt_success": True,
+            "issue": 2,
+        },
+    ]
+    snap = compute_snapshot(runs, pr_data, date="2026-09-14")
+    mod = snap["modules"]["src/autoloop/"]
+    assert mod["human_edit_rate"] == 0.5
+
+
+# --- main with --publish ---
+
+
+def test_main_publish_writes_snapshot(tmp_path, monkeypatch, capsys):
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    log_file = log_dir / "run_history.jsonl"
+    log_file.write_text(
+        json.dumps(
+            {
+                "type": "implement",
+                "issue": 1,
+                "success": True,
+                "attempts": 1,
+                "cost_usd": 1.0,
+                "duration_seconds": 120,
+            }
+        )
+        + "\n"
+    )
+
+    calls = []
+    monkeypatch.setattr(
+        "autoloop.eval.subprocess.run",
+        lambda cmd, **kw: (calls.append(cmd), subprocess.CompletedProcess(cmd, 0))[1],
+    )
+
+    main(publish=True, base=tmp_path)
+
+    snap_dir = tmp_path / "autoloop" / "eval_snapshots"
+    snap_files = list(snap_dir.glob("*.json"))
+    assert len(snap_files) == 1
+    snap = json.loads(snap_files[0].read_text())
+    assert snap["total_implementations"] == 1
+
+
+def test_main_publish_writes_eval_md(tmp_path, monkeypatch, capsys):
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    log_file = log_dir / "run_history.jsonl"
+    log_file.write_text(
+        json.dumps(
+            {
+                "type": "implement",
+                "issue": 1,
+                "success": True,
+                "attempts": 1,
+                "cost_usd": 1.0,
+                "duration_seconds": 120,
+            }
+        )
+        + "\n"
+    )
+
+    monkeypatch.setattr(
+        "autoloop.eval.subprocess.run",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0),
+    )
+
+    main(publish=True, base=tmp_path)
+
+    eval_md = tmp_path / "EVAL.md"
+    assert eval_md.exists()
+    content = eval_md.read_text()
+    assert "# EVAL Report" in content
+    assert "## Overall" in content
+    assert "First-attempt success" in content
+
+
+def test_main_publish_commits(tmp_path, monkeypatch, capsys):
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    log_file = log_dir / "run_history.jsonl"
+    log_file.write_text(
+        json.dumps(
+            {
+                "type": "implement",
+                "issue": 1,
+                "success": True,
+                "attempts": 1,
+                "cost_usd": 1.0,
+                "duration_seconds": 120,
+            }
+        )
+        + "\n"
+    )
+
+    calls = []
+    monkeypatch.setattr(
+        "autoloop.eval.subprocess.run",
+        lambda cmd, **kw: (calls.append(cmd), subprocess.CompletedProcess(cmd, 0))[1],
+    )
+
+    main(publish=True, base=tmp_path)
+
+    git_adds = [c for c in calls if c[:2] == ["git", "add"]]
+    git_commits = [c for c in calls if c[:2] == ["git", "commit"]]
+    assert len(git_adds) == 1
+    assert len(git_commits) == 1
+    assert "chore: update eval report" in git_commits[0][3]
+
+
+def test_main_no_publish_no_eval_md(tmp_path, monkeypatch, capsys):
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    log_file = log_dir / "run_history.jsonl"
+    log_file.write_text(
+        json.dumps(
+            {
+                "type": "implement",
+                "issue": 1,
+                "success": True,
+                "attempts": 1,
+                "cost_usd": 1.0,
+                "duration_seconds": 120,
+            }
+        )
+        + "\n"
+    )
+
+    main(base=tmp_path)
+
+    eval_md = tmp_path / "EVAL.md"
+    assert not eval_md.exists()
+
+
+# --- CLI --publish flag ---
+
+
+def test_cli_eval_publish_flag():
+    from autoloop.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(["eval", "--publish"])
+    assert args.publish is True
+
+
+def test_cli_eval_no_publish_default():
+    from autoloop.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(["eval"])
+    assert args.publish is False
