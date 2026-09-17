@@ -608,3 +608,255 @@ def test_implement_no_auto_fix_omits_flags(mcp_tools):
     assert "--auto-fix" not in cmd
     assert "--max-pr-review-rounds" not in cmd
     assert "auto-fix" not in result
+
+
+# --- autoloop_eval ---
+
+
+def test_eval_registered(mcp_tools):
+    """autoloop_eval appears in the MCP server's tool listing."""
+    assert "autoloop_eval" in mcp_tools
+
+
+def test_eval_snapshot_default(mcp_tools, tmp_path):
+    """autoloop_eval with defaults returns snapshot summary."""
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    (log_dir / "run_history.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "implement",
+                "issue": 1,
+                "success": True,
+                "attempts": 1,
+                "cost_usd": 1.0,
+                "duration_seconds": 120,
+            }
+        )
+        + "\n"
+    )
+
+    result = mcp_tools["autoloop_eval"](repo_dir=str(tmp_path))
+
+    assert "Eval Snapshot" in result
+    assert "Issues implemented:     1" in result
+
+    snap_dir = tmp_path / "autoloop" / "eval_snapshots"
+    assert snap_dir.exists()
+    assert len(list(snap_dir.glob("*.json"))) == 1
+
+
+def test_eval_snapshot_no_history(mcp_tools, tmp_path):
+    """autoloop_eval returns empty snapshot when no run history exists."""
+    result = mcp_tools["autoloop_eval"](repo_dir=str(tmp_path))
+
+    assert "Eval Snapshot" in result
+    assert "Issues implemented:     0" in result
+
+
+def test_eval_trend(mcp_tools, tmp_path):
+    """autoloop_eval with trend=True returns trend output."""
+    snap_dir = tmp_path / "autoloop" / "eval_snapshots"
+    snap_dir.mkdir(parents=True)
+    for d in ("2026-09-12", "2026-09-13"):
+        (snap_dir / f"{d}.json").write_text(
+            json.dumps(
+                {
+                    "date": d,
+                    "total_implementations": 10,
+                    "first_attempt_rate": 0.9,
+                    "avg_cost_usd": 1.0,
+                    "human_edit_rate": 0.0,
+                }
+            )
+        )
+
+    result = mcp_tools["autoloop_eval"](trend=True, repo_dir=str(tmp_path))
+
+    assert "Eval Trend" in result
+
+
+def test_eval_trend_empty(mcp_tools, tmp_path):
+    """autoloop_eval with trend=True and no snapshots returns appropriate message."""
+    result = mcp_tools["autoloop_eval"](trend=True, repo_dir=str(tmp_path))
+
+    assert "No snapshots found" in result
+
+
+def test_eval_compare_no_previous(mcp_tools, tmp_path):
+    """autoloop_eval with compare=True and no previous snapshot shows current."""
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    (log_dir / "run_history.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "implement",
+                "issue": 1,
+                "success": True,
+                "attempts": 1,
+                "cost_usd": 1.0,
+                "duration_seconds": 60,
+            }
+        )
+        + "\n"
+    )
+
+    result = mcp_tools["autoloop_eval"](compare=True, repo_dir=str(tmp_path))
+
+    assert "No previous snapshot to compare against" in result
+    assert "Eval Snapshot" in result
+
+
+def test_eval_compare_with_previous(mcp_tools, tmp_path):
+    """autoloop_eval with compare=True shows comparison when previous snapshot exists."""
+    snap_dir = tmp_path / "autoloop" / "eval_snapshots"
+    snap_dir.mkdir(parents=True)
+    (snap_dir / "2026-09-13.json").write_text(
+        json.dumps(
+            {
+                "date": "2026-09-13",
+                "total_implementations": 10,
+                "first_attempt_rate": 0.8,
+                "avg_cost_usd": 1.5,
+                "avg_duration_seconds": 200,
+                "human_edit_rate": 0.1,
+                "modules": {},
+            }
+        )
+    )
+
+    log_dir = tmp_path / "autoloop"
+    (log_dir / "run_history.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "implement",
+                "issue": 1,
+                "success": True,
+                "attempts": 1,
+                "cost_usd": 1.0,
+                "duration_seconds": 60,
+            }
+        )
+        + "\n"
+    )
+
+    result = mcp_tools["autoloop_eval"](compare=True, repo_dir=str(tmp_path))
+
+    assert "Comparison:" in result
+    assert "2026-09-13" in result
+
+
+def test_eval_publish(mcp_tools, tmp_path):
+    """autoloop_eval with publish=True generates EVAL.md and commits."""
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    (log_dir / "run_history.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "implement",
+                "issue": 1,
+                "success": True,
+                "attempts": 1,
+                "cost_usd": 1.0,
+                "duration_seconds": 120,
+            }
+        )
+        + "\n"
+    )
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append({"cmd": cmd, "kwargs": kwargs})
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    with patch("autoloop.mcp_server.subprocess.run", fake_run):
+        result = mcp_tools["autoloop_eval"](publish=True, repo_dir=str(tmp_path))
+
+    assert "Eval Snapshot" in result
+    assert "EVAL.md generated and committed" in result
+
+    md_path = tmp_path / "EVAL.md"
+    assert md_path.exists()
+    md_content = md_path.read_text()
+    assert "# Eval Report" in md_content
+
+    git_cmds = [c["cmd"] for c in captured]
+    assert ["git", "add", "EVAL.md"] in git_cmds
+    assert ["git", "commit", "-m", "chore: update EVAL.md"] in git_cmds
+
+
+def test_eval_publish_false_no_commit(mcp_tools, tmp_path):
+    """autoloop_eval without publish does not write EVAL.md or commit."""
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    (log_dir / "run_history.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "implement",
+                "issue": 1,
+                "success": True,
+                "attempts": 1,
+                "cost_usd": 1.0,
+                "duration_seconds": 60,
+            }
+        )
+        + "\n"
+    )
+
+    result = mcp_tools["autoloop_eval"](repo_dir=str(tmp_path))
+
+    assert "EVAL.md" not in result
+    assert not (tmp_path / "EVAL.md").exists()
+
+
+def test_eval_uses_cwd_when_no_repo_dir(mcp_tools, tmp_path, monkeypatch):
+    """autoloop_eval uses cwd when repo_dir is omitted."""
+    monkeypatch.setattr("autoloop.mcp_server.Path.cwd", lambda: tmp_path)
+
+    result = mcp_tools["autoloop_eval"]()
+
+    assert "Eval Snapshot" in result
+
+
+def test_eval_with_config_loads_repo(mcp_tools, tmp_path, monkeypatch):
+    """autoloop_eval loads repo from config when autoloop.toml exists."""
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('repo = "acme-corp/widget"\n')
+
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    (log_dir / "run_history.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "implement",
+                "issue": 1,
+                "success": True,
+                "attempts": 1,
+                "cost_usd": 1.0,
+                "duration_seconds": 60,
+            }
+        )
+        + "\n"
+    )
+
+    for var in (
+        "AUTOLOOP_TRIAGE_MODEL",
+        "AUTOLOOP_IMPL_MODEL",
+        "AUTOLOOP_TIMEOUT",
+        "AUTOLOOP_REVIEWER",
+        "AUTOLOOP_REPO",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    fetch_calls = []
+
+    def fake_fetch(repo):
+        fetch_calls.append(repo)
+        return []
+
+    with patch("autoloop.eval.fetch_pr_data", fake_fetch):
+        mcp_tools["autoloop_eval"](repo_dir=str(tmp_path))
+
+    assert len(fetch_calls) == 1
+    assert fetch_calls[0] == "acme-corp/widget"

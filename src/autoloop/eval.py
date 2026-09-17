@@ -441,6 +441,60 @@ def format_trend(snapshots: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def format_eval_md(snapshot: dict) -> str:
+    lines = ["# Eval Report", ""]
+    lines.append(f"**Date:** {snapshot['date']}")
+    lines.append("")
+    lines.append("## Summary")
+    lines.append("")
+    lines.append("| Metric | Value |")
+    lines.append("|--------|-------|")
+
+    rate = snapshot["first_attempt_rate"]
+    total = snapshot["total_implementations"]
+    first = round(rate * total)
+    lines.append(f"| Issues implemented | {total} |")
+    lines.append(f"| First-attempt success | {rate:.0%} ({first}/{total}) |")
+    lines.append(f"| Avg cost/PR | ${snapshot['avg_cost_usd']:.2f} |")
+
+    dur = snapshot["avg_duration_seconds"]
+    minutes = int(dur) // 60
+    seconds = int(dur) % 60
+    lines.append(f"| Avg duration | {minutes}m {seconds:02d}s |")
+
+    hr = snapshot["human_edit_rate"]
+    hc = snapshot.get("human_edit_count", 0)
+    merged = snapshot.get("merged_pr_count", 0)
+    lines.append(f"| Human edit rate | {hr:.0%} ({hc}/{merged} PRs) |")
+
+    cwm = snapshot.get("closed_without_merge", 0)
+    if cwm:
+        lines.append(f"| Closed without merge | {cwm} |")
+
+    dist = snapshot.get("attempt_distribution", {})
+    active_dist = {k: v for k, v in dist.items() if v > 0}
+    if active_dist:
+        lines.append("")
+        lines.append("## Attempt Distribution")
+        lines.append("")
+        lines.append(", ".join(f"{k}-try: {v}" for k, v in active_dist.items()))
+
+    modules = snapshot.get("modules", {})
+    if modules:
+        lines.append("")
+        lines.append("## Module Performance")
+        lines.append("")
+        lines.append("| Module | First-attempt rate | Implementations |")
+        lines.append("|--------|-------------------|-----------------|")
+        for mod, stats in sorted(modules.items(), key=lambda x: x[1]["first_attempt_rate"]):
+            imp = stats["implementations"]
+            fa = round(stats["first_attempt_rate"] * imp)
+            lines.append(f"| {mod} | {stats['first_attempt_rate']:.0%} ({fa}/{imp}) | {imp} |")
+
+    lines.append("")
+    return "\n".join(lines)
+
+
 def main(
     compare: str | None = None,
     trend: bool = False,
