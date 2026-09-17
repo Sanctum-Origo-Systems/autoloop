@@ -613,6 +613,20 @@ def main(
     effective_base = base or Path.cwd()
 
     if publish:
+        try:
+            branch_result = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True,
+                text=True,
+                cwd=str(effective_base),
+            )
+        except FileNotFoundError:
+            print("Error: git not found")
+            return
+        if branch_result.returncode != 0 or branch_result.stdout.strip() != "main":
+            print("Error: --publish must be run from the main branch")
+            return
+
         runs = load_run_history(effective_base)
         pr_data = fetch_pr_data(repo) if repo else []
         pr_data = enrich_pr_data_with_runs(pr_data, runs)
@@ -626,11 +640,29 @@ def main(
         eval_path.write_text(content)
 
         date = snapshot["date"]
-        subprocess.run(["git", "add", str(path), str(eval_path)], cwd=str(effective_base))
-        subprocess.run(
-            ["git", "commit", "-m", f"chore: update eval report ({date})"],
-            cwd=str(effective_base),
-        )
+        try:
+            add_result = subprocess.run(
+                ["git", "add", str(path), str(eval_path)], cwd=str(effective_base)
+            )
+        except FileNotFoundError:
+            print("Error: git not found")
+            return
+        if add_result.returncode != 0:
+            print("Error: git add failed")
+            return
+
+        try:
+            commit_result = subprocess.run(
+                ["git", "commit", "-m", f"chore: update eval report ({date})"],
+                cwd=str(effective_base),
+            )
+        except FileNotFoundError:
+            print("Error: git not found")
+            return
+        if commit_result.returncode != 0:
+            print("Error: git commit failed")
+            return
+
         print(f"EVAL.md committed: chore: update eval report ({date})")
         return
 

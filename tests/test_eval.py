@@ -1383,6 +1383,20 @@ def test_compute_snapshot_module_human_edit_rate():
 # --- main with --publish ---
 
 
+def _fake_subprocess_on_main(calls=None):
+    """Return a fake subprocess.run that reports branch as 'main'."""
+    if calls is None:
+        calls = []
+
+    def _fake(cmd, **kw):
+        calls.append(cmd)
+        if cmd[:3] == ["git", "rev-parse", "--abbrev-ref"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="main\n")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    return _fake
+
+
 def test_main_publish_writes_snapshot(tmp_path, monkeypatch, capsys):
     log_dir = tmp_path / "autoloop"
     log_dir.mkdir()
@@ -1402,10 +1416,7 @@ def test_main_publish_writes_snapshot(tmp_path, monkeypatch, capsys):
     )
 
     calls = []
-    monkeypatch.setattr(
-        "autoloop.eval.subprocess.run",
-        lambda cmd, **kw: (calls.append(cmd), subprocess.CompletedProcess(cmd, 0))[1],
-    )
+    monkeypatch.setattr("autoloop.eval.subprocess.run", _fake_subprocess_on_main(calls))
 
     main(publish=True, base=tmp_path)
 
@@ -1434,10 +1445,7 @@ def test_main_publish_writes_eval_md(tmp_path, monkeypatch, capsys):
         + "\n"
     )
 
-    monkeypatch.setattr(
-        "autoloop.eval.subprocess.run",
-        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0),
-    )
+    monkeypatch.setattr("autoloop.eval.subprocess.run", _fake_subprocess_on_main())
 
     main(publish=True, base=tmp_path)
 
@@ -1468,10 +1476,7 @@ def test_main_publish_commits(tmp_path, monkeypatch, capsys):
     )
 
     calls = []
-    monkeypatch.setattr(
-        "autoloop.eval.subprocess.run",
-        lambda cmd, **kw: (calls.append(cmd), subprocess.CompletedProcess(cmd, 0))[1],
-    )
+    monkeypatch.setattr("autoloop.eval.subprocess.run", _fake_subprocess_on_main(calls))
 
     main(publish=True, base=tmp_path)
 
@@ -1480,6 +1485,137 @@ def test_main_publish_commits(tmp_path, monkeypatch, capsys):
     assert len(git_adds) == 1
     assert len(git_commits) == 1
     assert "chore: update eval report" in git_commits[0][3]
+
+
+def test_main_publish_rejects_non_main_branch(tmp_path, monkeypatch, capsys):
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    log_file = log_dir / "run_history.jsonl"
+    log_file.write_text(
+        json.dumps(
+            {
+                "type": "implement",
+                "issue": 1,
+                "success": True,
+                "attempts": 1,
+                "cost_usd": 1.0,
+                "duration_seconds": 120,
+            }
+        )
+        + "\n"
+    )
+
+    def fake_run(cmd, **kw):
+        if cmd[:3] == ["git", "rev-parse", "--abbrev-ref"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="feature-branch\n")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
+
+    main(publish=True, base=tmp_path)
+
+    out = capsys.readouterr().out
+    assert "must be run from the main branch" in out
+    assert not (tmp_path / "EVAL.md").exists()
+
+
+def test_main_publish_handles_git_not_found(tmp_path, monkeypatch, capsys):
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    log_file = log_dir / "run_history.jsonl"
+    log_file.write_text(
+        json.dumps(
+            {
+                "type": "implement",
+                "issue": 1,
+                "success": True,
+                "attempts": 1,
+                "cost_usd": 1.0,
+                "duration_seconds": 120,
+            }
+        )
+        + "\n"
+    )
+
+    def fake_run(cmd, **kw):
+        raise FileNotFoundError("git not found")
+
+    monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
+
+    main(publish=True, base=tmp_path)
+
+    out = capsys.readouterr().out
+    assert "git not found" in out
+
+
+def test_main_publish_handles_git_commit_failure(tmp_path, monkeypatch, capsys):
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    log_file = log_dir / "run_history.jsonl"
+    log_file.write_text(
+        json.dumps(
+            {
+                "type": "implement",
+                "issue": 1,
+                "success": True,
+                "attempts": 1,
+                "cost_usd": 1.0,
+                "duration_seconds": 120,
+            }
+        )
+        + "\n"
+    )
+
+    def fake_run(cmd, **kw):
+        if cmd[:3] == ["git", "rev-parse", "--abbrev-ref"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="main\n")
+        if cmd[:2] == ["git", "add"]:
+            return subprocess.CompletedProcess(cmd, 0)
+        if cmd[:2] == ["git", "commit"]:
+            return subprocess.CompletedProcess(cmd, 1)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
+
+    main(publish=True, base=tmp_path)
+
+    out = capsys.readouterr().out
+    assert "git commit failed" in out
+    assert "EVAL.md committed" not in out
+
+
+def test_main_publish_handles_git_add_failure(tmp_path, monkeypatch, capsys):
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    log_file = log_dir / "run_history.jsonl"
+    log_file.write_text(
+        json.dumps(
+            {
+                "type": "implement",
+                "issue": 1,
+                "success": True,
+                "attempts": 1,
+                "cost_usd": 1.0,
+                "duration_seconds": 120,
+            }
+        )
+        + "\n"
+    )
+
+    def fake_run(cmd, **kw):
+        if cmd[:3] == ["git", "rev-parse", "--abbrev-ref"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="main\n")
+        if cmd[:2] == ["git", "add"]:
+            return subprocess.CompletedProcess(cmd, 1)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
+
+    main(publish=True, base=tmp_path)
+
+    out = capsys.readouterr().out
+    assert "git add failed" in out
+    assert "EVAL.md committed" not in out
 
 
 def test_main_no_publish_no_eval_md(tmp_path, monkeypatch, capsys):
