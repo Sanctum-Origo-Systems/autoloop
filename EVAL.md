@@ -41,7 +41,8 @@ xychart-beta
 ```
 
 ```mermaid
+%%{init: {'theme': 'neutral'}}%%
 pie title Per-Module Success Distribution
-    "other" : 5
-    "src/autoloop/" : 63
+    "other (40%, 5 PRs)" : 5
+    "src/autoloop/ (71%, 63 PRs)" : 63
 ```
