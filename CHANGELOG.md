@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.5.2
+
+- `eval --publish`: generate EVAL.md dashboard with Mermaid charts, commit to repo
+- `eval --output json`: raw JSON output for programmatic consumption
+- EVAL.md: trend charts (success rate, cost), per-module pie chart with dark mode support
+- Backfilled weekly snapshots from run history (Jul 19 - Sep 18)
+- EVAL.md dashboard link added to README below Pipeline diagram
+- Fix: eval trend shows all snapshots, not just last 4
+- Fix: pie chart high-contrast colors for dark mode
+
 ## v0.5.1
 
 - `autoloop eval`: deterministic performance tracking from run history + PR data (zero LLM cost)
