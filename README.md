@@ -61,6 +61,8 @@ Issue --> Triage --> Implement --> Review PR
                                  Exhausted? --> needs-human label
 ```
 
+**[View live performance dashboard (EVAL.md)](EVAL.md)** — first-attempt success rate, cost trends, and per-module breakdown. Updated daily.
+
 ---
 
 ## Platform Support
