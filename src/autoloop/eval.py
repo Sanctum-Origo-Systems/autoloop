@@ -592,10 +592,12 @@ def generate_eval_md(snapshot: dict, all_snapshots: list[dict]) -> str:
 
     if modules:
         lines.append("```mermaid")
+        lines.append("%%{init: {'theme': 'neutral'}}%%")
         lines.append("pie title Per-Module Success Distribution")
         for mod, stats in sorted(modules.items()):
+            rate = round(stats.get("first_attempt_rate", 0) * 100)
             prs = stats.get("implementations", 0)
-            lines.append(f'    "{mod}" : {prs}')
+            lines.append(f'    "{mod} ({rate}%, {prs} PRs)" : {prs}')
         lines.append("```")
         lines.append("")
 

@@ -1,0 +1,20 @@
+{
+  "date": "2026-07-19",
+  "total_implementations": 1,
+  "first_attempt_rate": 1.0,
+  "avg_cost_usd": 1.17,
+  "avg_duration_seconds": 215,
+  "attempt_distribution": {
+    "1": 1
+  },
+  "human_edit_rate": 0.0,
+  "human_edit_count": 0,
+  "merged_pr_count": 1,
+  "closed_without_merge": 0,
+  "modules": {
+    "src/autoloop/": {
+      "implementations": 1,
+      "first_attempt_rate": 1.0
+    }
+  }
+}
