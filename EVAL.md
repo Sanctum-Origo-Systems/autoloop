@@ -19,22 +19,25 @@
 
 | Date | Implementations | First-attempt | Avg Cost | Human Edits |
 |------|----------------|---------------|----------|-------------|
+| 2026-09-06 | 9 | 89% | $1.48 | 0% |
+| 2026-09-13 | 8 | 88% | $1.71 | 0% |
 | 2026-09-18 | 125 | 58% | $1.44 | 15% |
+| 2026-09-20 | 53 | 57% | $2.38 | 0% |
 
 ```mermaid
 xychart-beta
     title "First-Attempt Success Rate"
-    x-axis ["2026-09-18"]
+    x-axis ["2026-09-06", "2026-09-13", "2026-09-18", "2026-09-20"]
     y-axis "Success %" 0 --> 100
-    line [58]
+    line [89, 88, 58, 57]
 ```
 
 ```mermaid
 xychart-beta
     title "Avg Cost/PR"
-    x-axis ["2026-09-18"]
+    x-axis ["2026-09-06", "2026-09-13", "2026-09-18", "2026-09-20"]
     y-axis "Cost ($)"
-    line [1.44]
+    line [1.48, 1.71, 1.44, 2.38]
 ```
 
 ```mermaid
