@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 
 from autoloop.eval import (
     _detect_module_prefixes,
@@ -727,6 +728,57 @@ def test_fetch_pr_data_returns_empty_on_missing_gh(monkeypatch):
 
     monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
     assert fetch_pr_data("owner/repo") == []
+
+
+def test_fetch_pr_data_warns_when_limit_reached(monkeypatch, capsys):
+    from autoloop.eval import _PR_LIMIT
+
+    prs = [
+        {
+            "number": i,
+            "state": "MERGED",
+            "mergedAt": "2026-09-10T00:00:00Z",
+            "closedAt": None,
+            "headRefName": f"autoloop/{i}-feat-thing",
+            "files": [{"path": "src/autoloop/eval.py"}],
+            "author": {"login": "bot"},
+        }
+        for i in range(_PR_LIMIT)
+    ]
+
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout=json.dumps(prs), stderr="")
+
+    monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
+    fetch_pr_data("owner/repo")
+
+    err = capsys.readouterr().err
+    assert "500 PR limit reached" in err
+    assert "oldest PRs excluded from eval" in err
+
+
+def test_fetch_pr_data_no_warning_under_limit(monkeypatch, capsys):
+    prs = [
+        {
+            "number": i,
+            "state": "MERGED",
+            "mergedAt": "2026-09-10T00:00:00Z",
+            "closedAt": None,
+            "headRefName": f"autoloop/{i}-feat-thing",
+            "files": [{"path": "src/autoloop/eval.py"}],
+            "author": {"login": "bot"},
+        }
+        for i in range(10)
+    ]
+
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout=json.dumps(prs), stderr="")
+
+    monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
+    fetch_pr_data("owner/repo")
+
+    err = capsys.readouterr().err
+    assert err == ""
 
 
 # --- first_attempt_success default ---

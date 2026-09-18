@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
+
+_PR_LIMIT = 500
 
 
 def load_run_history(base: Path | None = None) -> list[dict]:
@@ -138,7 +141,7 @@ def fetch_pr_data(repo: str) -> list[dict]:
                 "--state",
                 "all",
                 "--limit",
-                "500",
+                str(_PR_LIMIT),
                 "--json",
                 "number,state,mergedAt,closedAt,headRefName,files,author",
             ],
@@ -151,6 +154,12 @@ def fetch_pr_data(repo: str) -> list[dict]:
         return []
 
     raw_prs = json.loads(result.stdout)
+
+    if len(raw_prs) >= _PR_LIMIT:
+        print(
+            f"Warning: {_PR_LIMIT} PR limit reached, oldest PRs excluded from eval",
+            file=sys.stderr,
+        )
 
     autoloop_prs = []
     non_autoloop_merged = []
