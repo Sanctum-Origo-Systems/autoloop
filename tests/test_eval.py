@@ -15,6 +15,7 @@ from autoloop.eval import (
     enrich_pr_data_with_runs,
     fetch_pr_data,
     format_comparison,
+    format_eval_md,
     format_snapshot,
     format_trend,
     load_all_snapshots,
@@ -1018,3 +1019,75 @@ def test_main_default_output_unchanged(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "Eval Snapshot" in out
     assert "Snapshot saved" in out
+
+
+# --- format_eval_md ---
+
+
+def test_format_eval_md_basic():
+    snap = {
+        "date": "2026-09-14",
+        "total_implementations": 35,
+        "first_attempt_rate": 0.89,
+        "avg_cost_usd": 1.12,
+        "avg_duration_seconds": 262,
+        "attempt_distribution": {"1": 31, "2": 3, "3+": 1},
+        "human_edit_rate": 0.08,
+        "human_edit_count": 3,
+        "merged_pr_count": 38,
+        "closed_without_merge": 0,
+        "modules": {
+            "src/mcp/": {"implementations": 12, "first_attempt_rate": 1.0},
+            "src/ingest/": {"implementations": 5, "first_attempt_rate": 0.6},
+        },
+    }
+    output = format_eval_md(snap)
+    assert "# Eval Report" in output
+    assert "**Date:** 2026-09-14" in output
+    assert "| Issues implemented | 35 |" in output
+    assert "89%" in output
+    assert "$1.12" in output
+    assert "4m 22s" in output
+    assert "## Attempt Distribution" in output
+    assert "1-try: 31" in output
+    assert "## Module Performance" in output
+    assert "src/ingest/" in output
+    assert "src/mcp/" in output
+
+
+def test_format_eval_md_no_modules():
+    snap = {
+        "date": "2026-09-14",
+        "total_implementations": 0,
+        "first_attempt_rate": 0.0,
+        "avg_cost_usd": 0.0,
+        "avg_duration_seconds": 0,
+        "attempt_distribution": {},
+        "human_edit_rate": 0.0,
+        "human_edit_count": 0,
+        "merged_pr_count": 0,
+        "closed_without_merge": 0,
+        "modules": {},
+    }
+    output = format_eval_md(snap)
+    assert "# Eval Report" in output
+    assert "## Module Performance" not in output
+    assert "## Attempt Distribution" not in output
+
+
+def test_format_eval_md_closed_without_merge():
+    snap = {
+        "date": "2026-09-14",
+        "total_implementations": 5,
+        "first_attempt_rate": 0.8,
+        "avg_cost_usd": 1.0,
+        "avg_duration_seconds": 120,
+        "attempt_distribution": {"1": 4, "2": 1},
+        "human_edit_rate": 0.0,
+        "human_edit_count": 0,
+        "merged_pr_count": 4,
+        "closed_without_merge": 2,
+        "modules": {},
+    }
+    output = format_eval_md(snap)
+    assert "Closed without merge | 2" in output

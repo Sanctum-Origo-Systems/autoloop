@@ -283,6 +283,86 @@ def main():
 
         return "\n".join(parts)
 
+    @server.tool()
+    def autoloop_eval(
+        compare: bool = False,
+        trend: bool = False,
+        publish: bool = False,
+        repo_dir: str | None = None,
+    ) -> str:
+        """Run eval to compute builder performance metrics from run history + PR data.
+
+        Args:
+            compare: Compare current snapshot to the most recent saved snapshot.
+            trend: Show metrics trend over all saved snapshots.
+            publish: Generate and commit EVAL.md to the repository.
+            repo_dir: Target repository directory. Defaults to server's working directory.
+        """
+        from autoloop.eval import (
+            compare_snapshots,
+            compute_snapshot,
+            enrich_pr_data_with_runs,
+            fetch_pr_data,
+            format_comparison,
+            format_eval_md,
+            format_snapshot,
+            format_trend,
+            load_all_snapshots,
+            load_latest_snapshot,
+            load_run_history,
+            save_snapshot,
+        )
+
+        base = Path(repo_dir) if repo_dir else Path.cwd()
+
+        if trend:
+            snapshots = load_all_snapshots(base)
+            return format_trend(snapshots)
+
+        repo = None
+        try:
+            from autoloop.config import load_config
+
+            cfg = load_config(path=base / "autoloop.toml")
+            repo = cfg.repo
+        except FileNotFoundError:
+            pass
+
+        runs = load_run_history(base)
+        pr_data = fetch_pr_data(repo) if repo else []
+        pr_data = enrich_pr_data_with_runs(pr_data, runs)
+        current = compute_snapshot(runs, pr_data)
+
+        if compare:
+            previous = load_latest_snapshot(base)
+            if previous is None:
+                save_snapshot(current, base)
+                return "No previous snapshot to compare against.\n\n" + format_snapshot(current)
+            comparison = compare_snapshots(previous, current)
+            save_snapshot(current, base)
+            return format_comparison(comparison)
+
+        save_snapshot(current, base)
+        result = format_snapshot(current)
+
+        if publish:
+            md_content = format_eval_md(current)
+            md_path = base / "EVAL.md"
+            md_path.write_text(md_content)
+            subprocess.run(
+                ["git", "add", "EVAL.md"],
+                cwd=str(base),
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "chore: update EVAL.md"],
+                cwd=str(base),
+                capture_output=True,
+            )
+            result += "\n\nEVAL.md generated and committed."
+
+        return result
+
     server.run()
 
 
