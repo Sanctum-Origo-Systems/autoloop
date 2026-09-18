@@ -553,7 +553,7 @@ def generate_eval_md(snapshot: dict, all_snapshots: list[dict]) -> str:
             lines.append(f"| {mod} | {success:.0%} | ${avg_c:.2f} | {prs} | {auto} |")
         lines.append("")
 
-    recent = all_snapshots[-4:] if len(all_snapshots) > 4 else all_snapshots
+    recent = all_snapshots
     if recent:
         lines.append("## Trend")
         lines.append("")
