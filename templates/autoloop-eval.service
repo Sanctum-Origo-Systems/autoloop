@@ -1,0 +1,11 @@
+[Unit]
+Description=Autoloop eval snapshot and publish
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/autoloop eval --publish
+
+[Install]
+WantedBy=multi-user.target

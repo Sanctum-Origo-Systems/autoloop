@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily autoloop eval at 05:00 UTC
+# Runs autoloop eval --publish daily at 05:00 UTC via autoloop-eval.service
+
+[Timer]
+OnCalendar=*-*-* 05:00:00
+Persistent=true
+Unit=autoloop-eval.service
+
+[Install]
+WantedBy=timers.target
