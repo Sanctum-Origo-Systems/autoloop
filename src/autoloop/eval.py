@@ -615,6 +615,15 @@ def generate_eval_md(snapshot: dict, all_snapshots: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def material_change(new: dict, old: dict) -> bool:
+    return (
+        abs(new["first_attempt_rate"] - old["first_attempt_rate"]) > 0.05
+        or abs(new["human_edit_rate"] - old["human_edit_rate"]) > 0.05
+        or new["total_implementations"] - old["total_implementations"] >= 5
+        or set(new.get("modules", {}).keys()) != set(old.get("modules", {}).keys())
+    )
+
+
 def _publish_via_pr(base: Path, snapshot_path: Path, eval_path: Path, date: str) -> str:
     branch_name = f"chore/eval-{date}"
     try:
@@ -730,6 +739,9 @@ def main(
         pr_data = fetch_pr_data(repo) if repo else []
         pr_data = enrich_pr_data_with_runs(pr_data, runs)
         snapshot = compute_snapshot(runs, pr_data)
+
+        previous = load_latest_snapshot(effective_base)
+
         path = save_snapshot(snapshot, effective_base)
         print(f"Snapshot saved to {path}")
 
@@ -739,6 +751,12 @@ def main(
         eval_path.write_text(content)
 
         date = snapshot["date"]
+
+        if previous and not material_change(snapshot, previous):
+            print("No material change, skipping EVAL.md commit")
+            return
+
+        print("Material change detected, publishing EVAL.md")
 
         if pr:
             print(_publish_via_pr(effective_base, path, eval_path, date))
