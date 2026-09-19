@@ -29,11 +29,16 @@ def load_run_history(base: Path | None = None) -> list[dict]:
 def classify_module(changed_files: list[str], prefixes: list[str] | None = None) -> str:
     if prefixes is None:
         prefixes = _detect_module_prefixes(changed_files)
+    sorted_prefixes = sorted(prefixes, key=len, reverse=True)
+    counts: dict[str, int] = {}
     for f in changed_files:
-        for p in prefixes:
+        for p in sorted_prefixes:
             if f.startswith(p):
-                return p
-    return "other"
+                counts[p] = counts.get(p, 0) + 1
+                break
+    if not counts:
+        return "other"
+    return max(counts, key=lambda p: counts[p])
 
 
 def _detect_module_prefixes(changed_files: list[str]) -> list[str]:
@@ -88,9 +93,13 @@ def compute_snapshot(
 
     modules: dict[str, dict] = {}
     if pr_data:
+        effective_prefixes = module_prefixes
+        if effective_prefixes is None:
+            all_files = [f for pr in pr_data for f in pr.get("changed_files", [])]
+            effective_prefixes = _detect_module_prefixes(all_files)
         for pr in pr_data:
             files = pr.get("changed_files", [])
-            mod = classify_module(files, module_prefixes)
+            mod = classify_module(files, effective_prefixes)
             if mod not in modules:
                 modules[mod] = {
                     "implementations": 0,
@@ -595,7 +604,7 @@ def generate_eval_md(snapshot: dict, all_snapshots: list[dict]) -> str:
         lines.append(
             "%%{init: {'theme': 'base', 'themeVariables': {'pie1': '#4CAF50', 'pie2': '#2196F3', 'pie3': '#FF9800', 'pie4': '#E91E63', 'pie5': '#9C27B0', 'pie6': '#00BCD4', 'pieTitleTextColor': '#aaa', 'pieLegendTextColor': '#aaa', 'pieSectionTextColor': '#fff'}}}%%"
         )
-        lines.append("pie title Per-Module Success Distribution")
+        lines.append("pie title PR Distribution by Module")
         for mod, stats in sorted(modules.items()):
             rate = round(stats.get("first_attempt_rate", 0) * 100)
             prs = stats.get("implementations", 0)
