@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.5.3
+
+- `eval --publish --pr`: create branch + PR for repos with branch protection
+- Material change detection: skip EVAL.md commit when metrics don't move (5% threshold)
+- Branch cleanup: delete orphaned eval branches on error, keep on successful PR
+- Fix: per-module success rate for repos with nested module paths (e.g., src/patina/mcp/)
+- Fix: each PR classified into exactly one module (no double-counting across nested paths)
+- Fix: pie chart relabeled from "Success Distribution" to "PR Distribution by Module"
+
 ## v0.5.2
 
 - `eval --publish`: generate EVAL.md dashboard with Mermaid charts, commit to repo
