@@ -26,6 +26,7 @@ from autoloop.eval import (
     load_run_history,
     load_snapshot,
     main,
+    material_change,
     save_snapshot,
 )
 
@@ -2228,3 +2229,250 @@ def test_generate_eval_md_pie_chart_title():
     content = generate_eval_md(snap, [snap])
     assert "pie title PR Distribution by Module" in content
     assert "Success Distribution" not in content
+
+
+# --- material_change ---
+
+
+def test_material_change_no_change():
+    old = {
+        "first_attempt_rate": 0.80,
+        "human_edit_rate": 0.10,
+        "total_implementations": 30,
+        "modules": {"src/autoloop/": {}},
+    }
+    new = {
+        "first_attempt_rate": 0.80,
+        "human_edit_rate": 0.10,
+        "total_implementations": 30,
+        "modules": {"src/autoloop/": {}},
+    }
+    assert material_change(new, old) is False
+
+
+def test_material_change_small_rate_diff_not_material():
+    old = {
+        "first_attempt_rate": 0.80,
+        "human_edit_rate": 0.10,
+        "total_implementations": 30,
+        "modules": {"src/autoloop/": {}},
+    }
+    new = {
+        "first_attempt_rate": 0.84,
+        "human_edit_rate": 0.10,
+        "total_implementations": 30,
+        "modules": {"src/autoloop/": {}},
+    }
+    assert material_change(new, old) is False
+
+
+def test_material_change_first_attempt_rate_triggers():
+    old = {
+        "first_attempt_rate": 0.80,
+        "human_edit_rate": 0.10,
+        "total_implementations": 30,
+        "modules": {"src/autoloop/": {}},
+    }
+    new = {
+        "first_attempt_rate": 0.86,
+        "human_edit_rate": 0.10,
+        "total_implementations": 30,
+        "modules": {"src/autoloop/": {}},
+    }
+    assert material_change(new, old) is True
+
+
+def test_material_change_human_edit_rate_triggers():
+    old = {
+        "first_attempt_rate": 0.80,
+        "human_edit_rate": 0.10,
+        "total_implementations": 30,
+        "modules": {"src/autoloop/": {}},
+    }
+    new = {
+        "first_attempt_rate": 0.80,
+        "human_edit_rate": 0.16,
+        "total_implementations": 30,
+        "modules": {"src/autoloop/": {}},
+    }
+    assert material_change(new, old) is True
+
+
+def test_material_change_implementations_triggers():
+    old = {
+        "first_attempt_rate": 0.80,
+        "human_edit_rate": 0.10,
+        "total_implementations": 30,
+        "modules": {"src/autoloop/": {}},
+    }
+    new = {
+        "first_attempt_rate": 0.80,
+        "human_edit_rate": 0.10,
+        "total_implementations": 35,
+        "modules": {"src/autoloop/": {}},
+    }
+    assert material_change(new, old) is True
+
+
+def test_material_change_four_implementations_not_enough():
+    old = {
+        "first_attempt_rate": 0.80,
+        "human_edit_rate": 0.10,
+        "total_implementations": 30,
+        "modules": {"src/autoloop/": {}},
+    }
+    new = {
+        "first_attempt_rate": 0.80,
+        "human_edit_rate": 0.10,
+        "total_implementations": 34,
+        "modules": {"src/autoloop/": {}},
+    }
+    assert material_change(new, old) is False
+
+
+def test_material_change_new_module_triggers():
+    old = {
+        "first_attempt_rate": 0.80,
+        "human_edit_rate": 0.10,
+        "total_implementations": 30,
+        "modules": {"src/autoloop/": {}},
+    }
+    new = {
+        "first_attempt_rate": 0.80,
+        "human_edit_rate": 0.10,
+        "total_implementations": 30,
+        "modules": {"src/autoloop/": {}, "src/new/": {}},
+    }
+    assert material_change(new, old) is True
+
+
+# --- main --publish skips commit on no material change ---
+
+
+def test_main_publish_skips_commit_no_material_change(tmp_path, monkeypatch, capsys):
+    """When metrics haven't changed, --publish saves snapshot but skips commit."""
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    log_file = log_dir / "run_history.jsonl"
+    log_file.write_text(
+        json.dumps(
+            {
+                "type": "implement",
+                "issue": 1,
+                "success": True,
+                "attempts": 1,
+                "cost_usd": 1.0,
+                "duration_seconds": 120,
+            }
+        )
+        + "\n"
+    )
+
+    snap_dir = tmp_path / "autoloop" / "eval_snapshots"
+    snap_dir.mkdir(parents=True)
+    previous = {
+        "date": "2026-09-18",
+        "total_implementations": 1,
+        "first_attempt_rate": 1.0,
+        "avg_cost_usd": 1.0,
+        "avg_duration_seconds": 120,
+        "attempt_distribution": {"1": 1, "2": 0, "3+": 0},
+        "human_edit_rate": 0.0,
+        "human_edit_count": 0,
+        "merged_pr_count": 0,
+        "closed_without_merge": 0,
+        "modules": {},
+    }
+    (snap_dir / "2026-09-18.json").write_text(json.dumps(previous))
+
+    calls = []
+    monkeypatch.setattr("autoloop.eval.subprocess.run", _fake_subprocess_on_main(calls))
+
+    main(publish=True, base=tmp_path)
+
+    out = capsys.readouterr().out
+    assert "No material change, skipping EVAL.md commit" in out
+
+    git_commits = [c for c in calls if c[:2] == ["git", "commit"]]
+    assert len(git_commits) == 0
+
+    snap_files = list(snap_dir.glob("*.json"))
+    assert len(snap_files) == 2
+
+
+def test_main_publish_commits_on_material_change(tmp_path, monkeypatch, capsys):
+    """When metrics change beyond thresholds, --publish commits."""
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    entries = [
+        {
+            "type": "implement",
+            "issue": i,
+            "success": True,
+            "attempts": 1,
+            "cost_usd": 1.0,
+            "duration_seconds": 120,
+        }
+        for i in range(1, 11)
+    ]
+    log_file = log_dir / "run_history.jsonl"
+    log_file.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+
+    snap_dir = tmp_path / "autoloop" / "eval_snapshots"
+    snap_dir.mkdir(parents=True)
+    previous = {
+        "date": "2026-09-18",
+        "total_implementations": 1,
+        "first_attempt_rate": 1.0,
+        "avg_cost_usd": 1.0,
+        "avg_duration_seconds": 120,
+        "attempt_distribution": {"1": 1, "2": 0, "3+": 0},
+        "human_edit_rate": 0.0,
+        "human_edit_count": 0,
+        "merged_pr_count": 0,
+        "closed_without_merge": 0,
+        "modules": {},
+    }
+    (snap_dir / "2026-09-18.json").write_text(json.dumps(previous))
+
+    calls = []
+    monkeypatch.setattr("autoloop.eval.subprocess.run", _fake_subprocess_on_main(calls))
+
+    main(publish=True, base=tmp_path)
+
+    out = capsys.readouterr().out
+    assert "Material change detected, publishing EVAL.md" in out
+
+    git_commits = [c for c in calls if c[:2] == ["git", "commit"]]
+    assert len(git_commits) == 1
+
+
+def test_main_publish_first_run_commits(tmp_path, monkeypatch, capsys):
+    """First --publish with no previous snapshot always commits."""
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    log_file = log_dir / "run_history.jsonl"
+    log_file.write_text(
+        json.dumps(
+            {
+                "type": "implement",
+                "issue": 1,
+                "success": True,
+                "attempts": 1,
+                "cost_usd": 1.0,
+                "duration_seconds": 120,
+            }
+        )
+        + "\n"
+    )
+
+    calls = []
+    monkeypatch.setattr("autoloop.eval.subprocess.run", _fake_subprocess_on_main(calls))
+
+    main(publish=True, base=tmp_path)
+
+    out = capsys.readouterr().out
+    assert "Material change detected, publishing EVAL.md" in out
+
+    git_commits = [c for c in calls if c[:2] == ["git", "commit"]]
+    assert len(git_commits) == 1
