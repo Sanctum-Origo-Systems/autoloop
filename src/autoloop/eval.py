@@ -557,7 +557,7 @@ def generate_eval_md(snapshot: dict, all_snapshots: list[dict]) -> str:
     if recent:
         lines.append("## Trend")
         lines.append("")
-        lines.append("| Date | Implementations | First-attempt | Avg Cost | Human Edits |")
+        lines.append("| Date (UTC) | Implementations | First-attempt | Avg Cost | Human Edits |")
         lines.append("|------|----------------|---------------|----------|-------------|")
         for s in recent:
             lines.append(
@@ -573,7 +573,7 @@ def generate_eval_md(snapshot: dict, all_snapshots: list[dict]) -> str:
         success_vals = ", ".join(str(round(s.get("first_attempt_rate", 0) * 100)) for s in recent)
         lines.append("```mermaid")
         lines.append("xychart-beta")
-        lines.append('    title "First-Attempt Success Rate"')
+        lines.append('    title "First-Attempt Success Rate (UTC)"')
         lines.append(f"    x-axis [{dates}]")
         lines.append('    y-axis "Success %" 0 --> 100')
         lines.append(f"    line [{success_vals}]")
@@ -583,7 +583,7 @@ def generate_eval_md(snapshot: dict, all_snapshots: list[dict]) -> str:
         cost_vals = ", ".join(f"{s.get('avg_cost_usd', 0):.2f}" for s in recent)
         lines.append("```mermaid")
         lines.append("xychart-beta")
-        lines.append('    title "Avg Cost/PR"')
+        lines.append('    title "Avg Cost/PR (UTC)"')
         lines.append(f"    x-axis [{dates}]")
         lines.append('    y-axis "Cost ($)"')
         lines.append(f"    line [{cost_vals}]")
