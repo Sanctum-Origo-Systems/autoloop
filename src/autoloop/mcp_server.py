@@ -288,6 +288,7 @@ def main():
         compare: bool = False,
         trend: bool = False,
         publish: bool = False,
+        pr: bool = False,
         repo_dir: str | None = None,
     ) -> str:
         """Run eval to compute builder performance metrics from run history + PR data.
@@ -296,6 +297,7 @@ def main():
             compare: Compare current snapshot to the most recent saved snapshot.
             trend: Show metrics trend over all saved snapshots.
             publish: Generate and commit EVAL.md to the repository.
+            pr: With publish, create a branch and PR instead of committing to main.
             repo_dir: Target repository directory. Defaults to server's working directory.
         """
         from autoloop.eval import (
@@ -304,9 +306,9 @@ def main():
             enrich_pr_data_with_runs,
             fetch_pr_data,
             format_comparison,
-            format_eval_md,
             format_snapshot,
             format_trend,
+            generate_eval_md,
             load_all_snapshots,
             load_latest_snapshot,
             load_run_history,
@@ -342,24 +344,125 @@ def main():
             save_snapshot(current, base)
             return format_comparison(comparison)
 
-        save_snapshot(current, base)
+        snap_path = save_snapshot(current, base)
         result = format_snapshot(current)
 
         if publish:
-            md_content = format_eval_md(current)
+            all_snaps = load_all_snapshots(base)
+            md_content = generate_eval_md(current, all_snaps)
             md_path = base / "EVAL.md"
             md_path.write_text(md_content)
-            subprocess.run(
-                ["git", "add", "EVAL.md"],
-                cwd=str(base),
-                capture_output=True,
-            )
-            subprocess.run(
-                ["git", "commit", "-m", "chore: update EVAL.md"],
-                cwd=str(base),
-                capture_output=True,
-            )
-            result += "\n\nEVAL.md generated and committed."
+            date = current["date"]
+
+            if pr:
+                branch_name = f"chore/eval-{date}"
+                try:
+                    checkout = subprocess.run(
+                        ["git", "checkout", "-b", branch_name],
+                        cwd=str(base),
+                        capture_output=True,
+                        text=True,
+                    )
+                except FileNotFoundError:
+                    return result + "\n\nError: git not found."
+                if checkout.returncode != 0:
+                    return result + f"\n\nError: could not create branch {branch_name}."
+
+                try:
+                    add = subprocess.run(
+                        ["git", "add", str(snap_path), str(md_path)],
+                        cwd=str(base),
+                        capture_output=True,
+                        text=True,
+                    )
+                except FileNotFoundError:
+                    return result + "\n\nError: git not found."
+                if add.returncode != 0:
+                    return result + "\n\nError: git add failed."
+
+                commit_msg = f"chore: update eval report ({date})"
+                try:
+                    commit = subprocess.run(
+                        ["git", "commit", "-m", commit_msg],
+                        cwd=str(base),
+                        capture_output=True,
+                        text=True,
+                    )
+                except FileNotFoundError:
+                    return result + "\n\nError: git not found."
+                if commit.returncode != 0:
+                    return result + "\n\nError: git commit failed."
+
+                try:
+                    push = subprocess.run(
+                        ["git", "push", "-u", "origin", branch_name],
+                        cwd=str(base),
+                        capture_output=True,
+                        text=True,
+                    )
+                except FileNotFoundError:
+                    return result + "\n\nError: git not found."
+                if push.returncode != 0:
+                    return result + f"\n\nError: git push failed.\n{push.stderr}"
+
+                pr_title = f"chore: update eval report ({date})"
+                try:
+                    pr_result = subprocess.run(
+                        [
+                            "gh",
+                            "pr",
+                            "create",
+                            "--title",
+                            pr_title,
+                            "--body",
+                            "Automated eval report update.",
+                        ],
+                        cwd=str(base),
+                        capture_output=True,
+                        text=True,
+                    )
+                except FileNotFoundError:
+                    return result + "\n\nError: gh not found."
+                if pr_result.returncode != 0:
+                    return result + f"\n\nError: PR creation failed.\n{pr_result.stderr}"
+
+                try:
+                    subprocess.run(
+                        ["git", "checkout", "main"],
+                        cwd=str(base),
+                        capture_output=True,
+                    )
+                except FileNotFoundError:
+                    pass
+
+                return result + f"\n\nPR created: {pr_result.stdout.strip()}"
+            else:
+                try:
+                    add = subprocess.run(
+                        ["git", "add", str(snap_path), str(md_path)],
+                        cwd=str(base),
+                        capture_output=True,
+                        text=True,
+                    )
+                except FileNotFoundError:
+                    return result + "\n\nError: git not found."
+                if add.returncode != 0:
+                    return result + "\n\nError: git add failed."
+
+                commit_msg = f"chore: update eval report ({date})"
+                try:
+                    commit = subprocess.run(
+                        ["git", "commit", "-m", commit_msg],
+                        cwd=str(base),
+                        capture_output=True,
+                        text=True,
+                    )
+                except FileNotFoundError:
+                    return result + "\n\nError: git not found."
+                if commit.returncode != 0:
+                    return result + "\n\nError: git commit failed."
+
+                result += "\n\nEVAL.md generated and committed."
 
         return result
 

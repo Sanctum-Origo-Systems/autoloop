@@ -779,11 +779,16 @@ def test_eval_publish(mcp_tools, tmp_path):
     md_path = tmp_path / "EVAL.md"
     assert md_path.exists()
     md_content = md_path.read_text()
-    assert "# Eval Report" in md_content
+    assert "# EVAL Report" in md_content
 
     git_cmds = [c["cmd"] for c in captured]
-    assert ["git", "add", "EVAL.md"] in git_cmds
-    assert ["git", "commit", "-m", "chore: update EVAL.md"] in git_cmds
+    add_cmds = [c for c in git_cmds if c[:2] == ["git", "add"]]
+    assert len(add_cmds) == 1
+    assert str(md_path) in add_cmds[0]
+
+    commit_cmds = [c for c in git_cmds if c[:2] == ["git", "commit"]]
+    assert len(commit_cmds) == 1
+    assert "chore: update eval report" in commit_cmds[0][3]
 
 
 def test_eval_publish_false_no_commit(mcp_tools, tmp_path):

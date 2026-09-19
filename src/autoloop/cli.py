@@ -131,6 +131,11 @@ def build_parser():
         action="store_true",
         help="Generate EVAL.md and commit to main",
     )
+    eval_parser.add_argument(
+        "--pr",
+        action="store_true",
+        help="With --publish, create a branch and PR instead of committing to main",
+    )
 
     # version (also accessible via --version)
     subparsers.add_parser("version", help="Print installed version")
@@ -223,6 +228,7 @@ def main():
             repo=cfg.repo,
             output=args.output,
             publish=args.publish,
+            pr=args.pr,
         )
 
     elif args.command == "doctor":
