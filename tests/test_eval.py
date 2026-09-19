@@ -9,6 +9,7 @@ from autoloop.eval import (
     _detect_module_prefixes,
     _detect_post_merge_fixups,
     _extract_issue_from_branch,
+    _publish_via_pr,
     classify_module,
     compare_snapshots,
     compute_snapshot,
@@ -1222,11 +1223,10 @@ def test_generate_eval_md_trend_table():
     assert "| 2026-09-14 |" in content
 
 
-def test_generate_eval_md_trend_table_limits_to_4():
+def test_generate_eval_md_trend_table_shows_all():
     snaps = [_make_snapshot(date=f"2026-09-{i:02d}") for i in range(1, 7)]
     content = generate_eval_md(snaps[-1], snaps)
-    assert "2026-09-01" not in content
-    assert "2026-09-02" not in content
+    assert "2026-09-01" in content
     assert "2026-09-03" in content
     assert "2026-09-06" in content
 
@@ -1239,7 +1239,7 @@ def test_generate_eval_md_mermaid_success_chart():
     content = generate_eval_md(snaps[-1], snaps)
     assert "```mermaid" in content
     assert "xychart-beta" in content
-    assert 'title "First-Attempt Success Rate"' in content
+    assert 'title "First-Attempt Success Rate (UTC)"' in content
     assert '"2026-09-07"' in content
     assert '"2026-09-14"' in content
     assert 'y-axis "Success %" 0 --> 100' in content
@@ -1252,7 +1252,7 @@ def test_generate_eval_md_mermaid_cost_chart():
         _make_snapshot(date="2026-09-14", cost=1.12),
     ]
     content = generate_eval_md(snaps[-1], snaps)
-    assert 'title "Avg Cost/PR"' in content
+    assert 'title "Avg Cost/PR (UTC)"' in content
     assert 'y-axis "Cost ($)"' in content
     assert "line [1.50, 1.12]" in content
 
@@ -1275,8 +1275,8 @@ def test_generate_eval_md_mermaid_pie_chart():
     snap = _make_snapshot(modules=modules)
     content = generate_eval_md(snap, [snap])
     assert "pie title Per-Module Success Distribution" in content
-    assert '"src/autoloop/" : 25' in content
-    assert '"src/other/" : 10' in content
+    assert '"src/autoloop/ (92%, 25 PRs)" : 25' in content
+    assert '"src/other/ (80%, 10 PRs)" : 10' in content
 
 
 def test_generate_eval_md_no_modules_skips_module_sections():
@@ -1659,3 +1659,348 @@ def test_cli_eval_no_publish_default():
     parser = build_parser()
     args = parser.parse_args(["eval"])
     assert args.publish is False
+
+
+# --- CLI --pr flag ---
+
+
+def test_cli_eval_pr_flag():
+    from autoloop.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(["eval", "--publish", "--pr"])
+    assert args.publish is True
+    assert args.pr is True
+
+
+def test_cli_eval_no_pr_default():
+    from autoloop.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(["eval"])
+    assert args.pr is False
+
+
+# --- _publish_via_pr ---
+
+
+def _fake_subprocess_all_ok(calls=None):
+    """Return a fake subprocess.run where all commands succeed."""
+    if calls is None:
+        calls = []
+
+    def _fake(cmd, **kw):
+        calls.append(cmd)
+        stdout = ""
+        if cmd[:2] == ["gh", "pr"]:
+            stdout = "https://github.com/owner/repo/pull/99\n"
+        return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+    return _fake
+
+
+def test_publish_via_pr_creates_branch_and_pr(tmp_path, monkeypatch):
+    snap_path = tmp_path / "autoloop" / "eval_snapshots" / "2026-09-19.json"
+    snap_path.parent.mkdir(parents=True)
+    snap_path.write_text("{}")
+    eval_path = tmp_path / "EVAL.md"
+    eval_path.write_text("# EVAL")
+
+    calls = []
+    monkeypatch.setattr("autoloop.eval.subprocess.run", _fake_subprocess_all_ok(calls))
+
+    result = _publish_via_pr(tmp_path, snap_path, eval_path, "2026-09-19")
+
+    assert "PR created:" in result
+    assert "https://github.com/owner/repo/pull/99" in result
+
+    checkouts = [c for c in calls if c[:3] == ["git", "checkout", "-b"]]
+    assert len(checkouts) == 1
+    assert checkouts[0][3] == "chore/eval-2026-09-19"
+
+    git_adds = [c for c in calls if c[:2] == ["git", "add"]]
+    assert len(git_adds) == 1
+    assert str(snap_path) in git_adds[0]
+    assert str(eval_path) in git_adds[0]
+
+    commits = [c for c in calls if c[:2] == ["git", "commit"]]
+    assert len(commits) == 1
+    assert "chore: update eval report (2026-09-19)" in commits[0][3]
+
+    pushes = [c for c in calls if c[:2] == ["git", "push"]]
+    assert len(pushes) == 1
+    assert "chore/eval-2026-09-19" in pushes[0]
+
+    pr_creates = [c for c in calls if c[:3] == ["gh", "pr", "create"]]
+    assert len(pr_creates) == 1
+    assert "chore: update eval report (2026-09-19)" in pr_creates[0]
+
+    main_checkouts = [c for c in calls if c == ["git", "checkout", "main"]]
+    assert len(main_checkouts) == 1
+
+
+def test_publish_via_pr_handles_branch_creation_failure(tmp_path, monkeypatch):
+    snap_path = tmp_path / "snap.json"
+    snap_path.write_text("{}")
+    eval_path = tmp_path / "EVAL.md"
+    eval_path.write_text("")
+
+    def fake_run(cmd, **kw):
+        if cmd[:3] == ["git", "checkout", "-b"]:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="branch exists")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
+    result = _publish_via_pr(tmp_path, snap_path, eval_path, "2026-09-19")
+
+    assert "could not create branch" in result
+
+
+def test_publish_via_pr_handles_push_failure(tmp_path, monkeypatch):
+    snap_path = tmp_path / "snap.json"
+    snap_path.write_text("{}")
+    eval_path = tmp_path / "EVAL.md"
+    eval_path.write_text("")
+
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        if cmd[:2] == ["git", "push"]:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="push error")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
+    result = _publish_via_pr(tmp_path, snap_path, eval_path, "2026-09-19")
+
+    assert "git push failed" in result
+    main_checkouts = [c for c in calls if c == ["git", "checkout", "main"]]
+    assert len(main_checkouts) == 1
+
+
+def test_publish_via_pr_handles_pr_creation_failure(tmp_path, monkeypatch):
+    snap_path = tmp_path / "snap.json"
+    snap_path.write_text("{}")
+    eval_path = tmp_path / "EVAL.md"
+    eval_path.write_text("")
+
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        if cmd[:3] == ["gh", "pr", "create"]:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="pr error")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
+    result = _publish_via_pr(tmp_path, snap_path, eval_path, "2026-09-19")
+
+    assert "PR creation failed" in result
+    main_checkouts = [c for c in calls if c == ["git", "checkout", "main"]]
+    assert len(main_checkouts) == 1
+
+
+def test_publish_via_pr_handles_git_not_found(tmp_path, monkeypatch):
+    snap_path = tmp_path / "snap.json"
+    snap_path.write_text("{}")
+    eval_path = tmp_path / "EVAL.md"
+    eval_path.write_text("")
+
+    def fake_run(cmd, **kw):
+        raise FileNotFoundError("git not found")
+
+    monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
+    result = _publish_via_pr(tmp_path, snap_path, eval_path, "2026-09-19")
+
+    assert "git not found" in result
+
+
+def test_publish_via_pr_checkouts_main_on_add_failure(tmp_path, monkeypatch):
+    snap_path = tmp_path / "snap.json"
+    snap_path.write_text("{}")
+    eval_path = tmp_path / "EVAL.md"
+    eval_path.write_text("")
+
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        if cmd[:2] == ["git", "add"]:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
+    result = _publish_via_pr(tmp_path, snap_path, eval_path, "2026-09-19")
+
+    assert "git add failed" in result
+    main_checkouts = [c for c in calls if c == ["git", "checkout", "main"]]
+    assert len(main_checkouts) == 1
+
+
+def test_publish_via_pr_checkouts_main_on_commit_failure(tmp_path, monkeypatch):
+    snap_path = tmp_path / "snap.json"
+    snap_path.write_text("{}")
+    eval_path = tmp_path / "EVAL.md"
+    eval_path.write_text("")
+
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        if cmd[:2] == ["git", "commit"]:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
+    result = _publish_via_pr(tmp_path, snap_path, eval_path, "2026-09-19")
+
+    assert "git commit failed" in result
+    main_checkouts = [c for c in calls if c == ["git", "checkout", "main"]]
+    assert len(main_checkouts) == 1
+
+
+# --- main with --publish --pr ---
+
+
+def test_main_publish_pr(tmp_path, monkeypatch, capsys):
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    log_file = log_dir / "run_history.jsonl"
+    log_file.write_text(
+        json.dumps(
+            {
+                "type": "implement",
+                "issue": 1,
+                "success": True,
+                "attempts": 1,
+                "cost_usd": 1.0,
+                "duration_seconds": 120,
+            }
+        )
+        + "\n"
+    )
+
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        stdout = ""
+        if cmd[:3] == ["git", "rev-parse", "--abbrev-ref"]:
+            stdout = "main\n"
+        elif cmd[:3] == ["gh", "pr", "create"]:
+            stdout = "https://github.com/owner/repo/pull/42\n"
+        return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
+
+    main(publish=True, pr=True, base=tmp_path)
+
+    out = capsys.readouterr().out
+    assert "PR created:" in out
+
+    checkouts = [c for c in calls if c[:3] == ["git", "checkout", "-b"]]
+    assert len(checkouts) == 1
+
+
+def test_main_publish_pr_rejects_non_main(tmp_path, monkeypatch, capsys):
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    (log_dir / "run_history.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "implement",
+                "issue": 1,
+                "success": True,
+                "attempts": 1,
+                "cost_usd": 1.0,
+                "duration_seconds": 60,
+            }
+        )
+        + "\n"
+    )
+
+    def fake_run(cmd, **kw):
+        if cmd[:3] == ["git", "rev-parse", "--abbrev-ref"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="feature\n")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
+
+    main(publish=True, pr=True, base=tmp_path)
+
+    out = capsys.readouterr().out
+    assert "must be run from the main branch" in out
+
+
+# --- main --publish push failure suggests --pr ---
+
+
+def test_main_publish_push_failure_suggests_pr(tmp_path, monkeypatch, capsys):
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    (log_dir / "run_history.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "implement",
+                "issue": 1,
+                "success": True,
+                "attempts": 1,
+                "cost_usd": 1.0,
+                "duration_seconds": 60,
+            }
+        )
+        + "\n"
+    )
+
+    def fake_run(cmd, **kw):
+        if cmd[:3] == ["git", "rev-parse", "--abbrev-ref"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="main\n")
+        if cmd[:2] == ["git", "push"]:
+            return subprocess.CompletedProcess(
+                cmd,
+                1,
+                stdout="",
+                stderr="remote: error: GH013: Repository rule violations found",
+            )
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
+
+    main(publish=True, base=tmp_path)
+
+    out = capsys.readouterr().out
+    assert "branch protection" in out
+    assert "--pr" in out
+
+
+def test_main_publish_push_generic_failure(tmp_path, monkeypatch, capsys):
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    (log_dir / "run_history.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "implement",
+                "issue": 1,
+                "success": True,
+                "attempts": 1,
+                "cost_usd": 1.0,
+                "duration_seconds": 60,
+            }
+        )
+        + "\n"
+    )
+
+    def fake_run(cmd, **kw):
+        if cmd[:3] == ["git", "rev-parse", "--abbrev-ref"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="main\n")
+        if cmd[:2] == ["git", "push"]:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="network error")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
+
+    main(publish=True, base=tmp_path)
+
+    out = capsys.readouterr().out
+    assert "git push failed" in out
+    assert "--pr" not in out

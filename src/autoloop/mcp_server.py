@@ -288,6 +288,7 @@ def main():
         compare: bool = False,
         trend: bool = False,
         publish: bool = False,
+        pr: bool = False,
         repo_dir: str | None = None,
     ) -> str:
         """Run eval to compute builder performance metrics from run history + PR data.
@@ -296,6 +297,7 @@ def main():
             compare: Compare current snapshot to the most recent saved snapshot.
             trend: Show metrics trend over all saved snapshots.
             publish: Generate and commit EVAL.md to the repository.
+            pr: With publish, create a branch and PR instead of committing to main.
             repo_dir: Target repository directory. Defaults to server's working directory.
         """
         from autoloop.eval import (
@@ -304,9 +306,9 @@ def main():
             enrich_pr_data_with_runs,
             fetch_pr_data,
             format_comparison,
-            format_eval_md,
             format_snapshot,
             format_trend,
+            generate_eval_md,
             load_all_snapshots,
             load_latest_snapshot,
             load_run_history,
@@ -342,24 +344,66 @@ def main():
             save_snapshot(current, base)
             return format_comparison(comparison)
 
-        save_snapshot(current, base)
+        snap_path = save_snapshot(current, base)
         result = format_snapshot(current)
 
         if publish:
-            md_content = format_eval_md(current)
+            from autoloop.eval import _publish_via_pr
+
+            all_snaps = load_all_snapshots(base)
+            md_content = generate_eval_md(current, all_snaps)
             md_path = base / "EVAL.md"
             md_path.write_text(md_content)
-            subprocess.run(
-                ["git", "add", "EVAL.md"],
-                cwd=str(base),
-                capture_output=True,
-            )
-            subprocess.run(
-                ["git", "commit", "-m", "chore: update EVAL.md"],
-                cwd=str(base),
-                capture_output=True,
-            )
-            result += "\n\nEVAL.md generated and committed."
+            date = current["date"]
+
+            if pr:
+                pr_msg = _publish_via_pr(base, snap_path, md_path, date)
+                return result + f"\n\n{pr_msg}"
+            else:
+                try:
+                    add = subprocess.run(
+                        ["git", "add", str(snap_path), str(md_path)],
+                        cwd=str(base),
+                        capture_output=True,
+                        text=True,
+                    )
+                except FileNotFoundError:
+                    return result + "\n\nError: git not found."
+                if add.returncode != 0:
+                    return result + "\n\nError: git add failed."
+
+                commit_msg = f"chore: update eval report ({date})"
+                try:
+                    commit = subprocess.run(
+                        ["git", "commit", "-m", commit_msg],
+                        cwd=str(base),
+                        capture_output=True,
+                        text=True,
+                    )
+                except FileNotFoundError:
+                    return result + "\n\nError: git not found."
+                if commit.returncode != 0:
+                    return result + "\n\nError: git commit failed."
+
+                try:
+                    push = subprocess.run(
+                        ["git", "push"],
+                        cwd=str(base),
+                        capture_output=True,
+                        text=True,
+                    )
+                except FileNotFoundError:
+                    return result + "\n\nError: git not found."
+                if push.returncode != 0:
+                    stderr = push.stderr
+                    if "rule violations" in stderr or "protected branch" in stderr:
+                        return (
+                            result + "\n\nError: push failed — branch protection is enabled."
+                            "\nHint: use publish with pr=True to create a PR instead."
+                        )
+                    return result + f"\n\nError: git push failed.\n{stderr}"
+
+                result += "\n\nEVAL.md generated and committed."
 
         return result
 

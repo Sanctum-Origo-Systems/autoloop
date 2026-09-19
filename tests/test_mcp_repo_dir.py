@@ -747,7 +747,7 @@ def test_eval_compare_with_previous(mcp_tools, tmp_path):
 
 
 def test_eval_publish(mcp_tools, tmp_path):
-    """autoloop_eval with publish=True generates EVAL.md and commits."""
+    """autoloop_eval with publish=True generates EVAL.md, commits, and pushes."""
     log_dir = tmp_path / "autoloop"
     log_dir.mkdir()
     (log_dir / "run_history.jsonl").write_text(
@@ -779,11 +779,19 @@ def test_eval_publish(mcp_tools, tmp_path):
     md_path = tmp_path / "EVAL.md"
     assert md_path.exists()
     md_content = md_path.read_text()
-    assert "# Eval Report" in md_content
+    assert "# EVAL Report" in md_content
 
     git_cmds = [c["cmd"] for c in captured]
-    assert ["git", "add", "EVAL.md"] in git_cmds
-    assert ["git", "commit", "-m", "chore: update EVAL.md"] in git_cmds
+    add_cmds = [c for c in git_cmds if c[:2] == ["git", "add"]]
+    assert len(add_cmds) == 1
+    assert str(md_path) in add_cmds[0]
+
+    commit_cmds = [c for c in git_cmds if c[:2] == ["git", "commit"]]
+    assert len(commit_cmds) == 1
+    assert "chore: update eval report" in commit_cmds[0][3]
+
+    push_cmds = [c for c in git_cmds if c[:2] == ["git", "push"]]
+    assert len(push_cmds) == 1
 
 
 def test_eval_publish_false_no_commit(mcp_tools, tmp_path):
@@ -860,3 +868,90 @@ def test_eval_with_config_loads_repo(mcp_tools, tmp_path, monkeypatch):
 
     assert len(fetch_calls) == 1
     assert fetch_calls[0] == "acme-corp/widget"
+
+
+def test_eval_publish_pr(mcp_tools, tmp_path):
+    """autoloop_eval with publish=True, pr=True calls _publish_via_pr."""
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    (log_dir / "run_history.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "implement",
+                "issue": 1,
+                "success": True,
+                "attempts": 1,
+                "cost_usd": 1.0,
+                "duration_seconds": 120,
+            }
+        )
+        + "\n"
+    )
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        stdout = ""
+        if cmd[:3] == ["gh", "pr", "create"]:
+            stdout = "https://github.com/owner/repo/pull/55\n"
+        return type("R", (), {"returncode": 0, "stdout": stdout, "stderr": ""})()
+
+    with patch("autoloop.eval.subprocess.run", fake_run):
+        result = mcp_tools["autoloop_eval"](publish=True, pr=True, repo_dir=str(tmp_path))
+
+    assert "PR created:" in result
+    assert "https://github.com/owner/repo/pull/55" in result
+
+    md_path = tmp_path / "EVAL.md"
+    assert md_path.exists()
+
+    checkouts = [c for c in calls if c[:3] == ["git", "checkout", "-b"]]
+    assert len(checkouts) == 1
+    assert checkouts[0][3].startswith("chore/eval-")
+
+    snap_adds = [c for c in calls if c[:2] == ["git", "add"]]
+    assert len(snap_adds) == 1
+    assert str(md_path) in snap_adds[0]
+    assert any("eval_snapshots" in arg for arg in snap_adds[0])
+
+    main_checkouts = [c for c in calls if c == ["git", "checkout", "main"]]
+    assert len(main_checkouts) == 1
+
+
+def test_eval_publish_push_failure_suggests_pr(mcp_tools, tmp_path):
+    """MCP autoloop_eval non-PR publish detects branch protection on push failure."""
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    (log_dir / "run_history.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "implement",
+                "issue": 1,
+                "success": True,
+                "attempts": 1,
+                "cost_usd": 1.0,
+                "duration_seconds": 60,
+            }
+        )
+        + "\n"
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:2] == ["git", "push"]:
+            return type(
+                "R",
+                (),
+                {
+                    "returncode": 1,
+                    "stdout": "",
+                    "stderr": "remote: error: GH013: Repository rule violations found",
+                },
+            )()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    with patch("autoloop.mcp_server.subprocess.run", fake_run):
+        result = mcp_tools["autoloop_eval"](publish=True, repo_dir=str(tmp_path))
+
+    assert "branch protection" in result
+    assert "pr=True" in result

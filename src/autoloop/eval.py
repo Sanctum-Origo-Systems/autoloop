@@ -592,7 +592,9 @@ def generate_eval_md(snapshot: dict, all_snapshots: list[dict]) -> str:
 
     if modules:
         lines.append("```mermaid")
-        lines.append("%%{init: {'theme': 'base', 'themeVariables': {'pie1': '#4CAF50', 'pie2': '#2196F3', 'pie3': '#FF9800', 'pie4': '#E91E63', 'pie5': '#9C27B0', 'pie6': '#00BCD4', 'pieTitleTextColor': '#aaa', 'pieLegendTextColor': '#aaa', 'pieSectionTextColor': '#fff'}}}%%")
+        lines.append(
+            "%%{init: {'theme': 'base', 'themeVariables': {'pie1': '#4CAF50', 'pie2': '#2196F3', 'pie3': '#FF9800', 'pie4': '#E91E63', 'pie5': '#9C27B0', 'pie6': '#00BCD4', 'pieTitleTextColor': '#aaa', 'pieLegendTextColor': '#aaa', 'pieSectionTextColor': '#fff'}}}%%"
+        )
         lines.append("pie title Per-Module Success Distribution")
         for mod, stats in sorted(modules.items()):
             rate = round(stats.get("first_attempt_rate", 0) * 100)
@@ -604,6 +606,91 @@ def generate_eval_md(snapshot: dict, all_snapshots: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _publish_via_pr(base: Path, snapshot_path: Path, eval_path: Path, date: str) -> str:
+    branch_name = f"chore/eval-{date}"
+    try:
+        result = subprocess.run(
+            ["git", "checkout", "-b", branch_name],
+            capture_output=True,
+            text=True,
+            cwd=str(base),
+        )
+    except FileNotFoundError:
+        return "Error: git not found"
+    if result.returncode != 0:
+        return f"Error: could not create branch {branch_name}"
+
+    try:
+        try:
+            result = subprocess.run(
+                ["git", "add", str(snapshot_path), str(eval_path)],
+                capture_output=True,
+                text=True,
+                cwd=str(base),
+            )
+        except FileNotFoundError:
+            return "Error: git not found"
+        if result.returncode != 0:
+            return "Error: git add failed"
+
+        commit_msg = f"chore: update eval report ({date})"
+        try:
+            result = subprocess.run(
+                ["git", "commit", "-m", commit_msg],
+                capture_output=True,
+                text=True,
+                cwd=str(base),
+            )
+        except FileNotFoundError:
+            return "Error: git not found"
+        if result.returncode != 0:
+            return "Error: git commit failed"
+
+        try:
+            result = subprocess.run(
+                ["git", "push", "-u", "origin", branch_name],
+                capture_output=True,
+                text=True,
+                cwd=str(base),
+            )
+        except FileNotFoundError:
+            return "Error: git not found"
+        if result.returncode != 0:
+            return f"Error: git push failed\n{result.stderr}"
+
+        pr_title = f"chore: update eval report ({date})"
+        try:
+            result = subprocess.run(
+                [
+                    "gh",
+                    "pr",
+                    "create",
+                    "--title",
+                    pr_title,
+                    "--body",
+                    "Automated eval report update.",
+                ],
+                capture_output=True,
+                text=True,
+                cwd=str(base),
+            )
+        except FileNotFoundError:
+            return "Error: gh not found"
+        if result.returncode != 0:
+            return f"Error: PR creation failed\n{result.stderr}"
+
+        return f"PR created: {result.stdout.strip()}"
+    finally:
+        try:
+            subprocess.run(
+                ["git", "checkout", "main"],
+                capture_output=True,
+                cwd=str(base),
+            )
+        except FileNotFoundError:
+            pass
+
+
 def main(
     compare: str | None = None,
     trend: bool = False,
@@ -611,6 +698,7 @@ def main(
     base: Path | None = None,
     output: str | None = None,
     publish: bool = False,
+    pr: bool = False,
 ):
     effective_base = base or Path.cwd()
 
@@ -642,6 +730,11 @@ def main(
         eval_path.write_text(content)
 
         date = snapshot["date"]
+
+        if pr:
+            print(_publish_via_pr(effective_base, path, eval_path, date))
+            return
+
         try:
             add_result = subprocess.run(
                 ["git", "add", str(path), str(eval_path)], cwd=str(effective_base)
@@ -666,6 +759,27 @@ def main(
             return
 
         print(f"EVAL.md committed: chore: update eval report ({date})")
+
+        try:
+            push_result = subprocess.run(
+                ["git", "push"],
+                capture_output=True,
+                text=True,
+                cwd=str(effective_base),
+            )
+        except FileNotFoundError:
+            print("Error: git not found")
+            return
+        if push_result.returncode != 0:
+            stderr = push_result.stderr
+            if "rule violations" in stderr or "protected branch" in stderr:
+                print(
+                    "Error: push failed — branch protection is enabled.\n"
+                    "Hint: use --publish --pr to create a PR instead."
+                )
+            else:
+                print(f"Error: git push failed\n{stderr}")
+            return
         return
 
     if trend:
