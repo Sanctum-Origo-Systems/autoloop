@@ -1274,7 +1274,7 @@ def test_generate_eval_md_mermaid_pie_chart():
     }
     snap = _make_snapshot(modules=modules)
     content = generate_eval_md(snap, [snap])
-    assert "pie title Per-Module Success Distribution" in content
+    assert "pie title PR Distribution by Module" in content
     assert '"src/autoloop/ (92%, 25 PRs)" : 25' in content
     assert '"src/other/ (80%, 10 PRs)" : 10' in content
 
@@ -2004,3 +2004,227 @@ def test_main_publish_push_generic_failure(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "git push failed" in out
     assert "--pr" not in out
+
+
+# --- nested module path fixes (#174) ---
+
+
+def test_classify_module_picks_deepest_prefix():
+    """When nested prefixes match, classify to the deepest (longest) one."""
+    files = ["src/patina/mcp/server.py"]
+    prefixes = ["src/patina/", "src/patina/mcp/"]
+    assert classify_module(files, prefixes) == "src/patina/mcp/"
+
+
+def test_classify_module_picks_deepest_prefix_reverse_order():
+    """Deepest match wins regardless of prefix list order."""
+    files = ["src/patina/mcp/server.py"]
+    prefixes = ["src/patina/mcp/", "src/patina/"]
+    assert classify_module(files, prefixes) == "src/patina/mcp/"
+
+
+def test_classify_module_primary_module_by_count():
+    """PR with files in multiple modules is classified by majority file count."""
+    files = [
+        "src/patina/mcp/server.py",
+        "src/patina/mcp/tools.py",
+        "src/patina/store.py",
+    ]
+    prefixes = ["src/patina/", "src/patina/mcp/"]
+    assert classify_module(files, prefixes) == "src/patina/mcp/"
+
+
+def test_classify_module_shallow_file_not_swallowed_by_parent():
+    """A file directly under src/patina/ goes to src/patina/, not a nested module."""
+    files = ["src/patina/store.py"]
+    prefixes = ["src/patina/", "src/patina/mcp/", "src/patina/adapters/"]
+    assert classify_module(files, prefixes) == "src/patina/"
+
+
+def test_compute_snapshot_nested_modules_correct_success():
+    """Per-module first-attempt rate is correct for repos with nested module paths."""
+    runs = [
+        {
+            "type": "implement",
+            "issue": i,
+            "success": True,
+            "attempts": 1,
+            "cost_usd": 1.0,
+            "duration_seconds": 60,
+        }
+        for i in range(1, 6)
+    ]
+    runs[2]["attempts"] = 2
+    pr_data = [
+        {
+            "number": 1,
+            "merged": True,
+            "closed": False,
+            "changed_files": ["src/patina/store.py"],
+            "human_edited": False,
+            "first_attempt_success": True,
+            "issue": 1,
+        },
+        {
+            "number": 2,
+            "merged": True,
+            "closed": False,
+            "changed_files": ["src/patina/config.py"],
+            "human_edited": False,
+            "first_attempt_success": True,
+            "issue": 2,
+        },
+        {
+            "number": 3,
+            "merged": True,
+            "closed": False,
+            "changed_files": ["src/patina/mcp/server.py"],
+            "human_edited": False,
+            "first_attempt_success": False,
+            "issue": 3,
+        },
+        {
+            "number": 4,
+            "merged": True,
+            "closed": False,
+            "changed_files": ["src/patina/mcp/tools.py"],
+            "human_edited": False,
+            "first_attempt_success": True,
+            "issue": 4,
+        },
+        {
+            "number": 5,
+            "merged": True,
+            "closed": False,
+            "changed_files": ["src/patina/adapters/github.py"],
+            "human_edited": False,
+            "first_attempt_success": True,
+            "issue": 5,
+        },
+    ]
+    snap = compute_snapshot(runs, pr_data, date="2026-09-19")
+
+    modules = snap["modules"]
+    assert "src/patina/" in modules
+    assert "src/patina/mcp/" in modules
+    assert "src/patina/adapters/" in modules
+
+    assert modules["src/patina/"]["implementations"] == 2
+    assert modules["src/patina/"]["first_attempt_rate"] == 1.0
+    assert modules["src/patina/mcp/"]["implementations"] == 2
+    assert modules["src/patina/mcp/"]["first_attempt_rate"] == 0.5
+    assert modules["src/patina/adapters/"]["implementations"] == 1
+    assert modules["src/patina/adapters/"]["first_attempt_rate"] == 1.0
+
+
+def test_compute_snapshot_no_double_counting():
+    """Per-module PRs sum to total implementations, no double-counting."""
+    runs = [
+        {
+            "type": "implement",
+            "issue": i,
+            "success": True,
+            "attempts": 1,
+            "cost_usd": 1.0,
+            "duration_seconds": 60,
+        }
+        for i in range(1, 6)
+    ]
+    pr_data = [
+        {
+            "number": 1,
+            "merged": True,
+            "closed": False,
+            "changed_files": ["src/patina/store.py", "src/patina/mcp/server.py"],
+            "human_edited": False,
+            "first_attempt_success": True,
+            "issue": 1,
+        },
+        {
+            "number": 2,
+            "merged": True,
+            "closed": False,
+            "changed_files": ["src/patina/mcp/tools.py"],
+            "human_edited": False,
+            "first_attempt_success": True,
+            "issue": 2,
+        },
+        {
+            "number": 3,
+            "merged": True,
+            "closed": False,
+            "changed_files": ["src/patina/adapters/github.py"],
+            "human_edited": False,
+            "first_attempt_success": True,
+            "issue": 3,
+        },
+        {
+            "number": 4,
+            "merged": True,
+            "closed": False,
+            "changed_files": ["src/patina/config.py"],
+            "human_edited": False,
+            "first_attempt_success": True,
+            "issue": 4,
+        },
+    ]
+    snap = compute_snapshot(runs, pr_data, date="2026-09-19")
+
+    total_module_prs = sum(m["implementations"] for m in snap["modules"].values())
+    assert total_module_prs == len(pr_data)
+
+
+def test_compute_snapshot_cross_module_pr_classified_once():
+    """A PR touching files across nested modules goes to exactly one module."""
+    runs = [
+        {
+            "type": "implement",
+            "issue": 1,
+            "success": True,
+            "attempts": 1,
+            "cost_usd": 1.0,
+            "duration_seconds": 60,
+        },
+    ]
+    pr_data = [
+        {
+            "number": 1,
+            "merged": True,
+            "closed": False,
+            "changed_files": [
+                "src/patina/store.py",
+                "src/patina/mcp/server.py",
+                "src/patina/mcp/tools.py",
+            ],
+            "human_edited": False,
+            "first_attempt_success": True,
+            "issue": 1,
+        },
+    ]
+    snap = compute_snapshot(runs, pr_data, date="2026-09-19")
+
+    total_module_prs = sum(m["implementations"] for m in snap["modules"].values())
+    assert total_module_prs == 1
+    assert "src/patina/mcp/" in snap["modules"]
+
+
+def test_generate_eval_md_pie_chart_title():
+    """Pie chart title reflects PR count distribution, not success distribution."""
+    modules = {
+        "src/patina/": {
+            "implementations": 10,
+            "first_attempt_rate": 0.80,
+            "avg_cost_usd": 1.0,
+            "human_edit_rate": 0.0,
+        },
+        "src/patina/mcp/": {
+            "implementations": 5,
+            "first_attempt_rate": 0.60,
+            "avg_cost_usd": 1.5,
+            "human_edit_rate": 0.0,
+        },
+    }
+    snap = _make_snapshot(modules=modules)
+    content = generate_eval_md(snap, [snap])
+    assert "pie title PR Distribution by Module" in content
+    assert "Success Distribution" not in content
