@@ -626,6 +626,7 @@ def material_change(new: dict, old: dict) -> bool:
 
 def _publish_via_pr(base: Path, snapshot_path: Path, eval_path: Path, date: str) -> str:
     branch_name = f"chore/eval-{date}"
+    pr_created = False
     try:
         result = subprocess.run(
             ["git", "checkout", "-b", branch_name],
@@ -697,6 +698,7 @@ def _publish_via_pr(base: Path, snapshot_path: Path, eval_path: Path, date: str)
         if result.returncode != 0:
             return f"Error: PR creation failed\n{result.stderr}"
 
+        pr_created = True
         return f"PR created: {result.stdout.strip()}"
     finally:
         try:
@@ -705,6 +707,12 @@ def _publish_via_pr(base: Path, snapshot_path: Path, eval_path: Path, date: str)
                 capture_output=True,
                 cwd=str(base),
             )
+            if not pr_created:
+                subprocess.run(
+                    ["git", "branch", "-D", branch_name],
+                    capture_output=True,
+                    cwd=str(base),
+                )
         except FileNotFoundError:
             pass
 
