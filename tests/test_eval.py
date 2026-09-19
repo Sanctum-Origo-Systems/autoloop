@@ -1699,7 +1699,7 @@ def _fake_subprocess_all_ok(calls=None):
     return _fake
 
 
-def test_publish_via_pr_creates_branch_and_pr(tmp_path, monkeypatch, capsys):
+def test_publish_via_pr_creates_branch_and_pr(tmp_path, monkeypatch):
     snap_path = tmp_path / "autoloop" / "eval_snapshots" / "2026-09-19.json"
     snap_path.parent.mkdir(parents=True)
     snap_path.write_text("{}")
@@ -1709,11 +1709,10 @@ def test_publish_via_pr_creates_branch_and_pr(tmp_path, monkeypatch, capsys):
     calls = []
     monkeypatch.setattr("autoloop.eval.subprocess.run", _fake_subprocess_all_ok(calls))
 
-    _publish_via_pr(tmp_path, snap_path, eval_path, "2026-09-19")
+    result = _publish_via_pr(tmp_path, snap_path, eval_path, "2026-09-19")
 
-    out = capsys.readouterr().out
-    assert "PR created:" in out
-    assert "https://github.com/owner/repo/pull/99" in out
+    assert "PR created:" in result
+    assert "https://github.com/owner/repo/pull/99" in result
 
     checkouts = [c for c in calls if c[:3] == ["git", "checkout", "-b"]]
     assert len(checkouts) == 1
@@ -1740,7 +1739,7 @@ def test_publish_via_pr_creates_branch_and_pr(tmp_path, monkeypatch, capsys):
     assert len(main_checkouts) == 1
 
 
-def test_publish_via_pr_handles_branch_creation_failure(tmp_path, monkeypatch, capsys):
+def test_publish_via_pr_handles_branch_creation_failure(tmp_path, monkeypatch):
     snap_path = tmp_path / "snap.json"
     snap_path.write_text("{}")
     eval_path = tmp_path / "EVAL.md"
@@ -1752,49 +1751,56 @@ def test_publish_via_pr_handles_branch_creation_failure(tmp_path, monkeypatch, c
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
-    _publish_via_pr(tmp_path, snap_path, eval_path, "2026-09-19")
+    result = _publish_via_pr(tmp_path, snap_path, eval_path, "2026-09-19")
 
-    out = capsys.readouterr().out
-    assert "could not create branch" in out
+    assert "could not create branch" in result
 
 
-def test_publish_via_pr_handles_push_failure(tmp_path, monkeypatch, capsys):
+def test_publish_via_pr_handles_push_failure(tmp_path, monkeypatch):
     snap_path = tmp_path / "snap.json"
     snap_path.write_text("{}")
     eval_path = tmp_path / "EVAL.md"
     eval_path.write_text("")
 
+    calls = []
+
     def fake_run(cmd, **kw):
+        calls.append(cmd)
         if cmd[:2] == ["git", "push"]:
             return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="push error")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
-    _publish_via_pr(tmp_path, snap_path, eval_path, "2026-09-19")
+    result = _publish_via_pr(tmp_path, snap_path, eval_path, "2026-09-19")
 
-    out = capsys.readouterr().out
-    assert "git push failed" in out
+    assert "git push failed" in result
+    main_checkouts = [c for c in calls if c == ["git", "checkout", "main"]]
+    assert len(main_checkouts) == 1
 
 
-def test_publish_via_pr_handles_pr_creation_failure(tmp_path, monkeypatch, capsys):
+def test_publish_via_pr_handles_pr_creation_failure(tmp_path, monkeypatch):
     snap_path = tmp_path / "snap.json"
     snap_path.write_text("{}")
     eval_path = tmp_path / "EVAL.md"
     eval_path.write_text("")
 
+    calls = []
+
     def fake_run(cmd, **kw):
+        calls.append(cmd)
         if cmd[:3] == ["gh", "pr", "create"]:
             return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="pr error")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
-    _publish_via_pr(tmp_path, snap_path, eval_path, "2026-09-19")
+    result = _publish_via_pr(tmp_path, snap_path, eval_path, "2026-09-19")
 
-    out = capsys.readouterr().out
-    assert "PR creation failed" in out
+    assert "PR creation failed" in result
+    main_checkouts = [c for c in calls if c == ["git", "checkout", "main"]]
+    assert len(main_checkouts) == 1
 
 
-def test_publish_via_pr_handles_git_not_found(tmp_path, monkeypatch, capsys):
+def test_publish_via_pr_handles_git_not_found(tmp_path, monkeypatch):
     snap_path = tmp_path / "snap.json"
     snap_path.write_text("{}")
     eval_path = tmp_path / "EVAL.md"
@@ -1804,10 +1810,53 @@ def test_publish_via_pr_handles_git_not_found(tmp_path, monkeypatch, capsys):
         raise FileNotFoundError("git not found")
 
     monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
-    _publish_via_pr(tmp_path, snap_path, eval_path, "2026-09-19")
+    result = _publish_via_pr(tmp_path, snap_path, eval_path, "2026-09-19")
 
-    out = capsys.readouterr().out
-    assert "git not found" in out
+    assert "git not found" in result
+
+
+def test_publish_via_pr_checkouts_main_on_add_failure(tmp_path, monkeypatch):
+    snap_path = tmp_path / "snap.json"
+    snap_path.write_text("{}")
+    eval_path = tmp_path / "EVAL.md"
+    eval_path.write_text("")
+
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        if cmd[:2] == ["git", "add"]:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
+    result = _publish_via_pr(tmp_path, snap_path, eval_path, "2026-09-19")
+
+    assert "git add failed" in result
+    main_checkouts = [c for c in calls if c == ["git", "checkout", "main"]]
+    assert len(main_checkouts) == 1
+
+
+def test_publish_via_pr_checkouts_main_on_commit_failure(tmp_path, monkeypatch):
+    snap_path = tmp_path / "snap.json"
+    snap_path.write_text("{}")
+    eval_path = tmp_path / "EVAL.md"
+    eval_path.write_text("")
+
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        if cmd[:2] == ["git", "commit"]:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
+    result = _publish_via_pr(tmp_path, snap_path, eval_path, "2026-09-19")
+
+    assert "git commit failed" in result
+    main_checkouts = [c for c in calls if c == ["git", "checkout", "main"]]
+    assert len(main_checkouts) == 1
 
 
 # --- main with --publish --pr ---

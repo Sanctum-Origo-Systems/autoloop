@@ -348,6 +348,8 @@ def main():
         result = format_snapshot(current)
 
         if publish:
+            from autoloop.eval import _publish_via_pr
+
             all_snaps = load_all_snapshots(base)
             md_content = generate_eval_md(current, all_snaps)
             md_path = base / "EVAL.md"
@@ -355,19 +357,9 @@ def main():
             date = current["date"]
 
             if pr:
-                branch_name = f"chore/eval-{date}"
-                try:
-                    checkout = subprocess.run(
-                        ["git", "checkout", "-b", branch_name],
-                        cwd=str(base),
-                        capture_output=True,
-                        text=True,
-                    )
-                except FileNotFoundError:
-                    return result + "\n\nError: git not found."
-                if checkout.returncode != 0:
-                    return result + f"\n\nError: could not create branch {branch_name}."
-
+                pr_msg = _publish_via_pr(base, snap_path, md_path, date)
+                return result + f"\n\n{pr_msg}"
+            else:
                 try:
                     add = subprocess.run(
                         ["git", "add", str(snap_path), str(md_path)],
@@ -395,7 +387,7 @@ def main():
 
                 try:
                     push = subprocess.run(
-                        ["git", "push", "-u", "origin", branch_name],
+                        ["git", "push"],
                         cwd=str(base),
                         capture_output=True,
                         text=True,
@@ -403,64 +395,13 @@ def main():
                 except FileNotFoundError:
                     return result + "\n\nError: git not found."
                 if push.returncode != 0:
-                    return result + f"\n\nError: git push failed.\n{push.stderr}"
-
-                pr_title = f"chore: update eval report ({date})"
-                try:
-                    pr_result = subprocess.run(
-                        [
-                            "gh",
-                            "pr",
-                            "create",
-                            "--title",
-                            pr_title,
-                            "--body",
-                            "Automated eval report update.",
-                        ],
-                        cwd=str(base),
-                        capture_output=True,
-                        text=True,
-                    )
-                except FileNotFoundError:
-                    return result + "\n\nError: gh not found."
-                if pr_result.returncode != 0:
-                    return result + f"\n\nError: PR creation failed.\n{pr_result.stderr}"
-
-                try:
-                    subprocess.run(
-                        ["git", "checkout", "main"],
-                        cwd=str(base),
-                        capture_output=True,
-                    )
-                except FileNotFoundError:
-                    pass
-
-                return result + f"\n\nPR created: {pr_result.stdout.strip()}"
-            else:
-                try:
-                    add = subprocess.run(
-                        ["git", "add", str(snap_path), str(md_path)],
-                        cwd=str(base),
-                        capture_output=True,
-                        text=True,
-                    )
-                except FileNotFoundError:
-                    return result + "\n\nError: git not found."
-                if add.returncode != 0:
-                    return result + "\n\nError: git add failed."
-
-                commit_msg = f"chore: update eval report ({date})"
-                try:
-                    commit = subprocess.run(
-                        ["git", "commit", "-m", commit_msg],
-                        cwd=str(base),
-                        capture_output=True,
-                        text=True,
-                    )
-                except FileNotFoundError:
-                    return result + "\n\nError: git not found."
-                if commit.returncode != 0:
-                    return result + "\n\nError: git commit failed."
+                    stderr = push.stderr
+                    if "rule violations" in stderr or "protected branch" in stderr:
+                        return (
+                            result + "\n\nError: push failed — branch protection is enabled."
+                            "\nHint: use publish with pr=True to create a PR instead."
+                        )
+                    return result + f"\n\nError: git push failed.\n{stderr}"
 
                 result += "\n\nEVAL.md generated and committed."
 
