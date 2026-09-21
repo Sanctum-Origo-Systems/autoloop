@@ -466,6 +466,7 @@ Example workflow from your phone:
 | `timer_prefix` | `autoloop` | Systemd timer prefix for status detection (use your app name, e.g. `myapp`) |
 | `protected_paths` | `["autoloop/"]` | Paths the bot must never modify |
 | `test_gate_skip_types` | `["refactor", "docs", "chore"]` | Issue types that skip the "must add test files" verification check |
+| `auto_merge_edit_rate_threshold` | `0.05` | Maximum human edit rate for auto-merge eligibility (edit_rate must be strictly below this) |
 | `max_pr_review_rounds` | `3` | Max rounds of automated PR review+fix when `--auto-fix` is used |
 | `triage_labels` | `["ready", "rejected", ...]` | Labels that indicate an issue has been triaged |
 

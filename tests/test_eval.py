@@ -1117,8 +1117,20 @@ def test_auto_merge_ready_boundary_success_above_90():
     assert is_auto_merge_ready(0.91, 0.0, 20) == "Yes"
 
 
-def test_auto_merge_ready_boundary_edit_rate_nonzero():
-    assert is_auto_merge_ready(0.95, 0.01, 20) == "No"
+def test_auto_merge_ready_edit_rate_below_threshold():
+    assert is_auto_merge_ready(0.95, 0.03, 25) == "Yes"
+
+
+def test_auto_merge_ready_edit_rate_above_threshold():
+    assert is_auto_merge_ready(0.95, 0.10, 25) == "No"
+
+
+def test_auto_merge_ready_boundary_edit_rate_just_below():
+    assert is_auto_merge_ready(0.95, 0.049, 20) == "Yes"
+
+
+def test_auto_merge_ready_boundary_edit_rate_at_threshold():
+    assert is_auto_merge_ready(0.95, 0.05, 20) == "No"
 
 
 def test_auto_merge_ready_boundary_edit_rate_zero():
@@ -1131,6 +1143,11 @@ def test_auto_merge_ready_boundary_pr_count_19():
 
 def test_auto_merge_ready_boundary_pr_count_20():
     assert is_auto_merge_ready(0.95, 0.0, 20) == "Yes"
+
+
+def test_auto_merge_ready_custom_threshold():
+    assert is_auto_merge_ready(0.95, 0.09, 20, edit_rate_threshold=0.10) == "Yes"
+    assert is_auto_merge_ready(0.95, 0.10, 20, edit_rate_threshold=0.10) == "No"
 
 
 def test_auto_merge_ready_all_fail():

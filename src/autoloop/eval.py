@@ -527,13 +527,20 @@ def format_eval_md(snapshot: dict) -> str:
     return "\n".join(lines)
 
 
-def is_auto_merge_ready(success_rate: float, edit_rate: float, merged_clean_count: int) -> str:
-    if success_rate > 0.9 and edit_rate == 0.0 and merged_clean_count >= 20:
+def is_auto_merge_ready(
+    success_rate: float,
+    edit_rate: float,
+    merged_clean_count: int,
+    edit_rate_threshold: float = 0.05,
+) -> str:
+    if success_rate > 0.9 and edit_rate < edit_rate_threshold and merged_clean_count >= 20:
         return "Yes"
     return "No"
 
 
-def generate_eval_md(snapshot: dict, all_snapshots: list[dict]) -> str:
+def generate_eval_md(
+    snapshot: dict, all_snapshots: list[dict], edit_rate_threshold: float = 0.05
+) -> str:
     lines = ["# EVAL Report", ""]
 
     lines.append("## Overall")
@@ -560,7 +567,7 @@ def generate_eval_md(snapshot: dict, all_snapshots: list[dict]) -> str:
             prs = stats.get("implementations", 0)
             edit_r = stats.get("human_edit_rate", 0)
             clean = stats.get("merged_clean_count", 0)
-            auto = is_auto_merge_ready(success, edit_r, clean)
+            auto = is_auto_merge_ready(success, edit_r, clean, edit_rate_threshold)
             lines.append(f"| {mod} | {success:.0%} | ${avg_c:.2f} | {prs} | {auto} |")
         lines.append("")
 
