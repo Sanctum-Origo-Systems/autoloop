@@ -613,7 +613,7 @@ def generate_eval_md(
         lines.append(
             "%%{init: {'theme': 'base', 'themeVariables': {'pie1': '#4CAF50', 'pie2': '#2196F3', 'pie3': '#FF9800', 'pie4': '#E91E63', 'pie5': '#9C27B0', 'pie6': '#00BCD4', 'pieTitleTextColor': '#aaa', 'pieLegendTextColor': '#aaa', 'pieSectionTextColor': '#fff'}}}%%"
         )
-        lines.append("pie title PR Distribution by Module")
+        lines.append("pie title Attempt Distribution by Module")
         for mod, stats in sorted(modules.items()):
             rate = round(stats.get("first_attempt_rate", 0) * 100)
             prs = stats.get("implementations", 0)
