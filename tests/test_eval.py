@@ -1294,7 +1294,7 @@ def test_generate_eval_md_module_table():
     snap = _make_snapshot(modules=modules)
     content = generate_eval_md(snap, [snap])
     assert "## Per-Module Breakdown" in content
-    assert "| Module | Success | Avg Cost | PRs | Auto-merge ready? |" in content
+    assert "| Module | Success | Avg Cost | Impl | Auto-merge ready? |" in content
     assert "| src/autoloop/ | 92% | $1.05 | 25 | Yes |" in content
     assert "| src/other/ | 70% | $2.00 | 10 | No |" in content
 
@@ -1387,8 +1387,8 @@ def test_generate_eval_md_mermaid_pie_chart():
     snap = _make_snapshot(modules=modules)
     content = generate_eval_md(snap, [snap])
     assert "pie title Attempt Distribution by Module" in content
-    assert '"src/autoloop/ (92%, 25 PRs)" : 25' in content
-    assert '"src/other/ (80%, 10 PRs)" : 10' in content
+    assert '"src/autoloop/ (92%, 25 impl)" : 25' in content
+    assert '"src/other/ (80%, 10 impl)" : 10' in content
 
 
 def test_generate_eval_md_no_modules_skips_module_sections():
@@ -2587,3 +2587,25 @@ def test_main_publish_first_run_commits(tmp_path, monkeypatch, capsys):
 
     git_commits = [c for c in calls if c[:2] == ["git", "commit"]]
     assert len(git_commits) == 1
+
+
+# --- regression: per-module column label (#179) ---
+
+
+def test_generate_eval_md_module_column_says_impl_not_prs():
+    """Column header says 'Impl' (not 'PRs') and pie chart says 'impl' (not 'PRs')."""
+    modules = {
+        "src/autoloop/": {
+            "implementations": 25,
+            "first_attempt_rate": 0.92,
+            "avg_cost_usd": 1.05,
+            "human_edit_rate": 0.0,
+            "merged_clean_count": 20,
+        },
+    }
+    snap = _make_snapshot(modules=modules)
+    content = generate_eval_md(snap, [snap])
+    assert "| Impl |" in content
+    assert "| PRs |" not in content
+    assert "25 impl)" in content
+    assert "25 PRs)" not in content

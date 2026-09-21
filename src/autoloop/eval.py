@@ -559,8 +559,8 @@ def generate_eval_md(
     if modules:
         lines.append("## Per-Module Breakdown")
         lines.append("")
-        lines.append("| Module | Success | Avg Cost | PRs | Auto-merge ready? |")
-        lines.append("|--------|---------|----------|-----|--------------------|")
+        lines.append("| Module | Success | Avg Cost | Impl | Auto-merge ready? |")
+        lines.append("|--------|---------|----------|------|--------------------|")
         for mod, stats in sorted(modules.items()):
             success = stats.get("first_attempt_rate", 0)
             avg_c = stats.get("avg_cost_usd", 0)
@@ -617,7 +617,7 @@ def generate_eval_md(
         for mod, stats in sorted(modules.items()):
             rate = round(stats.get("first_attempt_rate", 0) * 100)
             prs = stats.get("implementations", 0)
-            lines.append(f'    "{mod} ({rate}%, {prs} PRs)" : {prs}')
+            lines.append(f'    "{mod} ({rate}%, {prs} impl)" : {prs}')
         lines.append("```")
         lines.append("")
 
