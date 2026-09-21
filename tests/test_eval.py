@@ -1386,7 +1386,7 @@ def test_generate_eval_md_mermaid_pie_chart():
     }
     snap = _make_snapshot(modules=modules)
     content = generate_eval_md(snap, [snap])
-    assert "pie title PR Distribution by Module" in content
+    assert "pie title Attempt Distribution by Module" in content
     assert '"src/autoloop/ (92%, 25 PRs)" : 25' in content
     assert '"src/other/ (80%, 10 PRs)" : 10' in content
 
@@ -2338,7 +2338,7 @@ def test_generate_eval_md_pie_chart_title():
     }
     snap = _make_snapshot(modules=modules)
     content = generate_eval_md(snap, [snap])
-    assert "pie title PR Distribution by Module" in content
+    assert "pie title Attempt Distribution by Module" in content
     assert "Success Distribution" not in content
 
 
