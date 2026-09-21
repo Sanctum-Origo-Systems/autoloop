@@ -129,6 +129,7 @@ def compute_snapshot(
             "first_attempt_rate": round(fa / imp, 2) if imp else 0.0,
             "avg_cost_usd": round(stats["total_cost"] / imp, 2) if imp else 0.0,
             "human_edit_rate": round(stats["human_edit_count"] / merged, 2) if merged else 0.0,
+            "merged_clean_count": merged - stats["human_edit_count"],
         }
 
     human_edit_rate = 0.0
@@ -526,8 +527,8 @@ def format_eval_md(snapshot: dict) -> str:
     return "\n".join(lines)
 
 
-def is_auto_merge_ready(success_rate: float, edit_rate: float, pr_count: int) -> str:
-    if success_rate > 0.9 and edit_rate == 0.0 and pr_count >= 20:
+def is_auto_merge_ready(success_rate: float, edit_rate: float, merged_clean_count: int) -> str:
+    if success_rate > 0.9 and edit_rate == 0.0 and merged_clean_count >= 20:
         return "Yes"
     return "No"
 
@@ -558,7 +559,8 @@ def generate_eval_md(snapshot: dict, all_snapshots: list[dict]) -> str:
             avg_c = stats.get("avg_cost_usd", 0)
             prs = stats.get("implementations", 0)
             edit_r = stats.get("human_edit_rate", 0)
-            auto = is_auto_merge_ready(success, edit_r, prs)
+            clean = stats.get("merged_clean_count", 0)
+            auto = is_auto_merge_ready(success, edit_r, clean)
             lines.append(f"| {mod} | {success:.0%} | ${avg_c:.2f} | {prs} | {auto} |")
         lines.append("")
 

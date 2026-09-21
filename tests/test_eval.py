@@ -231,6 +231,7 @@ def test_compute_snapshot_with_pr_data():
     assert snap["human_edit_count"] == 1
     assert snap["merged_pr_count"] == 2
     assert "src/autoloop/" in snap["modules"]
+    assert snap["modules"]["src/autoloop/"]["merged_clean_count"] == 1
 
 
 def test_compute_snapshot_closed_without_merge():
@@ -1136,6 +1137,95 @@ def test_auto_merge_ready_all_fail():
     assert is_auto_merge_ready(0.50, 0.10, 5) == "No"
 
 
+def test_auto_merge_ready_many_total_prs_few_clean_merged():
+    """25 total PRs but only 15 cleanly merged — should not promote."""
+    assert is_auto_merge_ready(0.95, 0.0, 15) == "No"
+
+
+def test_auto_merge_ready_exactly_20_clean_merged():
+    """Exactly 20 cleanly merged PRs promotes regardless of closed/abandoned count."""
+    assert is_auto_merge_ready(0.95, 0.0, 20) == "Yes"
+
+
+def test_auto_merge_ready_gate_uses_merged_clean_count_in_eval_md():
+    """generate_eval_md passes merged_clean_count, not implementations."""
+    modules = {
+        "src/mod/": {
+            "implementations": 30,
+            "first_attempt_rate": 0.95,
+            "avg_cost_usd": 1.0,
+            "human_edit_rate": 0.0,
+            "merged_clean_count": 15,
+        },
+    }
+    snap = _make_snapshot(modules=modules)
+    content = generate_eval_md(snap, [snap])
+    assert "| src/mod/ | 95% | $1.00 | 30 | No |" in content
+
+
+def test_auto_merge_ready_gate_passes_with_clean_merged_in_eval_md():
+    """generate_eval_md shows Yes when merged_clean_count >= 20."""
+    modules = {
+        "src/mod/": {
+            "implementations": 30,
+            "first_attempt_rate": 0.95,
+            "avg_cost_usd": 1.0,
+            "human_edit_rate": 0.0,
+            "merged_clean_count": 20,
+        },
+    }
+    snap = _make_snapshot(modules=modules)
+    content = generate_eval_md(snap, [snap])
+    assert "| src/mod/ | 95% | $1.00 | 30 | Yes |" in content
+
+
+def test_compute_snapshot_merged_clean_count_excludes_human_edits():
+    """merged_clean_count in module stats excludes PRs with post-merge fixups."""
+    runs = [
+        {
+            "type": "implement",
+            "issue": i,
+            "success": True,
+            "attempts": 1,
+            "cost_usd": 1.0,
+            "duration_seconds": 60,
+        }
+        for i in range(1, 4)
+    ]
+    pr_data = [
+        {
+            "number": 10,
+            "merged": True,
+            "closed": False,
+            "changed_files": ["src/a/f.py"],
+            "human_edited": False,
+            "first_attempt_success": True,
+            "issue": 1,
+        },
+        {
+            "number": 11,
+            "merged": True,
+            "closed": False,
+            "changed_files": ["src/a/g.py"],
+            "human_edited": True,
+            "first_attempt_success": True,
+            "issue": 2,
+        },
+        {
+            "number": 12,
+            "merged": False,
+            "closed": True,
+            "changed_files": ["src/a/h.py"],
+            "human_edited": False,
+            "first_attempt_success": False,
+            "issue": 3,
+        },
+    ]
+    snap = compute_snapshot(runs, pr_data, date="2026-09-14")
+    mod_stats = snap["modules"]["src/a/"]
+    assert mod_stats["merged_clean_count"] == 1
+
+
 # --- generate_eval_md ---
 
 
@@ -1174,12 +1264,14 @@ def test_generate_eval_md_module_table():
             "first_attempt_rate": 0.92,
             "avg_cost_usd": 1.05,
             "human_edit_rate": 0.0,
+            "merged_clean_count": 25,
         },
         "src/other/": {
             "implementations": 10,
             "first_attempt_rate": 0.70,
             "avg_cost_usd": 2.0,
             "human_edit_rate": 0.1,
+            "merged_clean_count": 9,
         },
     }
     snap = _make_snapshot(modules=modules)
@@ -1197,12 +1289,14 @@ def test_generate_eval_md_auto_merge_boundary_in_table():
             "first_attempt_rate": 0.90,
             "avg_cost_usd": 1.0,
             "human_edit_rate": 0.0,
+            "merged_clean_count": 20,
         },
         "src/b/": {
             "implementations": 20,
             "first_attempt_rate": 0.91,
             "avg_cost_usd": 1.0,
             "human_edit_rate": 0.0,
+            "merged_clean_count": 20,
         },
     }
     snap = _make_snapshot(modules=modules)
