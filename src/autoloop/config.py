@@ -50,6 +50,7 @@ class AutoLoopConfig:
     )
     max_pr_review_rounds: int = 3
     max_decomposition_depth: int = 2
+    auto_merge_edit_rate_threshold: float = 0.05
     project_dir: str = ""
 
 
@@ -109,6 +110,9 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
     ):
         if key in data:
             setattr(config, key, int(data[key]))
+
+    if "auto_merge_edit_rate_threshold" in data:
+        config.auto_merge_edit_rate_threshold = float(data["auto_merge_edit_rate_threshold"])
 
     if "protected_paths" in data:
         config.protected_paths = list(data["protected_paths"])

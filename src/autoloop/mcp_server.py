@@ -322,6 +322,7 @@ def main():
             return format_trend(snapshots)
 
         repo = None
+        cfg = None
         try:
             from autoloop.config import load_config
 
@@ -351,7 +352,8 @@ def main():
             from autoloop.eval import _publish_via_pr
 
             all_snaps = load_all_snapshots(base)
-            md_content = generate_eval_md(current, all_snaps)
+            threshold = cfg.auto_merge_edit_rate_threshold if cfg else 0.05
+            md_content = generate_eval_md(current, all_snaps, threshold)
             md_path = base / "EVAL.md"
             md_path.write_text(md_content)
             date = current["date"]
