@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.5.4
+
+- Fix: gate volume floor uses `merged_clean_count` instead of total PRs for auto-merge eligibility (#180)
+- Fix: edit_rate gate uses epsilon threshold (default 0.05) instead of brittle `== 0.0` check (#181)
+- Fix: pie chart title renamed to "Attempt Distribution by Module" (#182)
+- Fix: per-module column renamed from "PRs" to "Impl" to reflect actual data (#179)
+- `auto_merge_edit_rate_threshold` config field for tunable edit rate gate
+- CI workflow for independent test verification on every PR (#178)
+
 ## v0.5.3
 
 - `eval --publish --pr`: create branch + PR for repos with branch protection
