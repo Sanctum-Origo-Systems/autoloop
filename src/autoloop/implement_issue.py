@@ -277,8 +277,14 @@ def detect_active_claude_session(project_dir: str | None = None) -> bool | None:
             pid = int(parts[0])
         except ValueError:
             continue
-        if len(parts) > 1 and "--dangerously-skip-permissions" not in parts[1]:
-            pids.append(pid)
+        if len(parts) <= 1:
+            continue
+        cmdline = parts[1]
+        if "--dangerously-skip-permissions" in cmdline:
+            continue
+        if ".claude/shell-snapshots/" in cmdline:
+            continue
+        pids.append(pid)
 
     if not pids:
         return False
