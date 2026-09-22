@@ -2405,6 +2405,66 @@ def test_detect_session_excludes_own_pid_chain_darwin(monkeypatch):
     assert result is False
 
 
+def test_detect_active_claude_session_ignores_shell_snapshot_processes(monkeypatch):
+    """Bash subshells sourcing .claude/shell-snapshots/ are not Claude sessions."""
+    monkeypatch.setattr(implement_issue.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        implement_issue.os.path, "realpath", lambda p: "/my/project" if "proc" in p else p
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "pgrep":
+            return type(
+                "R",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": (
+                        "54321 bash -c source /home/dev/.claude/shell-snapshots/"
+                        "snapshot-abc.sh; cd /my/project && until false; do sleep 10; done\n"
+                    ),
+                    "stderr": "",
+                },
+            )()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    result = detect_active_claude_session("/my/project")
+    assert result is False
+
+
+def test_detect_active_claude_session_detects_real_session_alongside_snapshot(monkeypatch):
+    """A real Claude session is still detected even when shell-snapshot processes exist."""
+    monkeypatch.setattr(implement_issue.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        implement_issue.os.path, "realpath", lambda p: "/my/project" if "proc" in p else p
+    )
+
+    own_chain = _get_own_pid_chain()
+    external_pid = max(own_chain) + 9999
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "pgrep":
+            return type(
+                "R",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": (
+                        "54321 bash -c source /home/dev/.claude/shell-snapshots/"
+                        "snapshot-abc.sh; cd /my/project && sleep 999\n"
+                        f"{external_pid} claude\n"
+                    ),
+                    "stderr": "",
+                },
+            )()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    result = detect_active_claude_session("/my/project")
+    assert result is True
+
+
 # --- truncate_spec tests ---
 
 
