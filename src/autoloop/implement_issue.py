@@ -23,6 +23,15 @@ from autoloop.config import AutoLoopConfig, load_config
 cfg = None
 
 
+class SystemicError(Exception):
+    """Environment-wide failure that should abort the entire run.
+
+    Raised by implement_single_issue when the failure is not issue-specific
+    (e.g. auth/CLI errors, disk/network errors) so the caller can distinguish
+    from non-systemic failures (returned as False) and skip to the next issue.
+    """
+
+
 EMPTY_BRANCH_DIAGNOSTIC = """\
 No changes were produced by the implementation agent.
 This usually means the agent could not act, not that the code is wrong.
@@ -1380,9 +1389,9 @@ def implement_single_issue(
         )
 
         return True
-    except Exception:
+    except Exception as exc:
         logging.exception("implement_single_issue failed for #%s", issue.get("number"))
-        return False
+        raise SystemicError(str(exc)) from exc
 
 
 def implement_targeted_issue(
@@ -1436,13 +1445,16 @@ def main(issue=None, max_issues=1, require_design=False, auto_fix=False):
                 print("No more ready issues.")
                 break
 
-            success = implement_single_issue(
-                top_issue, require_design=require_design, auto_fix=auto_fix
-            )
+            try:
+                success = implement_single_issue(
+                    top_issue, require_design=require_design, auto_fix=auto_fix
+                )
+            except SystemicError as exc:
+                print(f"Systemic failure, aborting run: {exc}")
+                break
+
             if success:
                 implemented += 1
-            else:
-                break
 
         print(f"\nImplemented {implemented} issue(s) this run.")
     finally:

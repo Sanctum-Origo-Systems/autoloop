@@ -11,6 +11,7 @@ from autoloop.config import AutoLoopConfig
 from autoloop.implement_issue import (
     EMPTY_BRANCH_DIAGNOSTIC,
     REVIEW_PROMPT,
+    SystemicError,
     _get_own_pid_chain,
     acquire_lock,
     build_branch_name,
@@ -1228,7 +1229,9 @@ def test_implement_single_issue_returns_false_after_all_retries(monkeypatch, tmp
     assert attempt_count[0] == 3
 
 
-def test_implement_single_issue_catches_exception_returns_false(monkeypatch):
+def test_implement_single_issue_raises_systemic_error_on_unexpected_exception(monkeypatch):
+    import pytest
+
     monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
     monkeypatch.setattr(implement_issue, "ensure_clean_main", lambda: None)
     monkeypatch.setattr(implement_issue, "design_gate", lambda i, require_design=False: True)
@@ -1238,10 +1241,8 @@ def test_implement_single_issue_catches_exception_returns_false(monkeypatch):
 
     monkeypatch.setattr(implement_issue.subprocess, "run", exploding_run)
 
-    result = implement_single_issue(
-        {"number": 99, "title": "Exploding issue", "body": "", "labels": []}
-    )
-    assert result is False
+    with pytest.raises(SystemicError, match="unexpected failure"):
+        implement_single_issue({"number": 99, "title": "Exploding issue", "body": "", "labels": []})
 
 
 def test_implement_single_issue_logs_summed_token_totals(monkeypatch, tmp_path):
@@ -1790,6 +1791,294 @@ def test_main_issue_flag_targets_specific_issue(monkeypatch, tmp_path):
     implement_issue.cfg = None
     implement_issue.main(issue=28)
     assert targeted == [28]
+
+
+# --- main() loop: non-systemic vs systemic failure behavior ---
+
+
+def test_main_continues_to_next_issue_on_non_systemic_failure(monkeypatch, tmp_path, capsys):
+    """Non-systemic failure (False return) skips to the next ready issue."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(implement_issue, "load_config", lambda path=None: _test_cfg())
+    monkeypatch.setattr(
+        implement_issue, "detect_active_claude_session", lambda project_dir=None: False
+    )
+    monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
+    monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
+
+    issues = [
+        {"number": 10, "title": "Bad issue", "body": "", "labels": []},
+        {"number": 11, "title": "Good issue", "body": "", "labels": []},
+    ]
+    call_idx = [0]
+
+    def fake_get_top():
+        if call_idx[0] < len(issues):
+            issue = issues[call_idx[0]]
+            call_idx[0] += 1
+            return issue
+        return None
+
+    monkeypatch.setattr(implement_issue, "get_top_ready_issue", fake_get_top)
+
+    attempted = []
+
+    def fake_implement_single(issue, require_design=False, auto_fix=False):
+        attempted.append(issue["number"])
+        return issue["number"] != 10
+
+    monkeypatch.setattr(implement_issue, "implement_single_issue", fake_implement_single)
+
+    implement_issue.cfg = None
+    implement_issue.main(max_issues=5)
+    out = capsys.readouterr().out
+    assert attempted == [10, 11]
+    assert "Implemented 1 issue(s) this run." in out
+
+
+def test_main_continues_past_multiple_non_systemic_failures(monkeypatch, tmp_path, capsys):
+    """Multiple non-systemic failures in a row still reach the eventual success."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(implement_issue, "load_config", lambda path=None: _test_cfg())
+    monkeypatch.setattr(
+        implement_issue, "detect_active_claude_session", lambda project_dir=None: False
+    )
+    monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
+    monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
+
+    issues = [
+        {"number": 10, "title": "Bad one", "body": "", "labels": []},
+        {"number": 11, "title": "Bad two", "body": "", "labels": []},
+        {"number": 12, "title": "Good one", "body": "", "labels": []},
+    ]
+    call_idx = [0]
+
+    def fake_get_top():
+        if call_idx[0] < len(issues):
+            issue = issues[call_idx[0]]
+            call_idx[0] += 1
+            return issue
+        return None
+
+    monkeypatch.setattr(implement_issue, "get_top_ready_issue", fake_get_top)
+
+    attempted = []
+
+    def fake_implement_single(issue, require_design=False, auto_fix=False):
+        attempted.append(issue["number"])
+        return issue["number"] == 12
+
+    monkeypatch.setattr(implement_issue, "implement_single_issue", fake_implement_single)
+
+    implement_issue.cfg = None
+    implement_issue.main(max_issues=5)
+    assert attempted == [10, 11, 12]
+    assert "Implemented 1 issue(s) this run." in capsys.readouterr().out
+
+
+def test_main_aborts_on_systemic_failure(monkeypatch, tmp_path, capsys):
+    """SystemicError aborts the run immediately, skipping remaining issues."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(implement_issue, "load_config", lambda path=None: _test_cfg())
+    monkeypatch.setattr(
+        implement_issue, "detect_active_claude_session", lambda project_dir=None: False
+    )
+    monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
+    monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
+
+    issues = [
+        {"number": 10, "title": "Systemic issue", "body": "", "labels": []},
+        {"number": 11, "title": "Never reached", "body": "", "labels": []},
+    ]
+    call_idx = [0]
+
+    def fake_get_top():
+        if call_idx[0] < len(issues):
+            issue = issues[call_idx[0]]
+            call_idx[0] += 1
+            return issue
+        return None
+
+    monkeypatch.setattr(implement_issue, "get_top_ready_issue", fake_get_top)
+
+    attempted = []
+
+    def fake_implement_single(issue, require_design=False, auto_fix=False):
+        attempted.append(issue["number"])
+        raise SystemicError("git auth failed")
+
+    monkeypatch.setattr(implement_issue, "implement_single_issue", fake_implement_single)
+
+    implement_issue.cfg = None
+    implement_issue.main(max_issues=5)
+    out = capsys.readouterr().out
+    assert attempted == [10]
+    assert "Systemic failure" in out
+    assert "git auth failed" in out
+    assert "Implemented 0 issue(s) this run." in out
+
+
+def test_main_aborts_on_systemic_after_successful_issue(monkeypatch, tmp_path, capsys):
+    """A systemic failure after one success aborts, preserving the count."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(implement_issue, "load_config", lambda path=None: _test_cfg())
+    monkeypatch.setattr(
+        implement_issue, "detect_active_claude_session", lambda project_dir=None: False
+    )
+    monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
+    monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
+
+    issues = [
+        {"number": 10, "title": "OK issue", "body": "", "labels": []},
+        {"number": 11, "title": "Systemic fail", "body": "", "labels": []},
+        {"number": 12, "title": "Never reached", "body": "", "labels": []},
+    ]
+    call_idx = [0]
+
+    def fake_get_top():
+        if call_idx[0] < len(issues):
+            issue = issues[call_idx[0]]
+            call_idx[0] += 1
+            return issue
+        return None
+
+    monkeypatch.setattr(implement_issue, "get_top_ready_issue", fake_get_top)
+
+    attempted = []
+
+    def fake_implement_single(issue, require_design=False, auto_fix=False):
+        attempted.append(issue["number"])
+        if issue["number"] == 11:
+            raise SystemicError("disk full")
+        return True
+
+    monkeypatch.setattr(implement_issue, "implement_single_issue", fake_implement_single)
+
+    implement_issue.cfg = None
+    implement_issue.main(max_issues=5)
+    out = capsys.readouterr().out
+    assert attempted == [10, 11]
+    assert "Systemic failure" in out
+    assert "Implemented 1 issue(s) this run." in out
+
+
+def test_main_releases_lock_on_systemic_failure(monkeypatch, tmp_path):
+    """Lock is released even when the loop aborts on SystemicError."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(implement_issue, "load_config", lambda path=None: _test_cfg())
+    monkeypatch.setattr(
+        implement_issue, "detect_active_claude_session", lambda project_dir=None: False
+    )
+    monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
+    monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
+
+    issues = [{"number": 10, "title": "Fail", "body": "", "labels": []}]
+    call_idx = [0]
+
+    def fake_get_top():
+        if call_idx[0] < len(issues):
+            issue = issues[call_idx[0]]
+            call_idx[0] += 1
+            return issue
+        return None
+
+    monkeypatch.setattr(implement_issue, "get_top_ready_issue", fake_get_top)
+
+    def fake_implement_single(issue, require_design=False, auto_fix=False):
+        raise SystemicError("auth error")
+
+    monkeypatch.setattr(implement_issue, "implement_single_issue", fake_implement_single)
+
+    implement_issue.cfg = None
+    implement_issue.main(max_issues=5)
+    lock_path = tmp_path / ".autoloop.lock"
+    assert not lock_path.exists()
+
+
+# --- implement_single_issue: non-systemic failures return False ---
+
+
+def test_implement_single_issue_empty_branch_returns_false_not_systemic(monkeypatch, tmp_path):
+    """Empty branch (no changes produced) is non-systemic, returns False."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(max_retries=3))
+    monkeypatch.chdir(tmp_path)
+
+    monkeypatch.setattr(
+        implement_issue, "implement", lambda issue, previous_errors=None: _claude_result()
+    )
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
+    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
+    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: True)
+    monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
+
+    result = implement_single_issue(_FAKE_ISSUE)
+    assert result is False
+
+
+def test_implement_single_issue_review_rejection_returns_false_not_systemic(monkeypatch, tmp_path):
+    """Review rejection after all retries is non-systemic, returns False."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(max_retries=1))
+    monkeypatch.chdir(tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list) and cmd[:3] == ["git", "rev-list", "--count"]:
+            return type("R", (), {"returncode": 0, "stdout": "1\n", "stderr": ""})()
+        if isinstance(cmd, str):
+            return type("R", (), {"returncode": 0, "stdout": "passed", "stderr": ""})()
+        if isinstance(cmd, list) and cmd[:3] == ["git", "diff", "--name-only"]:
+            return type("R", (), {"returncode": 0, "stdout": "tests/test_x.py\n", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        implement_issue, "implement", lambda issue, previous_errors=None: _claude_result()
+    )
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
+    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
+    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: False)
+    monkeypatch.setattr(
+        implement_issue,
+        "review_implementation",
+        lambda issue, branch: (False, "Review rejected"),
+    )
+    monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
+
+    result = implement_single_issue(_FAKE_ISSUE)
+    assert result is False
+
+
+def test_implement_single_issue_verification_failure_returns_false_not_systemic(
+    monkeypatch, tmp_path
+):
+    """Verification failure after all retries is non-systemic, returns False."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(max_retries=1))
+    monkeypatch.chdir(tmp_path)
+
+    monkeypatch.setattr(
+        implement_issue, "implement", lambda issue, previous_errors=None: _claude_result()
+    )
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
+    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
+    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: False)
+    monkeypatch.setattr(
+        implement_issue,
+        "verify_implementation",
+        lambda branch, issue_body="": (False, "Tests failed"),
+    )
+    monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
+
+    result = implement_single_issue(_FAKE_ISSUE)
+    assert result is False
 
 
 # --- post_in_progress_comment tests ---
