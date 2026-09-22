@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.5.5
+
+- feat: continue to next issue on non-systemic failure instead of aborting the run (#187)
+- Fix: session detection no longer false-positives on `.claude/shell-snapshots` in bash command lines (#186)
+
 ## v0.5.4
 
 - Fix: gate volume floor uses `merged_clean_count` instead of total PRs for auto-merge eligibility (#180)
