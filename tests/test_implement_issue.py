@@ -2408,7 +2408,9 @@ def test_detect_session_excludes_own_pid_chain_darwin(monkeypatch):
 def test_detect_active_claude_session_ignores_shell_snapshot_processes(monkeypatch):
     """Bash subshells sourcing .claude/shell-snapshots/ are not Claude sessions."""
     monkeypatch.setattr(implement_issue.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(implement_issue.os.path, "realpath", lambda p: p)
+    monkeypatch.setattr(
+        implement_issue.os.path, "realpath", lambda p: "/my/project" if "proc" in p else p
+    )
 
     def fake_run(cmd, **kwargs):
         if cmd[0] == "pgrep":
