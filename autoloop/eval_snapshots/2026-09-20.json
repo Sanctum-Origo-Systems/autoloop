@@ -1,13 +1,13 @@
 {
-  "date": "2026-08-09",
-  "total_implementations": 33,
-  "first_attempt_rate": 0.76,
-  "avg_cost_usd": 0.68,
-  "avg_duration_seconds": 147,
+  "date": "2026-09-20",
+  "total_implementations": 132,
+  "first_attempt_rate": 0.59,
+  "avg_cost_usd": 1.45,
+  "avg_duration_seconds": 171,
   "attempt_distribution": {
-    "1": 25,
-    "2": 5,
-    "3+": 3
+    "1": 86,
+    "2": 28,
+    "3+": 18
   },
   "human_edit_rate": 0.14,
   "human_edit_count": 10,
@@ -17,14 +17,14 @@
     "other": {
       "implementations": 5,
       "first_attempt_rate": 0.4,
-      "avg_cost_usd": 0.29,
+      "avg_cost_usd": 0.48,
       "human_edit_rate": 0.8,
       "merged_clean_count": 1
     },
     "src/autoloop/": {
       "implementations": 73,
       "first_attempt_rate": 0.73,
-      "avg_cost_usd": 0.26,
+      "avg_cost_usd": 1.16,
       "human_edit_rate": 0.09,
       "merged_clean_count": 63
     }
