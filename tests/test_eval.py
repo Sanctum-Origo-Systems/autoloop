@@ -2609,3 +2609,271 @@ def test_generate_eval_md_module_column_says_impl_not_prs():
     assert "| PRs |" not in content
     assert "25 impl)" in content
     assert "25 PRs)" not in content
+
+
+# --- per-period stats (#194) ---
+
+
+def test_compute_snapshot_period_implementations():
+    """period_implementations is delta from previous snapshot's total."""
+    runs = [
+        {
+            "type": "implement",
+            "issue": i,
+            "success": True,
+            "attempts": 1,
+            "cost_usd": 1.0,
+            "duration_seconds": 60,
+            "timestamp": f"2026-09-{14 + i}T10:00:00Z",
+        }
+        for i in range(1, 6)
+    ]
+    prev = {"date": "2026-09-13", "total_implementations": 100}
+    snap = compute_snapshot(runs, date="2026-09-18", prev_snapshot=prev)
+    assert snap["total_implementations"] == 5
+    assert snap["period_implementations"] == 5 - 100  # not useful here
+    # Better test: prev total included some of these runs
+    prev2 = {"date": "2026-09-16", "total_implementations": 2}
+    snap2 = compute_snapshot(runs, date="2026-09-18", prev_snapshot=prev2)
+    assert snap2["period_implementations"] == 5 - 2
+
+
+def test_compute_snapshot_period_rate_and_cost():
+    """Per-period rate and cost computed from timestamp-filtered runs."""
+    runs = [
+        {
+            "type": "implement",
+            "issue": 1,
+            "success": True,
+            "attempts": 1,
+            "cost_usd": 1.0,
+            "duration_seconds": 60,
+            "timestamp": "2026-09-15T10:00:00Z",
+        },
+        {
+            "type": "implement",
+            "issue": 2,
+            "success": True,
+            "attempts": 2,
+            "cost_usd": 3.0,
+            "duration_seconds": 120,
+            "timestamp": "2026-09-15T12:00:00Z",
+        },
+        {
+            "type": "implement",
+            "issue": 3,
+            "success": True,
+            "attempts": 1,
+            "cost_usd": 2.0,
+            "duration_seconds": 60,
+            "timestamp": "2026-09-17T10:00:00Z",
+        },
+        {
+            "type": "implement",
+            "issue": 4,
+            "success": True,
+            "attempts": 1,
+            "cost_usd": 4.0,
+            "duration_seconds": 60,
+            "timestamp": "2026-09-18T10:00:00Z",
+        },
+    ]
+    prev = {"date": "2026-09-16", "total_implementations": 2}
+    snap = compute_snapshot(runs, date="2026-09-18", prev_snapshot=prev)
+    assert snap["period_implementations"] == 2
+    assert snap["period_first_attempt_rate"] == 1.0
+    assert snap["period_avg_cost_usd"] == 3.0
+
+
+def test_compute_snapshot_no_prev_snapshot_no_period_fields():
+    """Without prev_snapshot, no period fields are added."""
+    runs = [
+        {
+            "type": "implement",
+            "issue": 1,
+            "success": True,
+            "attempts": 1,
+            "cost_usd": 1.0,
+            "duration_seconds": 60,
+        },
+    ]
+    snap = compute_snapshot(runs, date="2026-09-18")
+    assert "period_implementations" not in snap
+    assert "period_first_attempt_rate" not in snap
+    assert "period_avg_cost_usd" not in snap
+
+
+def test_compute_snapshot_period_no_timestamps_still_computes_delta():
+    """Runs without timestamps still get period_implementations via delta."""
+    runs = [
+        {
+            "type": "implement",
+            "issue": i,
+            "success": True,
+            "attempts": 1,
+            "cost_usd": 1.0,
+            "duration_seconds": 60,
+        }
+        for i in range(1, 6)
+    ]
+    prev = {"date": "2026-09-16", "total_implementations": 2}
+    snap = compute_snapshot(runs, date="2026-09-18", prev_snapshot=prev)
+    assert snap["period_implementations"] == 3
+    assert "period_first_attempt_rate" not in snap
+    assert "period_avg_cost_usd" not in snap
+
+
+def test_format_trend_shows_period_implementations():
+    """Trend table shows per-period deltas, not cumulative totals."""
+    snaps = [
+        {
+            "date": "2026-09-18",
+            "total_implementations": 125,
+            "first_attempt_rate": 0.58,
+            "avg_cost_usd": 1.44,
+            "human_edit_rate": 0.15,
+            "period_implementations": 125,
+            "period_first_attempt_rate": 0.58,
+            "period_avg_cost_usd": 1.44,
+        },
+        {
+            "date": "2026-09-19",
+            "total_implementations": 130,
+            "first_attempt_rate": 0.58,
+            "avg_cost_usd": 1.46,
+            "human_edit_rate": 0.15,
+            "period_implementations": 5,
+            "period_first_attempt_rate": 0.80,
+            "period_avg_cost_usd": 1.20,
+        },
+    ]
+    output = format_trend(snaps)
+    assert "125" in output
+    lines = output.split("\n")
+    row_09_19 = [ln for ln in lines if "2026-09-19" in ln][0]
+    assert "     5" in row_09_19
+    assert "130" not in row_09_19
+
+
+def test_format_trend_fallback_computes_delta_for_old_snapshots():
+    """Old snapshots without period fields get delta computed from consecutive totals."""
+    snaps = [
+        {
+            "date": "2026-09-12",
+            "total_implementations": 30,
+            "first_attempt_rate": 0.80,
+            "avg_cost_usd": 1.20,
+            "human_edit_rate": 0.12,
+        },
+        {
+            "date": "2026-09-13",
+            "total_implementations": 33,
+            "first_attempt_rate": 0.85,
+            "avg_cost_usd": 1.15,
+            "human_edit_rate": 0.10,
+        },
+    ]
+    output = format_trend(snaps)
+    lines = output.split("\n")
+    row_12 = [ln for ln in lines if "2026-09-12" in ln][0]
+    row_13 = [ln for ln in lines if "2026-09-13" in ln][0]
+    assert "    30" in row_12
+    assert "     3" in row_13
+    assert "33" not in row_13
+
+
+def test_generate_eval_md_trend_shows_period_values():
+    """EVAL.md trend table shows per-period implementation counts."""
+    snaps = [
+        _make_snapshot(date="2026-09-18", total=125),
+        {
+            **_make_snapshot(date="2026-09-19", total=130),
+            "period_implementations": 5,
+            "period_first_attempt_rate": 0.80,
+            "period_avg_cost_usd": 1.20,
+        },
+    ]
+    content = generate_eval_md(snaps[-1], snaps)
+    assert "## Trend" in content
+    lines = content.split("\n")
+    row_09_19 = [ln for ln in lines if "2026-09-19" in ln][0]
+    assert "| 5 " in row_09_19
+    assert "| 130 " not in row_09_19
+    assert "80%" in row_09_19
+    assert "$1.20" in row_09_19
+
+
+def test_generate_eval_md_trend_fallback_delta():
+    """EVAL.md trend table computes delta for old snapshots without period fields."""
+    snaps = [
+        _make_snapshot(date="2026-08-24", rate=0.80, cost=1.50, hr=0.12, total=28),
+        _make_snapshot(date="2026-08-31", rate=0.83, cost=1.35, hr=0.10, total=30),
+    ]
+    content = generate_eval_md(snaps[-1], snaps)
+    lines = content.split("\n")
+    row_08_31 = [ln for ln in lines if "2026-08-31" in ln][0]
+    assert "| 2 " in row_08_31
+    assert "| 30 " not in row_08_31
+
+
+def test_generate_eval_md_overall_stays_cumulative():
+    """Overall section uses cumulative values, not period."""
+    snap = {
+        **_make_snapshot(date="2026-09-19", rate=0.58, cost=1.46, total=130),
+        "period_implementations": 5,
+        "period_first_attempt_rate": 0.80,
+        "period_avg_cost_usd": 1.20,
+    }
+    content = generate_eval_md(snap, [snap])
+    lines = content.split("\n")
+    overall_idx = next(i for i, ln in enumerate(lines) if "## Overall" in ln)
+    trend_idx = next(i for i, ln in enumerate(lines) if "## Trend" in ln)
+    overall_section = "\n".join(lines[overall_idx:trend_idx])
+    assert "58%" in overall_section
+    assert "$1.46" in overall_section
+
+
+def test_main_passes_prev_snapshot(tmp_path, capsys):
+    """main() passes previous snapshot so period fields are computed."""
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    log_file = log_dir / "run_history.jsonl"
+    entries = [
+        {
+            "type": "implement",
+            "issue": i,
+            "success": True,
+            "attempts": 1,
+            "cost_usd": 1.0,
+            "duration_seconds": 60,
+            "timestamp": f"2026-09-{18 + i}T10:00:00Z",
+        }
+        for i in range(1, 4)
+    ]
+    log_file.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+
+    snap_dir = tmp_path / "autoloop" / "eval_snapshots"
+    snap_dir.mkdir(parents=True)
+    prev = {
+        "date": "2026-09-18",
+        "total_implementations": 1,
+        "first_attempt_rate": 1.0,
+        "avg_cost_usd": 1.0,
+        "avg_duration_seconds": 60,
+        "attempt_distribution": {"1": 1, "2": 0, "3+": 0},
+        "human_edit_rate": 0.0,
+        "human_edit_count": 0,
+        "merged_pr_count": 0,
+        "closed_without_merge": 0,
+        "modules": {},
+    }
+    (snap_dir / "2026-09-18.json").write_text(json.dumps(prev))
+
+    main(base=tmp_path, output="json")
+
+    out = capsys.readouterr().out
+    data = json.loads(out)
+    assert data["total_implementations"] == 3
+    assert data["period_implementations"] == 2
+    assert "period_first_attempt_rate" in data
+    assert "period_avg_cost_usd" in data

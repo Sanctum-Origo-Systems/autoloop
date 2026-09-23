@@ -62,6 +62,7 @@ def compute_snapshot(
     pr_data: list[dict] | None = None,
     date: str | None = None,
     module_prefixes: list[str] | None = None,
+    prev_snapshot: dict | None = None,
 ) -> dict:
     impl_runs = [r for r in runs if r.get("type", "implement") == "implement"]
 
@@ -158,6 +159,20 @@ def compute_snapshot(
         "closed_without_merge": closed_without_merge,
         "modules": module_stats,
     }
+
+    if prev_snapshot is not None:
+        prev_total = prev_snapshot.get("total_implementations", 0)
+        snapshot["period_implementations"] = total - prev_total
+        prev_date = prev_snapshot["date"]
+        period_runs = [r for r in impl_runs if r.get("timestamp", "")[:10] > prev_date]
+        if period_runs:
+            period_first = sum(
+                1 for r in period_runs if r.get("success") and r.get("attempts", 1) == 1
+            )
+            period_costs = [r.get("cost_usd", 0) for r in period_runs]
+            snapshot["period_first_attempt_rate"] = round(period_first / len(period_runs), 2)
+            snapshot["period_avg_cost_usd"] = round(sum(period_costs) / len(period_costs), 2)
+
     return snapshot
 
 
@@ -450,11 +465,22 @@ def format_trend(snapshots: list[dict]) -> str:
         f"  {'Date':<14s} {'Impl':>6s} {'1st-attempt':>12s} {'Avg cost':>10s} {'Human edits':>12s}"
     )
     lines.append("  " + "-" * 58)
-    for s in snapshots:
-        rate = s.get("first_attempt_rate", 0)
+    for i, s in enumerate(snapshots):
+        if "period_implementations" in s:
+            impl = s["period_implementations"]
+            rate = s.get("period_first_attempt_rate", s.get("first_attempt_rate", 0))
+            cost = s.get("period_avg_cost_usd", s.get("avg_cost_usd", 0))
+        elif i > 0:
+            impl = s["total_implementations"] - snapshots[i - 1]["total_implementations"]
+            rate = s.get("first_attempt_rate", 0)
+            cost = s.get("avg_cost_usd", 0)
+        else:
+            impl = s["total_implementations"]
+            rate = s.get("first_attempt_rate", 0)
+            cost = s.get("avg_cost_usd", 0)
         lines.append(
-            f"  {s['date']:<14s} {s['total_implementations']:>6d} "
-            f"{rate:>11.0%} ${s['avg_cost_usd']:>8.2f} "
+            f"  {s['date']:<14s} {impl:>6d} "
+            f"{rate:>11.0%} ${cost:>8.2f} "
             f"{s.get('human_edit_rate', 0):>11.0%}"
         )
 
@@ -577,11 +603,25 @@ def generate_eval_md(
         lines.append("")
         lines.append("| Date (UTC) | Implementations | First-attempt | Avg Cost | Human Edits |")
         lines.append("|------|----------------|---------------|----------|-------------|")
-        for s in recent:
+        for i, s in enumerate(recent):
+            if "period_implementations" in s:
+                impl = s["period_implementations"]
+                rate = s.get("period_first_attempt_rate", s.get("first_attempt_rate", 0))
+                cost = s.get("period_avg_cost_usd", s.get("avg_cost_usd", 0))
+            elif i > 0:
+                impl = s.get("total_implementations", 0) - recent[i - 1].get(
+                    "total_implementations", 0
+                )
+                rate = s.get("first_attempt_rate", 0)
+                cost = s.get("avg_cost_usd", 0)
+            else:
+                impl = s.get("total_implementations", 0)
+                rate = s.get("first_attempt_rate", 0)
+                cost = s.get("avg_cost_usd", 0)
             lines.append(
-                f"| {s['date']} | {s.get('total_implementations', 0)} "
-                f"| {s.get('first_attempt_rate', 0):.0%} "
-                f"| ${s.get('avg_cost_usd', 0):.2f} "
+                f"| {s['date']} | {impl} "
+                f"| {rate:.0%} "
+                f"| ${cost:.2f} "
                 f"| {s.get('human_edit_rate', 0):.0%} |"
             )
         lines.append("")
@@ -755,9 +795,8 @@ def main(
         runs = load_run_history(effective_base)
         pr_data = fetch_pr_data(repo) if repo else []
         pr_data = enrich_pr_data_with_runs(pr_data, runs)
-        snapshot = compute_snapshot(runs, pr_data)
-
         previous = load_latest_snapshot(effective_base)
+        snapshot = compute_snapshot(runs, pr_data, prev_snapshot=previous)
 
         path = save_snapshot(snapshot, effective_base)
         print(f"Snapshot saved to {path}")
@@ -838,9 +877,8 @@ def main(
         runs = load_run_history(effective_base)
         pr_data = fetch_pr_data(repo) if repo else []
         pr_data = enrich_pr_data_with_runs(pr_data, runs)
-        current = compute_snapshot(runs, pr_data)
-
         previous = load_latest_snapshot(effective_base)
+        current = compute_snapshot(runs, pr_data, prev_snapshot=previous)
         if previous is None:
             if output == "json":
                 print(json.dumps(current))
@@ -866,7 +904,8 @@ def main(
     runs = load_run_history(effective_base)
     pr_data = fetch_pr_data(repo) if repo else []
     pr_data = enrich_pr_data_with_runs(pr_data, runs)
-    snapshot = compute_snapshot(runs, pr_data)
+    previous = load_latest_snapshot(effective_base)
+    snapshot = compute_snapshot(runs, pr_data, prev_snapshot=previous)
 
     if output == "json":
         print(json.dumps(snapshot))
