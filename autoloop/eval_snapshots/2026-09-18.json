@@ -9,22 +9,24 @@
     "2": 27,
     "3+": 17
   },
-  "human_edit_rate": 0.15,
+  "human_edit_rate": 0.14,
   "human_edit_count": 10,
-  "merged_pr_count": 65,
+  "merged_pr_count": 74,
   "closed_without_merge": 3,
   "modules": {
     "other": {
       "implementations": 5,
       "first_attempt_rate": 0.4,
       "avg_cost_usd": 0.48,
-      "human_edit_rate": 0.8
+      "human_edit_rate": 0.8,
+      "merged_clean_count": 1
     },
     "src/autoloop/": {
-      "implementations": 63,
-      "first_attempt_rate": 0.71,
-      "avg_cost_usd": 1.24,
-      "human_edit_rate": 0.1
+      "implementations": 73,
+      "first_attempt_rate": 0.73,
+      "avg_cost_usd": 1.07,
+      "human_edit_rate": 0.09,
+      "merged_clean_count": 63
     }
   }
 }
