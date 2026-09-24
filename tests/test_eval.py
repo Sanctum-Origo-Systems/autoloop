@@ -2609,3 +2609,65 @@ def test_generate_eval_md_module_column_says_impl_not_prs():
     assert "| PRs |" not in content
     assert "25 impl)" in content
     assert "25 PRs)" not in content
+
+
+# --- per-period stats (#194) ---
+
+
+def test_format_trend_shows_period_deltas():
+    """Trend table shows per-period deltas computed from consecutive total_implementations."""
+    snaps = [
+        {
+            "date": "2026-09-18",
+            "total_implementations": 125,
+            "first_attempt_rate": 0.58,
+            "avg_cost_usd": 1.44,
+            "human_edit_rate": 0.15,
+        },
+        {
+            "date": "2026-09-19",
+            "total_implementations": 130,
+            "first_attempt_rate": 0.58,
+            "avg_cost_usd": 1.46,
+            "human_edit_rate": 0.15,
+        },
+    ]
+    output = format_trend(snaps)
+    assert "125" in output
+    lines = output.split("\n")
+    row_09_19 = [ln for ln in lines if "2026-09-19" in ln][0]
+    assert "     5" in row_09_19
+    assert "130" not in row_09_19
+
+
+def test_format_trend_delta_never_negative():
+    """_period_impl clamps to 0 even if snapshots are inconsistent."""
+    from autoloop.eval import _period_impl
+
+    prev = {"total_implementations": 100}
+    curr = {"total_implementations": 5}
+    assert _period_impl(curr, prev) == 0
+
+
+def test_generate_eval_md_trend_shows_deltas():
+    """EVAL.md trend table shows per-period implementation deltas."""
+    snaps = [
+        _make_snapshot(date="2026-08-24", rate=0.80, cost=1.50, hr=0.12, total=28),
+        _make_snapshot(date="2026-08-31", rate=0.83, cost=1.35, hr=0.10, total=30),
+    ]
+    content = generate_eval_md(snaps[-1], snaps)
+    lines = content.split("\n")
+    row_08_31 = [ln for ln in lines if "2026-08-31" in ln][0]
+    assert "| 2 " in row_08_31
+    assert "| 30 " not in row_08_31
+
+
+def test_generate_eval_md_overall_stays_cumulative():
+    """Overall section uses cumulative values."""
+    snap = _make_snapshot(date="2026-09-19", rate=0.58, cost=1.46, total=130)
+    content = generate_eval_md(snap, [snap])
+    lines = content.split("\n")
+    overall_idx = next(i for i, ln in enumerate(lines) if "## Overall" in ln)
+    overall_section = "\n".join(lines[overall_idx : overall_idx + 10])
+    assert "58%" in overall_section
+    assert "$1.46" in overall_section

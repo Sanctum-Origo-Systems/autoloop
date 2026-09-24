@@ -439,6 +439,12 @@ def format_comparison(comparison: dict) -> str:
     return "\n".join(lines)
 
 
+def _period_impl(snapshot: dict, prev: dict | None) -> int:
+    if prev is None:
+        return snapshot.get("total_implementations", 0)
+    return max(0, snapshot.get("total_implementations", 0) - prev.get("total_implementations", 0))
+
+
 def format_trend(snapshots: list[dict]) -> str:
     if not snapshots:
         return "No snapshots found."
@@ -450,11 +456,12 @@ def format_trend(snapshots: list[dict]) -> str:
         f"  {'Date':<14s} {'Impl':>6s} {'1st-attempt':>12s} {'Avg cost':>10s} {'Human edits':>12s}"
     )
     lines.append("  " + "-" * 58)
-    for s in snapshots:
-        rate = s.get("first_attempt_rate", 0)
+    for i, s in enumerate(snapshots):
+        impl = _period_impl(s, snapshots[i - 1] if i > 0 else None)
         lines.append(
-            f"  {s['date']:<14s} {s['total_implementations']:>6d} "
-            f"{rate:>11.0%} ${s['avg_cost_usd']:>8.2f} "
+            f"  {s['date']:<14s} {impl:>6d} "
+            f"{s.get('first_attempt_rate', 0):>11.0%} "
+            f"${s.get('avg_cost_usd', 0):>8.2f} "
             f"{s.get('human_edit_rate', 0):>11.0%}"
         )
 
@@ -577,9 +584,10 @@ def generate_eval_md(
         lines.append("")
         lines.append("| Date (UTC) | Implementations | First-attempt | Avg Cost | Human Edits |")
         lines.append("|------|----------------|---------------|----------|-------------|")
-        for s in recent:
+        for i, s in enumerate(recent):
+            impl = _period_impl(s, recent[i - 1] if i > 0 else None)
             lines.append(
-                f"| {s['date']} | {s.get('total_implementations', 0)} "
+                f"| {s['date']} | {impl} "
                 f"| {s.get('first_attempt_rate', 0):.0%} "
                 f"| ${s.get('avg_cost_usd', 0):.2f} "
                 f"| {s.get('human_edit_rate', 0):.0%} |"
@@ -839,7 +847,6 @@ def main(
         pr_data = fetch_pr_data(repo) if repo else []
         pr_data = enrich_pr_data_with_runs(pr_data, runs)
         current = compute_snapshot(runs, pr_data)
-
         previous = load_latest_snapshot(effective_base)
         if previous is None:
             if output == "json":
