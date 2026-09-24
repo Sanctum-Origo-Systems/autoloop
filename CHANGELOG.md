@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.6.1
+
+- Fix: `total_implementations` excludes closed-without-merge PRs (#206)
+
 ## v0.6.0
 
 - feat: configurable auto-merge gate thresholds and promotion level (#202)
