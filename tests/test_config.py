@@ -399,3 +399,57 @@ def test_load_config_no_path_missing_toml(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     with pytest.raises(FileNotFoundError, match="Config file not found"):
         load_config()
+
+
+# --- auto-merge gate config fields ---
+
+
+def test_auto_merge_success_threshold_default():
+    config = AutoLoopConfig()
+    assert config.auto_merge_success_threshold == 0.90
+
+
+def test_auto_merge_volume_floor_default():
+    config = AutoLoopConfig()
+    assert config.auto_merge_volume_floor == 10
+
+
+def test_auto_merge_promotion_level_default():
+    config = AutoLoopConfig()
+    assert config.auto_merge_promotion_level == "module"
+
+
+def test_auto_merge_success_threshold_from_toml(tmp_path, monkeypatch):
+    for var in ("AUTOLOOP_TRIAGE_MODEL", "AUTOLOOP_IMPL_MODEL", "AUTOLOOP_TIMEOUT"):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text("auto_merge_success_threshold = 0.95\n")
+    config = load_config(toml_path)
+    assert config.auto_merge_success_threshold == 0.95
+
+
+def test_auto_merge_volume_floor_from_toml(tmp_path, monkeypatch):
+    for var in ("AUTOLOOP_TRIAGE_MODEL", "AUTOLOOP_IMPL_MODEL", "AUTOLOOP_TIMEOUT"):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text("auto_merge_volume_floor = 25\n")
+    config = load_config(toml_path)
+    assert config.auto_merge_volume_floor == 25
+
+
+def test_auto_merge_promotion_level_repo(tmp_path, monkeypatch):
+    for var in ("AUTOLOOP_TRIAGE_MODEL", "AUTOLOOP_IMPL_MODEL", "AUTOLOOP_TIMEOUT"):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('auto_merge_promotion_level = "repo"\n')
+    config = load_config(toml_path)
+    assert config.auto_merge_promotion_level == "repo"
+
+
+def test_auto_merge_promotion_level_invalid(tmp_path, monkeypatch):
+    for var in ("AUTOLOOP_TRIAGE_MODEL", "AUTOLOOP_IMPL_MODEL", "AUTOLOOP_TIMEOUT"):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('auto_merge_promotion_level = "invalid"\n')
+    with pytest.raises(ValueError, match="must be 'repo' or 'module'"):
+        load_config(toml_path)

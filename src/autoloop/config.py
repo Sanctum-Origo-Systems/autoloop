@@ -51,6 +51,9 @@ class AutoLoopConfig:
     max_pr_review_rounds: int = 3
     max_decomposition_depth: int = 2
     auto_merge_edit_rate_threshold: float = 0.05
+    auto_merge_success_threshold: float = 0.90
+    auto_merge_volume_floor: int = 10
+    auto_merge_promotion_level: str = "module"
     project_dir: str = ""
 
 
@@ -111,8 +114,23 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
         if key in data:
             setattr(config, key, int(data[key]))
 
-    if "auto_merge_edit_rate_threshold" in data:
-        config.auto_merge_edit_rate_threshold = float(data["auto_merge_edit_rate_threshold"])
+    for key in (
+        "auto_merge_edit_rate_threshold",
+        "auto_merge_success_threshold",
+    ):
+        if key in data:
+            setattr(config, key, float(data[key]))
+
+    if "auto_merge_volume_floor" in data:
+        config.auto_merge_volume_floor = int(data["auto_merge_volume_floor"])
+
+    if "auto_merge_promotion_level" in data:
+        level = str(data["auto_merge_promotion_level"])
+        if level not in ("repo", "module"):
+            raise ValueError(
+                f"auto_merge_promotion_level must be 'repo' or 'module', got '{level}'"
+            )
+        config.auto_merge_promotion_level = level
 
     if "protected_paths" in data:
         config.protected_paths = list(data["protected_paths"])

@@ -539,14 +539,25 @@ def is_auto_merge_ready(
     edit_rate: float,
     merged_clean_count: int,
     edit_rate_threshold: float = 0.05,
+    success_threshold: float = 0.90,
+    volume_floor: int = 10,
 ) -> str:
-    if success_rate > 0.9 and edit_rate < edit_rate_threshold and merged_clean_count >= 20:
+    if (
+        success_rate > success_threshold
+        and edit_rate < edit_rate_threshold
+        and merged_clean_count >= volume_floor
+    ):
         return "Yes"
     return "No"
 
 
 def generate_eval_md(
-    snapshot: dict, all_snapshots: list[dict], edit_rate_threshold: float = 0.05
+    snapshot: dict,
+    all_snapshots: list[dict],
+    edit_rate_threshold: float = 0.05,
+    success_threshold: float = 0.90,
+    volume_floor: int = 10,
+    promotion_level: str = "module",
 ) -> str:
     lines = ["# EVAL Report", ""]
 
@@ -562,8 +573,34 @@ def generate_eval_md(
     lines.append(f"| Human edit rate | {hr:.0%} |")
     lines.append("")
 
+    gate_kwargs = {
+        "edit_rate_threshold": edit_rate_threshold,
+        "success_threshold": success_threshold,
+        "volume_floor": volume_floor,
+    }
+
     modules = snapshot.get("modules", {})
     if modules:
+        if promotion_level == "repo":
+            repo_success_rate = snapshot.get("first_attempt_rate", 0)
+            repo_edit_rate = snapshot.get("human_edit_rate", 0)
+            repo_merged_clean = snapshot.get("merged_pr_count", 0) - snapshot.get(
+                "human_edit_count", 0
+            )
+            repo_auto = is_auto_merge_ready(
+                repo_success_rate, repo_edit_rate, repo_merged_clean, **gate_kwargs
+            )
+
+            lines.append("## Auto-Merge Gate (repo-level)")
+            lines.append("")
+            lines.append("| Metric | Value | Threshold |")
+            lines.append("|--------|-------|-----------|")
+            lines.append(f"| Success rate | {repo_success_rate:.0%} | >{success_threshold:.0%} |")
+            lines.append(f"| Edit rate | {repo_edit_rate:.0%} | <{edit_rate_threshold:.0%} |")
+            lines.append(f"| Clean merges | {repo_merged_clean} | ≥{volume_floor} |")
+            lines.append(f"| **Ready?** | **{repo_auto}** | |")
+            lines.append("")
+
         lines.append("## Per-Module Breakdown")
         lines.append("")
         lines.append("| Module | Success | Avg Cost | Impl | Auto-merge ready? |")
@@ -574,7 +611,7 @@ def generate_eval_md(
             prs = stats.get("implementations", 0)
             edit_r = stats.get("human_edit_rate", 0)
             clean = stats.get("merged_clean_count", 0)
-            auto = is_auto_merge_ready(success, edit_r, clean, edit_rate_threshold)
+            auto = is_auto_merge_ready(success, edit_r, clean, **gate_kwargs)
             lines.append(f"| {mod} | {success:.0%} | ${avg_c:.2f} | {prs} | {auto} |")
         lines.append("")
 
@@ -742,6 +779,10 @@ def main(
     output: str | None = None,
     publish: bool = False,
     pr: bool = False,
+    auto_merge_edit_rate_threshold: float = 0.05,
+    auto_merge_success_threshold: float = 0.90,
+    auto_merge_volume_floor: int = 10,
+    auto_merge_promotion_level: str = "module",
 ):
     effective_base = base or Path.cwd()
 
@@ -771,7 +812,14 @@ def main(
         print(f"Snapshot saved to {path}")
 
         all_snaps = load_all_snapshots(effective_base)
-        content = generate_eval_md(snapshot, all_snaps)
+        content = generate_eval_md(
+            snapshot,
+            all_snaps,
+            edit_rate_threshold=auto_merge_edit_rate_threshold,
+            success_threshold=auto_merge_success_threshold,
+            volume_floor=auto_merge_volume_floor,
+            promotion_level=auto_merge_promotion_level,
+        )
         eval_path = effective_base / "EVAL.md"
         eval_path.write_text(content)
 
