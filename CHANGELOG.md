@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.5.6
+
+- Fix: trend table shows per-period implementation deltas instead of cumulative totals (#194)
+- Fix: `total_implementations` derived from PR count, not run_history length (#198)
+- Shared `_period_impl()` helper for consistent delta logic in CLI and EVAL.md output
+
 ## v0.5.5
 
 - feat: continue to next issue on non-systemic failure instead of aborting the run (#187)
