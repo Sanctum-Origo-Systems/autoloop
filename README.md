@@ -467,10 +467,44 @@ Example workflow from your phone:
 | `protected_paths` | `["autoloop/"]` | Paths the bot must never modify |
 | `test_gate_skip_types` | `["refactor", "docs", "chore"]` | Issue types that skip the "must add test files" verification check |
 | `auto_merge_edit_rate_threshold` | `0.05` | Maximum human edit rate for auto-merge eligibility (edit_rate must be strictly below this) |
+| `auto_merge_success_threshold` | `0.90` | Minimum first-attempt success rate for auto-merge eligibility (success_rate must be strictly above this) |
+| `auto_merge_volume_floor` | `10` | Minimum merged-clean PRs required before auto-merge can activate |
+| `auto_merge_promotion_level` | `"module"` | `"repo"` evaluates aggregate repo metrics; `"module"` evaluates each module independently |
 | `max_pr_review_rounds` | `3` | Max rounds of automated PR review+fix when `--auto-fix` is used |
 | `triage_labels` | `["ready", "rejected", ...]` | Labels that indicate an issue has been triaged |
 
 All fields can be overridden by environment variables (e.g. `AUTOLOOP_IMPL_MODEL`, `AUTOLOOP_TIMEOUT`).
+
+## Graduated Autonomy
+
+The auto-merge gate controls when autoloop earns the right to merge PRs without human review. It evaluates three metrics against configurable thresholds:
+
+| Metric | Config Field | Default | Condition |
+|--------|-------------|---------|-----------|
+| First-attempt success rate | `auto_merge_success_threshold` | `0.90` | Must be strictly above |
+| Human edit rate | `auto_merge_edit_rate_threshold` | `0.05` | Must be strictly below |
+| Clean merge volume | `auto_merge_volume_floor` | `10` | Must be at or above |
+
+**Promotion levels** (`auto_merge_promotion_level`):
+
+- `"module"` (default): Each module is evaluated independently against the thresholds. A module must build its own track record before auto-merge activates for it. Best for repos with enough PR volume that per-module counts reach the volume floor.
+- `"repo"`: All modules are evaluated together using aggregate repo-wide metrics. The gate shows a single repo-level verdict. Best for repos with low volume where per-module counts may never reach the volume floor.
+
+**Example: high-volume repo (module-level, strict thresholds)**
+```toml
+auto_merge_success_threshold = 0.95
+auto_merge_volume_floor = 20
+auto_merge_edit_rate_threshold = 0.03
+auto_merge_promotion_level = "module"
+```
+
+**Example: low-volume repo (repo-level, lower volume floor)**
+```toml
+auto_merge_success_threshold = 0.90
+auto_merge_volume_floor = 5
+auto_merge_edit_rate_threshold = 0.05
+auto_merge_promotion_level = "repo"
+```
 
 ## Commands
 

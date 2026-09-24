@@ -229,6 +229,10 @@ def main():
             output=args.output,
             publish=args.publish,
             pr=args.pr,
+            auto_merge_edit_rate_threshold=cfg.auto_merge_edit_rate_threshold,
+            auto_merge_success_threshold=cfg.auto_merge_success_threshold,
+            auto_merge_volume_floor=cfg.auto_merge_volume_floor,
+            auto_merge_promotion_level=cfg.auto_merge_promotion_level,
         )
 
     elif args.command == "doctor":

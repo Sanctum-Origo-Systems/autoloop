@@ -352,8 +352,14 @@ def main():
             from autoloop.eval import _publish_via_pr
 
             all_snaps = load_all_snapshots(base)
-            threshold = cfg.auto_merge_edit_rate_threshold if cfg else 0.05
-            md_content = generate_eval_md(current, all_snaps, threshold)
+            md_content = generate_eval_md(
+                current,
+                all_snaps,
+                edit_rate_threshold=cfg.auto_merge_edit_rate_threshold if cfg else 0.05,
+                success_threshold=cfg.auto_merge_success_threshold if cfg else 0.90,
+                volume_floor=cfg.auto_merge_volume_floor if cfg else 10,
+                promotion_level=cfg.auto_merge_promotion_level if cfg else "module",
+            )
             md_path = base / "EVAL.md"
             md_path.write_text(md_content)
             date = current["date"]

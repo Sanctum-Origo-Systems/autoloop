@@ -1102,7 +1102,7 @@ def test_format_eval_md_closed_without_merge():
 
 
 def test_auto_merge_ready_all_conditions_met():
-    assert is_auto_merge_ready(0.91, 0.0, 20) == "Yes"
+    assert is_auto_merge_ready(0.91, 0.0, 10) == "Yes"
 
 
 def test_auto_merge_ready_high_success_many_prs():
@@ -1110,11 +1110,11 @@ def test_auto_merge_ready_high_success_many_prs():
 
 
 def test_auto_merge_ready_boundary_success_at_90():
-    assert is_auto_merge_ready(0.90, 0.0, 20) == "No"
+    assert is_auto_merge_ready(0.90, 0.0, 10) == "No"
 
 
 def test_auto_merge_ready_boundary_success_above_90():
-    assert is_auto_merge_ready(0.91, 0.0, 20) == "Yes"
+    assert is_auto_merge_ready(0.91, 0.0, 10) == "Yes"
 
 
 def test_auto_merge_ready_edit_rate_below_threshold():
@@ -1126,28 +1126,38 @@ def test_auto_merge_ready_edit_rate_above_threshold():
 
 
 def test_auto_merge_ready_boundary_edit_rate_just_below():
-    assert is_auto_merge_ready(0.95, 0.049, 20) == "Yes"
+    assert is_auto_merge_ready(0.95, 0.049, 10) == "Yes"
 
 
 def test_auto_merge_ready_boundary_edit_rate_at_threshold():
-    assert is_auto_merge_ready(0.95, 0.05, 20) == "No"
+    assert is_auto_merge_ready(0.95, 0.05, 10) == "No"
 
 
 def test_auto_merge_ready_boundary_edit_rate_zero():
-    assert is_auto_merge_ready(0.95, 0.0, 20) == "Yes"
+    assert is_auto_merge_ready(0.95, 0.0, 10) == "Yes"
 
 
-def test_auto_merge_ready_boundary_pr_count_19():
-    assert is_auto_merge_ready(0.95, 0.0, 19) == "No"
+def test_auto_merge_ready_boundary_pr_count_below_floor():
+    assert is_auto_merge_ready(0.95, 0.0, 9) == "No"
 
 
-def test_auto_merge_ready_boundary_pr_count_20():
-    assert is_auto_merge_ready(0.95, 0.0, 20) == "Yes"
+def test_auto_merge_ready_boundary_pr_count_at_floor():
+    assert is_auto_merge_ready(0.95, 0.0, 10) == "Yes"
 
 
-def test_auto_merge_ready_custom_threshold():
-    assert is_auto_merge_ready(0.95, 0.09, 20, edit_rate_threshold=0.10) == "Yes"
-    assert is_auto_merge_ready(0.95, 0.10, 20, edit_rate_threshold=0.10) == "No"
+def test_auto_merge_ready_custom_edit_threshold():
+    assert is_auto_merge_ready(0.95, 0.09, 10, edit_rate_threshold=0.10) == "Yes"
+    assert is_auto_merge_ready(0.95, 0.10, 10, edit_rate_threshold=0.10) == "No"
+
+
+def test_auto_merge_ready_custom_success_threshold():
+    assert is_auto_merge_ready(0.86, 0.0, 10, success_threshold=0.85) == "Yes"
+    assert is_auto_merge_ready(0.85, 0.0, 10, success_threshold=0.85) == "No"
+
+
+def test_auto_merge_ready_custom_volume_floor():
+    assert is_auto_merge_ready(0.95, 0.0, 5, volume_floor=5) == "Yes"
+    assert is_auto_merge_ready(0.95, 0.0, 4, volume_floor=5) == "No"
 
 
 def test_auto_merge_ready_all_fail():
@@ -1155,13 +1165,13 @@ def test_auto_merge_ready_all_fail():
 
 
 def test_auto_merge_ready_many_total_prs_few_clean_merged():
-    """25 total PRs but only 15 cleanly merged — should not promote."""
-    assert is_auto_merge_ready(0.95, 0.0, 15) == "No"
+    """25 total PRs but only 8 cleanly merged — should not promote with default floor."""
+    assert is_auto_merge_ready(0.95, 0.0, 8) == "No"
 
 
-def test_auto_merge_ready_exactly_20_clean_merged():
-    """Exactly 20 cleanly merged PRs promotes regardless of closed/abandoned count."""
-    assert is_auto_merge_ready(0.95, 0.0, 20) == "Yes"
+def test_auto_merge_ready_exactly_at_volume_floor():
+    """Exactly at volume floor promotes regardless of closed/abandoned count."""
+    assert is_auto_merge_ready(0.95, 0.0, 10) == "Yes"
 
 
 def test_auto_merge_ready_gate_uses_merged_clean_count_in_eval_md():
@@ -1172,7 +1182,7 @@ def test_auto_merge_ready_gate_uses_merged_clean_count_in_eval_md():
             "first_attempt_rate": 0.95,
             "avg_cost_usd": 1.0,
             "human_edit_rate": 0.0,
-            "merged_clean_count": 15,
+            "merged_clean_count": 9,
         },
     }
     snap = _make_snapshot(modules=modules)
@@ -1181,14 +1191,14 @@ def test_auto_merge_ready_gate_uses_merged_clean_count_in_eval_md():
 
 
 def test_auto_merge_ready_gate_passes_with_clean_merged_in_eval_md():
-    """generate_eval_md shows Yes when merged_clean_count >= 20."""
+    """generate_eval_md shows Yes when merged_clean_count >= volume_floor (default 10)."""
     modules = {
         "src/mod/": {
             "implementations": 30,
             "first_attempt_rate": 0.95,
             "avg_cost_usd": 1.0,
             "human_edit_rate": 0.0,
-            "merged_clean_count": 20,
+            "merged_clean_count": 10,
         },
     }
     snap = _make_snapshot(modules=modules)
@@ -1302,24 +1312,24 @@ def test_generate_eval_md_module_table():
 def test_generate_eval_md_auto_merge_boundary_in_table():
     modules = {
         "src/a/": {
-            "implementations": 20,
+            "implementations": 10,
             "first_attempt_rate": 0.90,
             "avg_cost_usd": 1.0,
             "human_edit_rate": 0.0,
-            "merged_clean_count": 20,
+            "merged_clean_count": 10,
         },
         "src/b/": {
-            "implementations": 20,
+            "implementations": 10,
             "first_attempt_rate": 0.91,
             "avg_cost_usd": 1.0,
             "human_edit_rate": 0.0,
-            "merged_clean_count": 20,
+            "merged_clean_count": 10,
         },
     }
     snap = _make_snapshot(modules=modules)
     content = generate_eval_md(snap, [snap])
-    assert "| src/a/ | 90% | $1.00 | 20 | No |" in content
-    assert "| src/b/ | 91% | $1.00 | 20 | Yes |" in content
+    assert "| src/a/ | 90% | $1.00 | 10 | No |" in content
+    assert "| src/b/ | 91% | $1.00 | 10 | Yes |" in content
 
 
 def test_generate_eval_md_trend_table():
@@ -1406,6 +1416,113 @@ def test_generate_eval_md_mermaid_charts_from_data():
     content = generate_eval_md(snaps[-1], snaps)
     assert "line [75, 90]" in content
     assert "line [2.00, 1.00]" in content
+
+
+# --- repo-level promotion ---
+
+
+def test_generate_eval_md_repo_level_shows_gate_section():
+    """promotion_level='repo' adds a repo-level auto-merge gate section."""
+    modules = {
+        "src/a/": {
+            "implementations": 8,
+            "first_attempt_rate": 0.95,
+            "avg_cost_usd": 1.0,
+            "human_edit_rate": 0.0,
+            "merged_clean_count": 5,
+        },
+        "src/b/": {
+            "implementations": 7,
+            "first_attempt_rate": 0.90,
+            "avg_cost_usd": 1.5,
+            "human_edit_rate": 0.0,
+            "merged_clean_count": 5,
+        },
+    }
+    snap = _make_snapshot(modules=modules, rate=0.93, hr=0.0, total=15)
+    snap["merged_pr_count"] = 15
+    snap["human_edit_count"] = 0
+    content = generate_eval_md(snap, [snap], promotion_level="repo")
+    assert "## Auto-Merge Gate (repo-level)" in content
+    assert "| **Ready?** | **Yes** | |" in content
+    assert "## Per-Module Breakdown" in content
+
+
+def test_generate_eval_md_repo_level_not_ready():
+    """Repo-level gate shows No when aggregate metrics don't pass."""
+    modules = {
+        "src/a/": {
+            "implementations": 3,
+            "first_attempt_rate": 0.80,
+            "avg_cost_usd": 1.0,
+            "human_edit_rate": 0.1,
+            "merged_clean_count": 2,
+        },
+    }
+    snap = _make_snapshot(modules=modules, rate=0.80, hr=0.10, total=3)
+    snap["merged_pr_count"] = 3
+    snap["human_edit_count"] = 1
+    content = generate_eval_md(snap, [snap], promotion_level="repo")
+    assert "| **Ready?** | **No** | |" in content
+
+
+def test_generate_eval_md_module_level_no_gate_section():
+    """promotion_level='module' (default) does not show repo-level gate section."""
+    modules = {
+        "src/a/": {
+            "implementations": 10,
+            "first_attempt_rate": 0.95,
+            "avg_cost_usd": 1.0,
+            "human_edit_rate": 0.0,
+            "merged_clean_count": 10,
+        },
+    }
+    snap = _make_snapshot(modules=modules)
+    content = generate_eval_md(snap, [snap], promotion_level="module")
+    assert "## Auto-Merge Gate (repo-level)" not in content
+
+
+def test_generate_eval_md_repo_level_custom_thresholds():
+    """Repo-level gate respects custom threshold parameters."""
+    modules = {
+        "src/a/": {
+            "implementations": 5,
+            "first_attempt_rate": 0.86,
+            "avg_cost_usd": 1.0,
+            "human_edit_rate": 0.0,
+            "merged_clean_count": 5,
+        },
+    }
+    snap = _make_snapshot(modules=modules, rate=0.86, hr=0.0, total=5)
+    snap["merged_pr_count"] = 5
+    snap["human_edit_count"] = 0
+    content = generate_eval_md(
+        snap,
+        [snap],
+        promotion_level="repo",
+        success_threshold=0.85,
+        volume_floor=5,
+    )
+    assert "| **Ready?** | **Yes** | |" in content
+
+
+def test_generate_eval_md_module_level_custom_volume_floor():
+    """Module-level gate respects custom volume_floor."""
+    modules = {
+        "src/a/": {
+            "implementations": 5,
+            "first_attempt_rate": 0.95,
+            "avg_cost_usd": 1.0,
+            "human_edit_rate": 0.0,
+            "merged_clean_count": 5,
+        },
+    }
+    snap = _make_snapshot(modules=modules)
+    content = generate_eval_md(snap, [snap], volume_floor=5)
+    assert "| src/a/ | 95% | $1.00 | 5 | Yes |" in content
+
+    content_strict = generate_eval_md(snap, [snap], volume_floor=20)
+    assert "| src/a/ | 95% | $1.00 | 5 | No |" in content_strict
 
 
 # --- compute_snapshot module enhancements ---
@@ -2600,7 +2717,7 @@ def test_generate_eval_md_module_column_says_impl_not_prs():
             "first_attempt_rate": 0.92,
             "avg_cost_usd": 1.05,
             "human_edit_rate": 0.0,
-            "merged_clean_count": 20,
+            "merged_clean_count": 10,
         },
     }
     snap = _make_snapshot(modules=modules)
