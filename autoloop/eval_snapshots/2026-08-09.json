@@ -9,24 +9,24 @@
     "2": 5,
     "3+": 3
   },
-  "human_edit_rate": 0.14,
-  "human_edit_count": 10,
-  "merged_pr_count": 74,
-  "closed_without_merge": 3,
+  "human_edit_rate": 0.16,
+  "human_edit_count": 5,
+  "merged_pr_count": 32,
+  "closed_without_merge": 1,
   "modules": {
     "other": {
-      "implementations": 5,
-      "first_attempt_rate": 0.4,
-      "avg_cost_usd": 0.29,
-      "human_edit_rate": 0.8,
-      "merged_clean_count": 1
+      "implementations": 3,
+      "first_attempt_rate": 0.0,
+      "avg_cost_usd": 0.48,
+      "human_edit_rate": 1.0,
+      "merged_clean_count": 0
     },
     "src/autoloop/": {
-      "implementations": 73,
-      "first_attempt_rate": 0.73,
-      "avg_cost_usd": 0.26,
-      "human_edit_rate": 0.09,
-      "merged_clean_count": 63
+      "implementations": 30,
+      "first_attempt_rate": 0.57,
+      "avg_cost_usd": 0.63,
+      "human_edit_rate": 0.07,
+      "merged_clean_count": 27
     }
   }
 }
