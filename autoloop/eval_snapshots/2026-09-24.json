@@ -1,17 +1,17 @@
 {
   "date": "2026-09-24",
-  "total_implementations": 81,
-  "first_attempt_rate": 0.61,
-  "avg_cost_usd": 1.43,
-  "avg_duration_seconds": 173,
+  "total_implementations": 78,
+  "first_attempt_rate": 0.62,
+  "avg_cost_usd": 1.42,
+  "avg_duration_seconds": 172,
   "attempt_distribution": {
-    "1": 101,
+    "1": 103,
     "2": 29,
     "3+": 19
   },
   "human_edit_rate": 0.13,
   "human_edit_count": 10,
-  "merged_pr_count": 76,
+  "merged_pr_count": 78,
   "closed_without_merge": 4,
   "modules": {
     "other": {
@@ -22,11 +22,11 @@
       "merged_clean_count": 1
     },
     "src/autoloop/": {
-      "implementations": 76,
+      "implementations": 77,
       "first_attempt_rate": 0.74,
-      "avg_cost_usd": 1.41,
+      "avg_cost_usd": 1.4,
       "human_edit_rate": 0.08,
-      "merged_clean_count": 65
+      "merged_clean_count": 67
     }
   }
 }
