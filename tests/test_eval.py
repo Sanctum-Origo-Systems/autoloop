@@ -249,6 +249,44 @@ def test_compute_snapshot_closed_without_merge():
     ]
     snap = compute_snapshot(runs, pr_data, date="2026-09-14")
     assert snap["closed_without_merge"] == 1
+    assert snap["total_implementations"] == 0
+
+
+def test_compute_snapshot_total_implementations_excludes_closed_without_merge():
+    runs = []
+    pr_data = [
+        {
+            "number": 10,
+            "merged": True,
+            "closed": False,
+            "changed_files": ["src/a/f.py"],
+            "human_edited": False,
+            "first_attempt_success": True,
+            "issue": 1,
+        },
+        {
+            "number": 11,
+            "merged": False,
+            "closed": True,
+            "changed_files": [],
+            "human_edited": False,
+            "first_attempt_success": False,
+            "issue": 2,
+        },
+        {
+            "number": 12,
+            "merged": False,
+            "closed": False,
+            "changed_files": ["src/a/g.py"],
+            "human_edited": False,
+            "first_attempt_success": False,
+            "issue": 3,
+        },
+    ]
+    snap = compute_snapshot(runs, pr_data, date="2026-09-14")
+    assert snap["total_implementations"] == 2
+    assert snap["merged_pr_count"] == 1
+    assert snap["closed_without_merge"] == 1
 
 
 def test_compute_snapshot_default_type_is_implement():
