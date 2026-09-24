@@ -147,7 +147,7 @@ def compute_snapshot(
 
     snapshot = {
         "date": date or datetime.now().strftime("%Y-%m-%d"),
-        "total_implementations": total,
+        "total_implementations": len(pr_data) if pr_data else total,
         "first_attempt_rate": round(first_attempt_rate, 2),
         "avg_cost_usd": round(avg_cost, 2),
         "avg_duration_seconds": round(avg_duration),
