@@ -2671,3 +2671,85 @@ def test_generate_eval_md_overall_stays_cumulative():
     overall_section = "\n".join(lines[overall_idx : overall_idx + 10])
     assert "58%" in overall_section
     assert "$1.46" in overall_section
+
+
+# --- population mismatch fix (#198) ---
+
+
+def test_compute_snapshot_total_from_pr_data_not_runs():
+    """total_implementations comes from PR count when pr_data is present."""
+    runs = [
+        {
+            "type": "implement",
+            "issue": i,
+            "success": i <= 3,
+            "attempts": 1,
+            "cost_usd": 1.0,
+            "duration_seconds": 60,
+        }
+        for i in range(1, 6)
+    ]
+    pr_data = [
+        {
+            "number": 10 + i,
+            "merged": True,
+            "closed": False,
+            "changed_files": [f"src/mod/f{i}.py"],
+            "human_edited": False,
+            "first_attempt_success": True,
+            "issue": i,
+        }
+        for i in range(1, 4)
+    ]
+    snap = compute_snapshot(runs, pr_data, date="2026-09-24")
+    assert snap["total_implementations"] == 3
+    assert snap["first_attempt_rate"] == 0.6
+    assert snap["avg_cost_usd"] == 1.0
+    assert snap["avg_duration_seconds"] == 60
+
+
+def test_compute_snapshot_total_from_runs_when_no_pr_data():
+    """Without pr_data, total_implementations falls back to run_history count."""
+    runs = [
+        {
+            "type": "implement",
+            "issue": 1,
+            "success": True,
+            "attempts": 1,
+            "cost_usd": 1.0,
+            "duration_seconds": 60,
+        },
+    ]
+    snap = compute_snapshot(runs, date="2026-09-24")
+    assert snap["total_implementations"] == 1
+
+
+def test_compute_snapshot_module_total_matches_pr_total():
+    """Sum of per-module implementations equals total_implementations."""
+    runs = [
+        {
+            "type": "implement",
+            "issue": i,
+            "success": True,
+            "attempts": 1 if i <= 5 else 2,
+            "cost_usd": 1.0,
+            "duration_seconds": 60,
+        }
+        for i in range(1, 8)
+    ]
+    pr_data = [
+        {
+            "number": 10 + i,
+            "merged": True,
+            "closed": False,
+            "changed_files": [f"src/autoloop/f{i}.py"],
+            "human_edited": False,
+            "first_attempt_success": True,
+            "issue": i,
+        }
+        for i in range(1, 5)
+    ]
+    snap = compute_snapshot(runs, pr_data, date="2026-09-24")
+    assert snap["total_implementations"] == 4
+    total_module = sum(m["implementations"] for m in snap["modules"].values())
+    assert total_module == snap["total_implementations"]
