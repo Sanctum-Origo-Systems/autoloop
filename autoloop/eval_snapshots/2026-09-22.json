@@ -1,6 +1,6 @@
 {
   "date": "2026-09-22",
-  "total_implementations": 143,
+  "total_implementations": 77,
   "first_attempt_rate": 0.59,
   "avg_cost_usd": 1.41,
   "avg_duration_seconds": 169,
@@ -22,9 +22,9 @@
       "merged_clean_count": 1
     },
     "src/autoloop/": {
-      "implementations": 73,
-      "first_attempt_rate": 0.73,
-      "avg_cost_usd": 1.28,
+      "implementations": 72,
+      "first_attempt_rate": 0.72,
+      "avg_cost_usd": 1.3,
       "human_edit_rate": 0.09,
       "merged_clean_count": 63
     }
