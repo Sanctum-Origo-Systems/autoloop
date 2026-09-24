@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.6.0
+
+- feat: configurable auto-merge gate thresholds and promotion level (#202)
+- `auto_merge_success_threshold`, `auto_merge_volume_floor`, `auto_merge_promotion_level` config fields
+- Repo-level promotion for low-volume repos where per-module counts are too thin
+- README: new "Graduated Autonomy" section with configuration guide
+
 ## v0.5.6
 
 - Fix: trend table shows per-period implementation deltas instead of cumulative totals (#194)
