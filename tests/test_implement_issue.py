@@ -49,6 +49,7 @@ from autoloop.implement_issue import (
     review_implementation,
     run_auto_fix_loop,
     select_top_issue,
+    strip_type_prefix,
     truncate_spec,
     unblock_ready_issues,
 )
@@ -167,6 +168,42 @@ def test_detect_issue_type_chore():
 
 def test_detect_issue_type_default_feat():
     assert detect_issue_type("no type section here") == "feat"
+
+
+# --- Pure function tests: strip_type_prefix ---
+
+
+def test_strip_type_prefix_removes_fix():
+    assert strip_type_prefix("fix: remove dead config") == "remove dead config"
+
+
+def test_strip_type_prefix_removes_feat():
+    assert strip_type_prefix("feat: add new feature") == "add new feature"
+
+
+def test_strip_type_prefix_removes_refactor():
+    assert strip_type_prefix("refactor: simplify logic") == "simplify logic"
+
+
+def test_strip_type_prefix_removes_docs():
+    assert strip_type_prefix("docs: update readme") == "update readme"
+
+
+def test_strip_type_prefix_removes_chore():
+    assert strip_type_prefix("chore: bump deps") == "bump deps"
+
+
+def test_strip_type_prefix_case_insensitive():
+    assert strip_type_prefix("Fix: remove dead config") == "remove dead config"
+    assert strip_type_prefix("FIX: remove dead config") == "remove dead config"
+
+
+def test_strip_type_prefix_no_prefix_unchanged():
+    assert strip_type_prefix("add verbose flag") == "add verbose flag"
+
+
+def test_strip_type_prefix_empty_string():
+    assert strip_type_prefix("") == ""
 
 
 # --- Pure function tests: extract_linked_issue_number ---
@@ -688,6 +725,63 @@ def test_create_pr_uses_cfg_repo(monkeypatch):
     pr_calls = [c for c in calls if c[:3] == ["gh", "pr", "create"]]
     cmd = pr_calls[0]
     assert cmd[cmd.index("--repo") + 1] == "my-org/my-repo"
+
+
+def test_create_pr_no_duplicate_type_prefix(monkeypatch):
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    create_pr(
+        {"number": 227, "title": "fix: remove dead config field", "body": "## Type\nbug"},
+        "autoloop/227-x",
+    )
+
+    pr_calls = [c for c in calls if c[:3] == ["gh", "pr", "create"]]
+    title = pr_calls[0][pr_calls[0].index("--title") + 1]
+    assert title == "fix: remove dead config field (#227)"
+
+
+def test_create_pr_no_duplicate_type_prefix_case_insensitive(monkeypatch):
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    create_pr(
+        {"number": 42, "title": "Fix: something broken", "body": "## Type\nbug"},
+        "autoloop/42-x",
+    )
+
+    pr_calls = [c for c in calls if c[:3] == ["gh", "pr", "create"]]
+    title = pr_calls[0][pr_calls[0].index("--title") + 1]
+    assert title == "fix: something broken (#42)"
+
+
+def test_create_pr_adds_prefix_when_title_has_none(monkeypatch):
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    create_pr(
+        {"number": 42, "title": "add verbose flag", "body": "## Type\nfeature"},
+        "autoloop/42-x",
+    )
+
+    pr_calls = [c for c in calls if c[:3] == ["gh", "pr", "create"]]
+    title = pr_calls[0][pr_calls[0].index("--title") + 1]
+    assert title == "feat: add verbose flag (#42)"
 
 
 # --- Config-driven tests: implement uses cfg.impl_model / cfg.impl_timeout ---
