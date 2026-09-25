@@ -941,8 +941,46 @@ def review_implementation(
     )
     result = run_claude(prompt, cfg.impl_model, cfg.impl_timeout)
     if not result.success:
-        return False, "Review call failed (timeout or non-zero exit)."
-    return parse_review_response(result.text)
+        approved, feedback = False, "Review call failed (timeout or non-zero exit)."
+    else:
+        approved, feedback = parse_review_response(result.text)
+
+    if cfg.jev_mode == "shadow":
+        from autoloop.jev import should_auto_merge
+        from autoloop.jev_log import log_decision
+
+        issue_text = f"Title: {issue.get('title', '')}\n\nBody:\n{issue.get('body') or ''}"
+        jev_result = None
+        jev_error = None
+        t0 = time.monotonic()
+        try:
+            jev_result = should_auto_merge(
+                issue_text,
+                diff,
+                api_key_env=cfg.jev_api_key_env,
+                timeout=cfg.jev_timeout_seconds,
+                gate_low=cfg.jev_gate_low,
+                gate_high=cfg.jev_gate_high,
+            )
+        except Exception as exc:
+            jev_error = str(exc)
+        latency = time.monotonic() - t0
+
+        record = {
+            "point": "auto-merge",
+            "jev_call": jev_result if jev_error is None else {"error": jev_error},
+            "incumbent_call": {"approved": approved, "feedback": feedback},
+            "outcome": "incumbent",
+            "ttft": round(latency, 3),
+            "cost": 0.0,
+            "timestamp": datetime.now(UTC).isoformat(),
+        }
+        try:
+            log_decision(record)
+        except Exception:
+            logging.exception("Failed to log Jev auto-merge decision")
+
+    return approved, feedback
 
 
 def ensure_clean_main():

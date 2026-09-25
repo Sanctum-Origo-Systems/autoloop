@@ -3548,3 +3548,206 @@ def test_auto_fix_loop_logs_per_round(monkeypatch, capsys):
     output = capsys.readouterr().out
     assert "Auto-fix round 1/3" in output
     assert "Auto-fix round 2/3" in output
+
+
+# --- review_implementation Jev shadow-mode wiring ---
+
+
+def _review_cfg(**overrides):
+    """Build config for review_implementation Jev tests."""
+    defaults = {
+        "impl_model": "haiku",
+        "impl_timeout": 600,
+        "repo": "acme-corp/widget",
+        "jev_mode": "off",
+        "jev_api_key_env": "AI_GATEWAY_API_KEY",
+        "jev_timeout_seconds": 10,
+        "jev_gate_low": 0.15,
+        "jev_gate_high": 0.85,
+    }
+    defaults.update(overrides)
+    return AutoLoopConfig(**defaults)
+
+
+def _stub_subprocess_for_review(monkeypatch):
+    """Stub subprocess.run to return plausible git/claude output for review tests."""
+
+    def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list) and cmd[0] == "git":
+            return type("R", (), {"returncode": 0, "stdout": "src/foo.py\n", "stderr": ""})()
+        return type(
+            "R",
+            (),
+            {
+                "returncode": 0,
+                "stdout": json.dumps(
+                    {"result": '{"approved": true, "issues": [], "summary": "ok"}'}
+                ),
+                "stderr": "",
+            },
+        )()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+
+def test_review_implementation_jev_off_no_jev_call(monkeypatch, tmp_path):
+    """With jev_mode='off', no Jev calls are made and no log is written."""
+    monkeypatch.setattr(implement_issue, "cfg", _review_cfg(jev_mode="off"))
+    monkeypatch.chdir(tmp_path)
+    _stub_subprocess_for_review(monkeypatch)
+
+    jev_called = []
+    monkeypatch.setattr(
+        "autoloop.jev.should_auto_merge",
+        lambda *a, **kw: jev_called.append(True) or {},
+    )
+
+    approved, feedback = review_implementation(
+        {"number": 1, "title": "T", "body": "body"}, "branch"
+    )
+
+    assert approved is True
+    assert len(jev_called) == 0
+    log_file = tmp_path / "autoloop" / "jev_decisions.jsonl"
+    assert not log_file.exists()
+
+
+def test_review_implementation_jev_shadow_logs_decision(monkeypatch, tmp_path):
+    """With jev_mode='shadow', Jev is called and the decision is logged."""
+    monkeypatch.setattr(implement_issue, "cfg", _review_cfg(jev_mode="shadow"))
+    monkeypatch.chdir(tmp_path)
+    _stub_subprocess_for_review(monkeypatch)
+
+    jev_response = {"meets_acceptance_criteria": 0.9}
+    monkeypatch.setattr("autoloop.jev.should_auto_merge", lambda *a, **kw: jev_response)
+
+    approved, feedback = review_implementation(
+        {"number": 5, "title": "Test", "body": "body"}, "branch"
+    )
+
+    assert approved is True
+
+    log_file = tmp_path / "autoloop" / "jev_decisions.jsonl"
+    assert log_file.exists()
+    entry = json.loads(log_file.read_text().strip())
+    assert entry["point"] == "auto-merge"
+    assert entry["jev_call"] == jev_response
+    assert entry["incumbent_call"]["approved"] is True
+    assert entry["outcome"] == "incumbent"
+    assert "timestamp" in entry
+    assert "ttft" in entry
+    assert "cost" in entry
+
+
+def test_review_implementation_jev_shadow_returns_incumbent(monkeypatch, tmp_path):
+    """With jev_mode='shadow', the return value matches the incumbent-only result."""
+    monkeypatch.setattr(implement_issue, "cfg", _review_cfg(jev_mode="shadow"))
+    monkeypatch.chdir(tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list) and cmd[0] == "git":
+            return type("R", (), {"returncode": 0, "stdout": "src/foo.py\n", "stderr": ""})()
+        return type(
+            "R",
+            (),
+            {
+                "returncode": 0,
+                "stdout": json.dumps(
+                    {
+                        "result": json.dumps(
+                            {
+                                "approved": False,
+                                "issues": ["missing test"],
+                                "summary": "nope",
+                            }
+                        )
+                    }
+                ),
+                "stderr": "",
+            },
+        )()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    jev_response = {"meets_acceptance_criteria": 0.95}
+    monkeypatch.setattr("autoloop.jev.should_auto_merge", lambda *a, **kw: jev_response)
+
+    approved, feedback = review_implementation(
+        {"number": 7, "title": "Test", "body": "body"}, "branch"
+    )
+
+    assert approved is False
+    assert "missing test" in feedback
+
+    log_file = tmp_path / "autoloop" / "jev_decisions.jsonl"
+    entry = json.loads(log_file.read_text().strip())
+    assert entry["incumbent_call"]["approved"] is False
+    assert entry["jev_call"] == jev_response
+
+
+def test_review_implementation_jev_shadow_failure_continues(monkeypatch, tmp_path):
+    """Jev failure in shadow mode does not affect the review result."""
+    monkeypatch.setattr(implement_issue, "cfg", _review_cfg(jev_mode="shadow"))
+    monkeypatch.chdir(tmp_path)
+    _stub_subprocess_for_review(monkeypatch)
+
+    def exploding_jev(*a, **kw):
+        raise TimeoutError("jev endpoint timed out")
+
+    monkeypatch.setattr("autoloop.jev.should_auto_merge", exploding_jev)
+
+    approved, feedback = review_implementation(
+        {"number": 9, "title": "Test", "body": "body"}, "branch"
+    )
+
+    assert approved is True
+
+    log_file = tmp_path / "autoloop" / "jev_decisions.jsonl"
+    entry = json.loads(log_file.read_text().strip())
+    assert entry["point"] == "auto-merge"
+    assert entry["jev_call"]["error"] == "jev endpoint timed out"
+    assert entry["incumbent_call"]["approved"] is True
+
+
+def test_review_implementation_jev_shadow_passes_diff_and_issue(monkeypatch, tmp_path):
+    """Jev receives the issue text and diff from the review context."""
+    monkeypatch.setattr(implement_issue, "cfg", _review_cfg(jev_mode="shadow"))
+    monkeypatch.chdir(tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list) and cmd[0] == "git":
+            if "diff" in cmd and "--name-only" not in cmd:
+                return type(
+                    "R",
+                    (),
+                    {"returncode": 0, "stdout": "+added line\n", "stderr": ""},
+                )()
+            return type("R", (), {"returncode": 0, "stdout": "src/foo.py\n", "stderr": ""})()
+        return type(
+            "R",
+            (),
+            {
+                "returncode": 0,
+                "stdout": json.dumps(
+                    {"result": '{"approved": true, "issues": [], "summary": "ok"}'}
+                ),
+                "stderr": "",
+            },
+        )()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    captured = {}
+
+    def capture_jev(issue_text, diff, **kw):
+        captured["issue_text"] = issue_text
+        captured["diff"] = diff
+        return {"meets_acceptance_criteria": 0.8}
+
+    monkeypatch.setattr("autoloop.jev.should_auto_merge", capture_jev)
+
+    review_implementation({"number": 11, "title": "Add widget", "body": "Widget spec"}, "branch")
+
+    assert "Add widget" in captured["issue_text"]
+    assert "Widget spec" in captured["issue_text"]
+    assert "+added line" in captured["diff"]
