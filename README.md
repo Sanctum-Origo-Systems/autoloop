@@ -521,7 +521,6 @@ Jev is an off-by-default probabilistic decision model that can shadow autoloop's
 | `timeout_seconds` | `10` | HTTP timeout for Jev evaluation requests |
 | `gate_low` | `0.15` | Lower bound of the uncertain-probability band (probabilities inside the band trigger fallback) |
 | `gate_high` | `0.85` | Upper bound of the uncertain-probability band |
-| `endpoint` | `""` | Custom endpoint override (leave empty to use the default Vercel AI Gateway) |
 
 `mode` can also be set via the `JEV_MODE` environment variable.
 

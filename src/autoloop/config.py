@@ -58,7 +58,6 @@ class AutoLoopConfig:
     jev_timeout_seconds: int = 10
     jev_gate_low: float = 0.15
     jev_gate_high: float = 0.85
-    jev_endpoint: str = ""
     project_dir: str = ""
 
 
@@ -152,9 +151,6 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
         config.jev_gate_low = float(jev["gate_low"])
     if "gate_high" in jev:
         config.jev_gate_high = float(jev["gate_high"])
-    if "endpoint" in jev:
-        config.jev_endpoint = str(jev["endpoint"])
-
     if "protected_paths" in data:
         config.protected_paths = list(data["protected_paths"])
 
