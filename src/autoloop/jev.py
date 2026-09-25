@@ -102,11 +102,21 @@ def triage(
     gate_high: float = GATE_HIGH,
 ) -> dict:
     questions = {
-        "well_formed": {"type": "boolean"},
-        "needs_decomposition": {"type": "boolean"},
-        "route": {
-            "type": "choice",
-            "choices": ["implement", "decompose", "reject"],
+        "well_formed": {
+            "type": "boolean",
+            "instructions": "Is this GitHub issue well-formed enough to implement?",
+            "criteria": {
+                "true": "Has a clear problem statement, expected behavior, and enough context to act on",
+                "false": "Vague, missing context, missing expected behavior, or not actionable",
+            },
+        },
+        "needs_decomposition": {
+            "type": "boolean",
+            "instructions": "Does this issue need to be decomposed into smaller sub-issues?",
+            "criteria": {
+                "true": "Touches multiple files or concerns, estimated at more than 3 story points",
+                "false": "Small and focused enough to implement in a single PR",
+            },
         },
     }
 
@@ -129,13 +139,9 @@ def triage(
     if nd_p is not None and _in_middle_band(nd_p, gate_low, gate_high):
         return _fallback(f"needs_decomposition probability {nd_p} in uncertain band")
 
-    route_entry = result.answers.get("route", {})
-    distribution = route_entry.get("distribution", {})
-
     return {
         "well_formed": wf_p,
         "needs_decomposition": nd_p,
-        "route": distribution,
     }
 
 
@@ -150,7 +156,14 @@ def should_auto_merge(
     gate_high: float = GATE_HIGH,
 ) -> dict:
     questions = {
-        "meets_acceptance_criteria": {"type": "boolean"},
+        "meets_acceptance_criteria": {
+            "type": "boolean",
+            "instructions": "Does this PR meet the acceptance criteria from the issue and is it safe to merge?",
+            "criteria": {
+                "true": "All acceptance criteria addressed, tests pass, no regressions, code is clean",
+                "false": "Missing acceptance criteria, test failures, regressions, or code quality issues",
+            },
+        },
     }
 
     state = f"Issue:\n{issue_text}\n\nDiff:\n{diff}"
