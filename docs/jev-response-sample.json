@@ -1,0 +1,37 @@
+{
+  "answers": {
+    "well_formed": {
+      "type": "boolean",
+      "probability": 0.5
+    }
+  },
+  "rounding": {
+    "probabilityDecimals": 2,
+    "scoreDecimals": 2
+  },
+  "usage": {
+    "inputTokens": 337,
+    "outputTokens": 23
+  },
+  "warnings": [],
+  "providerMetadata": {
+    "typesafe": {
+      "confidence": {}
+    },
+    "gateway": {
+      "routing": {
+        "originalModelId": "typesafe-ai/jev",
+        "resolvedProvider": "digitalocean",
+        "fallbacksAvailable": ["typesafe-ai"],
+        "canonicalSlug": "typesafe-ai/jev",
+        "finalProvider": "typesafe-ai",
+        "modelAttemptCount": 1
+      },
+      "cost": "0",
+      "marketCost": "0.000014154",
+      "surchargeCost": "0",
+      "gatewayCost": "0",
+      "generationId": "gen_01M3BN3ACG1QA8BPPB1W2FP42P"
+    }
+  }
+}
