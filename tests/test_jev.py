@@ -8,11 +8,15 @@ import pytest
 
 from autoloop.jev import (
     DEFAULT_API_KEY_ENV,
+    GATE_HIGH,
+    GATE_LOW,
     JEV_ENDPOINT,
     JevError,
     JevResult,
     evaluate,
     probability,
+    should_auto_merge,
+    triage,
 )
 
 SAMPLE_RESPONSE = {
@@ -70,6 +74,27 @@ def _mock_urlopen(monkeypatch, response_bytes):
 
     monkeypatch.setattr("autoloop.jev.urllib.request.urlopen", fake_urlopen)
     return calls
+
+
+def _mock_evaluate(monkeypatch, answers):
+    """Patch evaluate() to return a JevResult with the given answers."""
+
+    def fake_evaluate(state, questions, *, api_key=None, api_key_env=None, timeout=10.0):
+        return JevResult(answers=answers, latency_seconds=0.05, raw={"answers": answers})
+
+    monkeypatch.setattr("autoloop.jev.evaluate", fake_evaluate)
+
+
+def _mock_evaluate_raises(monkeypatch, error_msg="boom"):
+    """Patch evaluate() to raise JevError."""
+
+    def fake_evaluate(state, questions, **kwargs):
+        raise JevError(error_msg)
+
+    monkeypatch.setattr("autoloop.jev.evaluate", fake_evaluate)
+
+
+# --- evaluate() tests (from #211) ---
 
 
 class TestEvaluateSuccess:
@@ -204,3 +229,339 @@ class TestProbability:
             raw={},
         )
         assert probability(result, "missing_key") is None
+
+
+# --- triage() tests ---
+
+
+class TestTriageQuestionSchema:
+    def test_builds_correct_questions(self, monkeypatch):
+        captured = {}
+
+        def fake_evaluate(state, questions, **kwargs):
+            captured["questions"] = questions
+            return JevResult(
+                answers={
+                    "well_formed": {"type": "boolean", "probability": 0.91},
+                    "needs_decomposition": {"type": "boolean", "probability": 0.08},
+                    "route": {
+                        "type": "choice",
+                        "distribution": {
+                            "implement": 0.87,
+                            "decompose": 0.10,
+                            "reject": 0.03,
+                        },
+                    },
+                },
+                latency_seconds=0.05,
+                raw={},
+            )
+
+        monkeypatch.setattr("autoloop.jev.evaluate", fake_evaluate)
+
+        triage("some issue text")
+
+        assert captured["questions"] == {
+            "well_formed": {"type": "boolean"},
+            "needs_decomposition": {"type": "boolean"},
+            "route": {
+                "type": "choice",
+                "choices": ["implement", "decompose", "reject"],
+            },
+        }
+
+    def test_passes_issue_text_as_state(self, monkeypatch):
+        captured = {}
+
+        def fake_evaluate(state, questions, **kwargs):
+            captured["state"] = state
+            return JevResult(
+                answers={
+                    "well_formed": {"type": "boolean", "probability": 0.91},
+                    "needs_decomposition": {"type": "boolean", "probability": 0.08},
+                    "route": {"type": "choice", "distribution": {}},
+                },
+                latency_seconds=0.05,
+                raw={},
+            )
+
+        monkeypatch.setattr("autoloop.jev.evaluate", fake_evaluate)
+
+        triage("fix the login bug")
+
+        assert captured["state"] == "fix the login bug"
+
+
+class TestTriageSuccess:
+    def test_returns_structured_dict(self, monkeypatch):
+        _mock_evaluate(
+            monkeypatch,
+            {
+                "well_formed": {"type": "boolean", "probability": 0.91},
+                "needs_decomposition": {"type": "boolean", "probability": 0.08},
+                "route": {
+                    "type": "choice",
+                    "distribution": {"implement": 0.87, "decompose": 0.10, "reject": 0.03},
+                },
+            },
+        )
+
+        result = triage("some issue text")
+
+        assert result == {
+            "well_formed": 0.91,
+            "needs_decomposition": 0.08,
+            "route": {"implement": 0.87, "decompose": 0.10, "reject": 0.03},
+        }
+        assert "fallback" not in result
+
+    def test_high_confidence_reject(self, monkeypatch):
+        _mock_evaluate(
+            monkeypatch,
+            {
+                "well_formed": {"type": "boolean", "probability": 0.12},
+                "needs_decomposition": {"type": "boolean", "probability": 0.05},
+                "route": {
+                    "type": "choice",
+                    "distribution": {"implement": 0.05, "decompose": 0.05, "reject": 0.90},
+                },
+            },
+        )
+
+        result = triage("vague issue")
+
+        assert result["well_formed"] == 0.12
+        assert result["route"]["reject"] == 0.90
+
+
+class TestTriageFallback:
+    def test_jev_error_returns_fallback(self, monkeypatch):
+        _mock_evaluate_raises(monkeypatch, "HTTP 500: Internal Server Error")
+
+        result = triage("some issue")
+
+        assert result["fallback"] is True
+        assert "HTTP 500" in result["reason"]
+
+    def test_well_formed_in_middle_band(self, monkeypatch):
+        _mock_evaluate(
+            monkeypatch,
+            {
+                "well_formed": {"type": "boolean", "probability": 0.50},
+                "needs_decomposition": {"type": "boolean", "probability": 0.08},
+                "route": {"type": "choice", "distribution": {}},
+            },
+        )
+
+        result = triage("ambiguous issue")
+
+        assert result["fallback"] is True
+        assert "well_formed" in result["reason"]
+        assert "uncertain" in result["reason"]
+
+    def test_needs_decomposition_in_middle_band(self, monkeypatch):
+        _mock_evaluate(
+            monkeypatch,
+            {
+                "well_formed": {"type": "boolean", "probability": 0.90},
+                "needs_decomposition": {"type": "boolean", "probability": 0.50},
+                "route": {"type": "choice", "distribution": {}},
+            },
+        )
+
+        result = triage("issue text")
+
+        assert result["fallback"] is True
+        assert "needs_decomposition" in result["reason"]
+
+    def test_boundary_values_not_in_middle_band(self, monkeypatch):
+        _mock_evaluate(
+            monkeypatch,
+            {
+                "well_formed": {"type": "boolean", "probability": GATE_LOW},
+                "needs_decomposition": {"type": "boolean", "probability": GATE_HIGH},
+                "route": {"type": "choice", "distribution": {"implement": 1.0}},
+            },
+        )
+
+        result = triage("issue text")
+
+        assert "fallback" not in result
+        assert result["well_formed"] == GATE_LOW
+        assert result["needs_decomposition"] == GATE_HIGH
+
+    def test_custom_gate_thresholds(self, monkeypatch):
+        _mock_evaluate(
+            monkeypatch,
+            {
+                "well_formed": {"type": "boolean", "probability": 0.45},
+                "needs_decomposition": {"type": "boolean", "probability": 0.10},
+                "route": {"type": "choice", "distribution": {}},
+            },
+        )
+
+        result_default = triage("issue text")
+        assert result_default["fallback"] is True
+
+        result_custom = triage("issue text", gate_low=0.20, gate_high=0.40)
+        assert "fallback" not in result_custom
+        assert result_custom["well_formed"] == 0.45
+
+    def test_no_exception_propagates(self, monkeypatch):
+        _mock_evaluate_raises(monkeypatch, "connection refused")
+
+        result = triage("issue text")
+
+        assert isinstance(result, dict)
+        assert result["fallback"] is True
+
+
+# --- should_auto_merge() tests ---
+
+
+class TestShouldAutoMergeQuestionSchema:
+    def test_builds_correct_questions(self, monkeypatch):
+        captured = {}
+
+        def fake_evaluate(state, questions, **kwargs):
+            captured["questions"] = questions
+            captured["state"] = state
+            return JevResult(
+                answers={
+                    "meets_acceptance_criteria": {"type": "boolean", "probability": 0.95},
+                },
+                latency_seconds=0.05,
+                raw={},
+            )
+
+        monkeypatch.setattr("autoloop.jev.evaluate", fake_evaluate)
+
+        should_auto_merge("issue body", "diff content")
+
+        assert captured["questions"] == {
+            "meets_acceptance_criteria": {"type": "boolean"},
+        }
+
+    def test_state_includes_issue_and_diff(self, monkeypatch):
+        captured = {}
+
+        def fake_evaluate(state, questions, **kwargs):
+            captured["state"] = state
+            return JevResult(
+                answers={
+                    "meets_acceptance_criteria": {"type": "boolean", "probability": 0.95},
+                },
+                latency_seconds=0.05,
+                raw={},
+            )
+
+        monkeypatch.setattr("autoloop.jev.evaluate", fake_evaluate)
+
+        should_auto_merge("fix login", "+def login():")
+
+        assert "fix login" in captured["state"]
+        assert "+def login():" in captured["state"]
+
+
+class TestShouldAutoMergeSuccess:
+    def test_returns_structured_dict(self, monkeypatch):
+        _mock_evaluate(
+            monkeypatch,
+            {
+                "meets_acceptance_criteria": {"type": "boolean", "probability": 0.95},
+            },
+        )
+
+        result = should_auto_merge("issue", "diff")
+
+        assert result == {"meets_acceptance_criteria": 0.95}
+        assert "fallback" not in result
+
+    def test_includes_readiness_score_when_present(self, monkeypatch):
+        _mock_evaluate(
+            monkeypatch,
+            {
+                "meets_acceptance_criteria": {
+                    "type": "boolean",
+                    "probability": 0.88,
+                    "score": 0.92,
+                },
+            },
+        )
+
+        result = should_auto_merge("issue", "diff")
+
+        assert result["meets_acceptance_criteria"] == 0.88
+        assert result["readiness_score"] == 0.92
+
+    def test_omits_readiness_score_when_absent(self, monkeypatch):
+        _mock_evaluate(
+            monkeypatch,
+            {
+                "meets_acceptance_criteria": {"type": "boolean", "probability": 0.88},
+            },
+        )
+
+        result = should_auto_merge("issue", "diff")
+
+        assert "readiness_score" not in result
+
+
+class TestShouldAutoMergeFallback:
+    def test_jev_error_returns_fallback(self, monkeypatch):
+        _mock_evaluate_raises(monkeypatch, "Request failed: timed out")
+
+        result = should_auto_merge("issue", "diff")
+
+        assert result["fallback"] is True
+        assert "timed out" in result["reason"]
+
+    def test_middle_band_returns_fallback(self, monkeypatch):
+        _mock_evaluate(
+            monkeypatch,
+            {
+                "meets_acceptance_criteria": {"type": "boolean", "probability": 0.50},
+            },
+        )
+
+        result = should_auto_merge("issue", "diff")
+
+        assert result["fallback"] is True
+        assert "meets_acceptance_criteria" in result["reason"]
+        assert "uncertain" in result["reason"]
+
+    def test_boundary_values_not_in_middle_band(self, monkeypatch):
+        _mock_evaluate(
+            monkeypatch,
+            {
+                "meets_acceptance_criteria": {"type": "boolean", "probability": GATE_HIGH},
+            },
+        )
+
+        result = should_auto_merge("issue", "diff")
+
+        assert "fallback" not in result
+        assert result["meets_acceptance_criteria"] == GATE_HIGH
+
+    def test_custom_gate_thresholds(self, monkeypatch):
+        _mock_evaluate(
+            monkeypatch,
+            {
+                "meets_acceptance_criteria": {"type": "boolean", "probability": 0.50},
+            },
+        )
+
+        result_default = should_auto_merge("issue", "diff")
+        assert result_default["fallback"] is True
+
+        result_custom = should_auto_merge("issue", "diff", gate_low=0.10, gate_high=0.30)
+        assert "fallback" not in result_custom
+        assert result_custom["meets_acceptance_criteria"] == 0.50
+
+    def test_no_exception_propagates(self, monkeypatch):
+        _mock_evaluate_raises(monkeypatch, "connection refused")
+
+        result = should_auto_merge("issue", "diff")
+
+        assert isinstance(result, dict)
+        assert result["fallback"] is True
