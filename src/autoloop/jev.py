@@ -12,6 +12,9 @@ from dataclasses import dataclass
 JEV_ENDPOINT = "https://ai-gateway.vercel.sh/v4/ai/evaluation-model"
 DEFAULT_API_KEY_ENV = "AI_GATEWAY_API_KEY"
 
+GATE_LOW = 0.35
+GATE_HIGH = 0.65
+
 
 class JevError(Exception):
     """Raised when a Jev evaluation request fails."""
@@ -79,3 +82,99 @@ def probability(result: JevResult, question: str) -> float | None:
     if entry is None:
         return None
     return entry.get("probability")
+
+
+def _in_middle_band(p: float, gate_low: float = GATE_LOW, gate_high: float = GATE_HIGH) -> bool:
+    return gate_low < p < gate_high
+
+
+def _fallback(reason: str) -> dict:
+    return {"fallback": True, "reason": reason}
+
+
+def triage(
+    issue_text: str,
+    *,
+    api_key: str | None = None,
+    api_key_env: str = DEFAULT_API_KEY_ENV,
+    timeout: float = 10.0,
+    gate_low: float = GATE_LOW,
+    gate_high: float = GATE_HIGH,
+) -> dict:
+    questions = {
+        "well_formed": {"type": "boolean"},
+        "needs_decomposition": {"type": "boolean"},
+        "route": {
+            "type": "choice",
+            "choices": ["implement", "decompose", "reject"],
+        },
+    }
+
+    try:
+        result = evaluate(
+            issue_text,
+            questions,
+            api_key=api_key,
+            api_key_env=api_key_env,
+            timeout=timeout,
+        )
+    except JevError as exc:
+        return _fallback(str(exc))
+
+    wf_p = probability(result, "well_formed")
+    nd_p = probability(result, "needs_decomposition")
+
+    if wf_p is not None and _in_middle_band(wf_p, gate_low, gate_high):
+        return _fallback(f"well_formed probability {wf_p} in uncertain band")
+    if nd_p is not None and _in_middle_band(nd_p, gate_low, gate_high):
+        return _fallback(f"needs_decomposition probability {nd_p} in uncertain band")
+
+    route_entry = result.answers.get("route", {})
+    distribution = route_entry.get("distribution", {})
+
+    return {
+        "well_formed": wf_p,
+        "needs_decomposition": nd_p,
+        "route": distribution,
+    }
+
+
+def should_auto_merge(
+    issue_text: str,
+    diff: str,
+    *,
+    api_key: str | None = None,
+    api_key_env: str = DEFAULT_API_KEY_ENV,
+    timeout: float = 10.0,
+    gate_low: float = GATE_LOW,
+    gate_high: float = GATE_HIGH,
+) -> dict:
+    questions = {
+        "meets_acceptance_criteria": {"type": "boolean"},
+    }
+
+    state = f"Issue:\n{issue_text}\n\nDiff:\n{diff}"
+
+    try:
+        result = evaluate(
+            state,
+            questions,
+            api_key=api_key,
+            api_key_env=api_key_env,
+            timeout=timeout,
+        )
+    except JevError as exc:
+        return _fallback(str(exc))
+
+    mac_p = probability(result, "meets_acceptance_criteria")
+
+    if mac_p is not None and _in_middle_band(mac_p, gate_low, gate_high):
+        return _fallback(f"meets_acceptance_criteria probability {mac_p} in uncertain band")
+
+    out: dict = {"meets_acceptance_criteria": mac_p}
+
+    readiness = result.answers.get("meets_acceptance_criteria", {}).get("score")
+    if readiness is not None:
+        out["readiness_score"] = readiness
+
+    return out
