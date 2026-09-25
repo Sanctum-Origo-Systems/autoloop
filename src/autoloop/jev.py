@@ -10,7 +10,7 @@ import urllib.request
 from dataclasses import dataclass
 
 JEV_ENDPOINT = "https://ai-gateway.vercel.sh/v4/ai/evaluation-model"
-DEFAULT_API_KEY_ENV = "JEV_API_KEY"
+DEFAULT_API_KEY_ENV = "AI_GATEWAY_API_KEY"
 
 
 class JevError(Exception):
@@ -37,13 +37,17 @@ def evaluate(
     if not api_key:
         raise JevError(f"No API key: pass api_key or set ${api_key_env}")
 
-    body = json.dumps({"state": state, "questions": questions}).encode()
+    body = json.dumps({"state": state, "questions": questions, "providerOptions": {}}).encode()
     req = urllib.request.Request(
         JEV_ENDPOINT,
         data=body,
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
+            "ai-model-id": "typesafe-ai/jev",
+            "ai-gateway-auth-method": "api-key",
+            "ai-gateway-protocol-version": "0.0.1",
+            "ai-evaluation-model-specification-version": "4",
         },
         method="POST",
     )

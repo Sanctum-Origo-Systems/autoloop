@@ -106,8 +106,16 @@ class TestEvaluateSuccess:
         assert req.get_header("Content-type") == "application/json"
         assert req.get_header("Authorization") == "Bearer test-key"
         assert req.get_method() == "POST"
+        assert req.get_header("Ai-model-id") == "typesafe-ai/jev"
+        assert req.get_header("Ai-gateway-auth-method") == "api-key"
+        assert req.get_header("Ai-gateway-protocol-version") == "0.0.1"
+        assert req.get_header("Ai-evaluation-model-specification-version") == "4"
         body = json.loads(req.data)
-        assert body == {"state": "my state", "questions": questions}
+        assert body == {
+            "state": "my state",
+            "questions": questions,
+            "providerOptions": {},
+        }
 
     def test_timeout_passed_to_urlopen(self, monkeypatch):
         monkeypatch.setenv(DEFAULT_API_KEY_ENV, "test-key")
