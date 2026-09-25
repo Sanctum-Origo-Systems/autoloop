@@ -111,6 +111,14 @@ def detect_issue_type(body: str) -> str:
     return "feat"
 
 
+_TYPE_PREFIX_RE = re.compile(r"^(fix|feat|refactor|docs|chore):\s*", re.IGNORECASE)
+
+
+def strip_type_prefix(title: str) -> str:
+    """Remove a leading conventional-commit type prefix from a title."""
+    return _TYPE_PREFIX_RE.sub("", title)
+
+
 def build_pr_body(
     issue: dict,
     attempts: int = 0,
@@ -1014,7 +1022,8 @@ def create_pr(
 ) -> int | None:
     """Create PR with conventional format. Returns PR number or None."""
     issue_type = detect_issue_type(issue.get("body", ""))
-    title = f"{issue_type}: {issue['title'][:60]} (#{issue['number']})"
+    clean_title = strip_type_prefix(issue["title"])[:60]
+    title = f"{issue_type}: {clean_title} (#{issue['number']})"
     body = build_pr_body(
         issue,
         attempts=attempts,
