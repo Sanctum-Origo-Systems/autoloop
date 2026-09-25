@@ -465,7 +465,6 @@ def test_jev_defaults():
     assert config.jev_timeout_seconds == 10
     assert config.jev_gate_low == 0.15
     assert config.jev_gate_high == 0.85
-    assert config.jev_endpoint == ""
 
 
 def test_jev_absent_block_yields_defaults(tmp_path, monkeypatch):
@@ -479,7 +478,6 @@ def test_jev_absent_block_yields_defaults(tmp_path, monkeypatch):
     assert config.jev_timeout_seconds == 10
     assert config.jev_gate_low == 0.15
     assert config.jev_gate_high == 0.85
-    assert config.jev_endpoint == ""
 
 
 def test_jev_full_block_from_toml(tmp_path, monkeypatch):
@@ -495,7 +493,6 @@ def test_jev_full_block_from_toml(tmp_path, monkeypatch):
         "timeout_seconds = 30\n"
         "gate_low = 0.20\n"
         "gate_high = 0.90\n"
-        'endpoint = "https://api.example.com/jev"\n'
     )
     config = load_config(toml_path)
     assert config.jev_mode == "shadow"
@@ -503,16 +500,22 @@ def test_jev_full_block_from_toml(tmp_path, monkeypatch):
     assert config.jev_timeout_seconds == 30
     assert config.jev_gate_low == 0.20
     assert config.jev_gate_high == 0.90
-    assert config.jev_endpoint == "https://api.example.com/jev"
 
 
-def test_jev_endpoint_loaded_from_toml(tmp_path, monkeypatch):
-    for var in ("AUTOLOOP_TRIAGE_MODEL", "AUTOLOOP_IMPL_MODEL", "AUTOLOOP_TIMEOUT"):
+def test_jev_endpoint_field_removed():
+    """jev_endpoint was a dead config field (never read by jev.py); it must not exist."""
+    config = AutoLoopConfig()
+    assert not hasattr(config, "jev_endpoint")
+
+
+def test_jev_endpoint_toml_key_ignored(tmp_path, monkeypatch):
+    """A [jev] endpoint key in TOML must not set any attribute on the config."""
+    for var in ("AUTOLOOP_TRIAGE_MODEL", "AUTOLOOP_IMPL_MODEL", "AUTOLOOP_TIMEOUT", "JEV_MODE"):
         monkeypatch.delenv(var, raising=False)
     toml_path = tmp_path / "autoloop.toml"
-    toml_path.write_text('[jev]\nendpoint = "https://api.example.com/jev"\n')
+    toml_path.write_text('[jev]\nendpoint = "https://example.com/jev"\n')
     config = load_config(toml_path)
-    assert config.jev_endpoint == "https://api.example.com/jev"
+    assert not hasattr(config, "jev_endpoint")
 
 
 def test_jev_mode_gate_valid(tmp_path, monkeypatch):
