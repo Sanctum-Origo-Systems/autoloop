@@ -29,12 +29,13 @@ def evaluate(
     questions: dict,
     *,
     api_key: str | None = None,
+    api_key_env: str = DEFAULT_API_KEY_ENV,
     timeout: float = 10.0,
 ) -> JevResult:
     if api_key is None:
-        api_key = os.environ.get(DEFAULT_API_KEY_ENV)
+        api_key = os.environ.get(api_key_env)
     if not api_key:
-        raise JevError(f"No API key: pass api_key or set ${DEFAULT_API_KEY_ENV}")
+        raise JevError(f"No API key: pass api_key or set ${api_key_env}")
 
     body = json.dumps({"state": state, "questions": questions}).encode()
     req = urllib.request.Request(
@@ -56,12 +57,12 @@ def evaluate(
     except urllib.error.URLError as exc:
         raise JevError(f"Request failed: {exc.reason}") from exc
 
-    latency = time.monotonic() - t0
-
     try:
         data = json.loads(raw_bytes)
     except (json.JSONDecodeError, ValueError) as exc:
         raise JevError("Malformed response body") from exc
+
+    latency = time.monotonic() - t0
 
     if "answers" not in data:
         raise JevError("Response missing 'answers' key")

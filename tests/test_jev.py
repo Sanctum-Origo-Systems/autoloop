@@ -117,6 +117,24 @@ class TestEvaluateSuccess:
 
         assert calls[0][1] == 5.0
 
+    def test_api_key_env_override(self, monkeypatch):
+        monkeypatch.delenv(DEFAULT_API_KEY_ENV, raising=False)
+        monkeypatch.setenv("CUSTOM_JEV_KEY", "custom-key")
+        calls = _mock_urlopen(monkeypatch, json.dumps(SAMPLE_RESPONSE).encode())
+
+        result = evaluate("state", {"q": {}}, api_key_env="CUSTOM_JEV_KEY")
+
+        assert result.answers == SAMPLE_RESPONSE["answers"]
+        req = calls[0][0]
+        assert req.get_header("Authorization") == "Bearer custom-key"
+
+    def test_api_key_env_missing_raises(self, monkeypatch):
+        monkeypatch.delenv(DEFAULT_API_KEY_ENV, raising=False)
+        monkeypatch.delenv("CUSTOM_JEV_KEY", raising=False)
+
+        with pytest.raises(JevError, match="CUSTOM_JEV_KEY"):
+            evaluate("state", {}, api_key_env="CUSTOM_JEV_KEY")
+
 
 class TestEvaluateErrors:
     def test_http_error(self, monkeypatch):
