@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.7.1
+
+- feat: shadow-mode Jev wiring into auto-merge decision (#220)
+- docs: experimental Jev decision model section in README (#221)
+- fix: remove dead `jev_endpoint` config field (#227)
+- fix: duplicate type prefix in PR titles (`fix: fix:`) (#228)
+
 ## v0.7.0
 
 - feat: Jev decision model integration — experimental, off by default (#210-#214)
