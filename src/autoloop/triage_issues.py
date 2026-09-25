@@ -503,25 +503,17 @@ def log_run(
 
 
 def jev_triage(issue: dict, cfg: AutoLoopConfig) -> dict:
-    """Call the Jev triage helper and return its response."""
-    import urllib.request
+    """Call the Jev triage helper via the jev module and return its response."""
+    from autoloop.jev import triage
 
-    payload = json.dumps(
-        {
-            "issue_number": issue["number"],
-            "title": issue.get("title", ""),
-            "body": issue.get("body") or "",
-        }
-    ).encode()
-
-    req = urllib.request.Request(
-        cfg.jev_endpoint,
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
+    issue_text = f"Title: {issue.get('title', '')}\n\nBody:\n{issue.get('body') or ''}"
+    return triage(
+        issue_text,
+        api_key_env=cfg.jev_api_key_env,
+        timeout=cfg.jev_timeout_seconds,
+        gate_low=cfg.jev_gate_low,
+        gate_high=cfg.jev_gate_high,
     )
-    with urllib.request.urlopen(req, timeout=cfg.triage_timeout) as resp:
-        return json.loads(resp.read())
 
 
 def log_jev_decision(

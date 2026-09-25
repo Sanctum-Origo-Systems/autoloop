@@ -4,6 +4,8 @@ import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from autoloop.claude_runner import ClaudeResult
 from autoloop.triage_issues import (
     SUB_ISSUE_PROMPT,
@@ -50,7 +52,10 @@ def _cfg(**overrides):
             "needs-human",
         ],
         "jev_mode": "off",
-        "jev_endpoint": "",
+        "jev_api_key_env": "AI_GATEWAY_API_KEY",
+        "jev_timeout_seconds": 10,
+        "jev_gate_low": 0.15,
+        "jev_gate_high": 0.85,
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -2991,58 +2996,50 @@ def test_log_jev_decision_appends_multiple(tmp_path, monkeypatch):
     assert json.loads(lines[1])["issue"] == 2
 
 
-def test_jev_triage_calls_endpoint(monkeypatch):
-    cfg = _cfg(jev_endpoint="https://jev.test/api", triage_timeout=30)
+def test_jev_triage_calls_jev_module(monkeypatch):
+    cfg = _cfg(
+        jev_api_key_env="AI_GATEWAY_API_KEY",
+        jev_timeout_seconds=10,
+        jev_gate_low=0.15,
+        jev_gate_high=0.85,
+    )
     issue = {"number": 10, "title": "Test issue", "body": "Issue body"}
 
     captured = {}
 
-    class FakeResponse:
-        def read(self):
-            return json.dumps(
-                {"answers": {"well_formed": {"type": "boolean", "probability": 0.9}}}
-            ).encode()
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            pass
-
-    def fake_urlopen(req, timeout=None):
-        captured["url"] = req.full_url
-        captured["method"] = req.method
+    def fake_triage(issue_text, *, api_key_env, timeout, gate_low, gate_high):
+        captured["issue_text"] = issue_text
+        captured["api_key_env"] = api_key_env
         captured["timeout"] = timeout
-        captured["data"] = json.loads(req.data)
-        return FakeResponse()
+        return {"well_formed": 0.9, "needs_decomposition": 0.1, "route": {}}
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("autoloop.jev.triage", fake_triage)
 
     result = jev_triage(issue, cfg)
 
-    assert captured["url"] == "https://jev.test/api"
-    assert captured["method"] == "POST"
-    assert captured["timeout"] == 30
-    assert captured["data"]["issue_number"] == 10
-    assert captured["data"]["title"] == "Test issue"
-    assert captured["data"]["body"] == "Issue body"
-    assert result["answers"]["well_formed"]["probability"] == 0.9
+    assert "Test issue" in captured["issue_text"]
+    assert "Issue body" in captured["issue_text"]
+    assert captured["api_key_env"] == "AI_GATEWAY_API_KEY"
+    assert result["well_formed"] == 0.9
 
 
-def test_jev_triage_raises_on_network_error(monkeypatch):
-    import urllib.error
+def test_jev_triage_propagates_error(monkeypatch):
+    from autoloop.jev import JevError
 
-    cfg = _cfg(jev_endpoint="https://jev.test/api", triage_timeout=30)
+    cfg = _cfg(
+        jev_api_key_env="AI_GATEWAY_API_KEY",
+        jev_timeout_seconds=10,
+        jev_gate_low=0.15,
+        jev_gate_high=0.85,
+    )
     issue = {"number": 10, "title": "Test", "body": "body"}
 
-    def fake_urlopen(req, timeout=None):
-        raise urllib.error.URLError("connection refused")
+    def fake_triage(issue_text, **kwargs):
+        raise JevError("connection refused")
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("autoloop.jev.triage", fake_triage)
 
-    import pytest
-
-    with pytest.raises(urllib.error.URLError):
+    with pytest.raises(JevError):
         jev_triage(issue, cfg)
 
 
@@ -3102,7 +3099,7 @@ def test_triage_issue_jev_off_no_jev_call(monkeypatch, tmp_path):
 
 def test_triage_issue_jev_shadow_logs_decision(monkeypatch, tmp_path):
     """With jev_mode='shadow', Jev is called and the decision is logged."""
-    cfg = _cfg(jev_mode="shadow", jev_endpoint="https://jev.test/api")
+    cfg = _cfg(jev_mode="shadow", jev_api_key_env="AI_GATEWAY_API_KEY")
 
     def fake_load():
         return "src/module.py\n", "# CLAUDE.md"
@@ -3154,7 +3151,7 @@ def test_triage_issue_jev_shadow_logs_decision(monkeypatch, tmp_path):
 
 def test_triage_issue_jev_shadow_uses_incumbent_verdict(monkeypatch, tmp_path):
     """With jev_mode='shadow', the pipeline outcome is determined by the incumbent only."""
-    cfg = _cfg(jev_mode="shadow", jev_endpoint="https://jev.test/api")
+    cfg = _cfg(jev_mode="shadow", jev_api_key_env="AI_GATEWAY_API_KEY")
 
     def fake_load():
         return "src/module.py\n", "# CLAUDE.md"
@@ -3199,7 +3196,7 @@ def test_triage_issue_jev_shadow_uses_incumbent_verdict(monkeypatch, tmp_path):
 
 def test_triage_issue_jev_shadow_failure_continues(monkeypatch, tmp_path):
     """Jev failure in shadow mode does not affect the triage pipeline."""
-    cfg = _cfg(jev_mode="shadow", jev_endpoint="https://jev.test/api")
+    cfg = _cfg(jev_mode="shadow", jev_api_key_env="AI_GATEWAY_API_KEY")
 
     def fake_load():
         return "src/module.py\n", "# CLAUDE.md"
