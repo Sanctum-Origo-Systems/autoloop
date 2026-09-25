@@ -244,14 +244,6 @@ class TestTriageQuestionSchema:
                 answers={
                     "well_formed": {"type": "boolean", "probability": 0.91},
                     "needs_decomposition": {"type": "boolean", "probability": 0.08},
-                    "route": {
-                        "type": "choice",
-                        "distribution": {
-                            "implement": 0.87,
-                            "decompose": 0.10,
-                            "reject": 0.03,
-                        },
-                    },
                 },
                 latency_seconds=0.05,
                 raw={},
@@ -261,14 +253,13 @@ class TestTriageQuestionSchema:
 
         triage("some issue text")
 
-        assert captured["questions"] == {
-            "well_formed": {"type": "boolean"},
-            "needs_decomposition": {"type": "boolean"},
-            "route": {
-                "type": "choice",
-                "choices": ["implement", "decompose", "reject"],
-            },
-        }
+        assert "well_formed" in captured["questions"]
+        assert captured["questions"]["well_formed"]["type"] == "boolean"
+        assert "instructions" in captured["questions"]["well_formed"]
+        assert "criteria" in captured["questions"]["well_formed"]
+        assert "needs_decomposition" in captured["questions"]
+        assert captured["questions"]["needs_decomposition"]["type"] == "boolean"
+        assert "instructions" in captured["questions"]["needs_decomposition"]
 
     def test_passes_issue_text_as_state(self, monkeypatch):
         captured = {}
@@ -279,7 +270,6 @@ class TestTriageQuestionSchema:
                 answers={
                     "well_formed": {"type": "boolean", "probability": 0.91},
                     "needs_decomposition": {"type": "boolean", "probability": 0.08},
-                    "route": {"type": "choice", "distribution": {}},
                 },
                 latency_seconds=0.05,
                 raw={},
@@ -299,10 +289,6 @@ class TestTriageSuccess:
             {
                 "well_formed": {"type": "boolean", "probability": 0.91},
                 "needs_decomposition": {"type": "boolean", "probability": 0.08},
-                "route": {
-                    "type": "choice",
-                    "distribution": {"implement": 0.87, "decompose": 0.10, "reject": 0.03},
-                },
             },
         )
 
@@ -311,7 +297,6 @@ class TestTriageSuccess:
         assert result == {
             "well_formed": 0.91,
             "needs_decomposition": 0.08,
-            "route": {"implement": 0.87, "decompose": 0.10, "reject": 0.03},
         }
         assert "fallback" not in result
 
@@ -321,17 +306,12 @@ class TestTriageSuccess:
             {
                 "well_formed": {"type": "boolean", "probability": 0.12},
                 "needs_decomposition": {"type": "boolean", "probability": 0.05},
-                "route": {
-                    "type": "choice",
-                    "distribution": {"implement": 0.05, "decompose": 0.05, "reject": 0.90},
-                },
             },
         )
 
         result = triage("vague issue")
 
         assert result["well_formed"] == 0.12
-        assert result["route"]["reject"] == 0.90
 
 
 class TestTriageFallback:
@@ -349,7 +329,6 @@ class TestTriageFallback:
             {
                 "well_formed": {"type": "boolean", "probability": 0.50},
                 "needs_decomposition": {"type": "boolean", "probability": 0.08},
-                "route": {"type": "choice", "distribution": {}},
             },
         )
 
@@ -365,7 +344,6 @@ class TestTriageFallback:
             {
                 "well_formed": {"type": "boolean", "probability": 0.90},
                 "needs_decomposition": {"type": "boolean", "probability": 0.50},
-                "route": {"type": "choice", "distribution": {}},
             },
         )
 
@@ -380,7 +358,6 @@ class TestTriageFallback:
             {
                 "well_formed": {"type": "boolean", "probability": GATE_LOW},
                 "needs_decomposition": {"type": "boolean", "probability": GATE_HIGH},
-                "route": {"type": "choice", "distribution": {"implement": 1.0}},
             },
         )
 
@@ -396,7 +373,6 @@ class TestTriageFallback:
             {
                 "well_formed": {"type": "boolean", "probability": 0.45},
                 "needs_decomposition": {"type": "boolean", "probability": 0.10},
-                "route": {"type": "choice", "distribution": {}},
             },
         )
 
@@ -438,9 +414,10 @@ class TestShouldAutoMergeQuestionSchema:
 
         should_auto_merge("issue body", "diff content")
 
-        assert captured["questions"] == {
-            "meets_acceptance_criteria": {"type": "boolean"},
-        }
+        assert "meets_acceptance_criteria" in captured["questions"]
+        assert captured["questions"]["meets_acceptance_criteria"]["type"] == "boolean"
+        assert "instructions" in captured["questions"]["meets_acceptance_criteria"]
+        assert "criteria" in captured["questions"]["meets_acceptance_criteria"]
 
     def test_state_includes_issue_and_diff(self, monkeypatch):
         captured = {}
