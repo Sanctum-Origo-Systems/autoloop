@@ -506,6 +506,27 @@ auto_merge_edit_rate_threshold = 0.05
 auto_merge_promotion_level = "repo"
 ```
 
+## Experimental: Decision Model (Jev)
+
+Jev is an off-by-default probabilistic decision model that can shadow autoloop's triage and auto-merge decisions. In shadow mode it evaluates every decision point alongside the existing pipeline, logs its observations to `autoloop/jev_decisions.jsonl` (via the `jev_log` module), and changes nothing — no behavior is affected unless you explicitly opt in. If you don't use Jev, skip this section entirely.
+
+**Prerequisites:** A [Vercel AI Gateway](https://vercel.com/kb/guide/typesafe-jev-and-ai-sdk) API key with the Jev evaluation model enabled. Set the key in the environment variable named by `api_key_env` (default: `AI_GATEWAY_API_KEY`).
+
+**Config** — add a `[jev]` block to `autoloop.toml`:
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `mode` | `"off"` | `"off"` — disabled (default). `"shadow"` — evaluate and log, no behavior change. `"gate"` — reserved for future use, not yet implemented |
+| `api_key_env` | `"AI_GATEWAY_API_KEY"` | Environment variable holding the Vercel AI Gateway API key |
+| `timeout_seconds` | `10` | HTTP timeout for Jev evaluation requests |
+| `gate_low` | `0.15` | Lower bound of the uncertain-probability band (probabilities inside the band trigger fallback) |
+| `gate_high` | `0.85` | Upper bound of the uncertain-probability band |
+| `endpoint` | `""` | Custom endpoint override (leave empty to use the default Vercel AI Gateway) |
+
+`mode` can also be set via the `JEV_MODE` environment variable.
+
+**Links:** [Typesafe Jev and AI SDK — Vercel](https://vercel.com/kb/guide/typesafe-jev-and-ai-sdk)
+
 ## Commands
 
 | Command | Description |
