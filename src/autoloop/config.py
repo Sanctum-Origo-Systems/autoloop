@@ -99,6 +99,7 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
         "lint_command",
         "timer_prefix",
         "test_pattern",
+        "jev_api_key_env",
     ):
         if key in data:
             setattr(config, key, data[key])
