@@ -502,6 +502,22 @@ def test_jev_full_block_from_toml(tmp_path, monkeypatch):
     assert config.jev_gate_high == 0.90
 
 
+def test_jev_endpoint_field_removed():
+    """jev_endpoint was a dead config field (never read by jev.py); it must not exist."""
+    config = AutoLoopConfig()
+    assert not hasattr(config, "jev_endpoint")
+
+
+def test_jev_endpoint_toml_key_ignored(tmp_path, monkeypatch):
+    """A [jev] endpoint key in TOML must not set any attribute on the config."""
+    for var in ("AUTOLOOP_TRIAGE_MODEL", "AUTOLOOP_IMPL_MODEL", "AUTOLOOP_TIMEOUT", "JEV_MODE"):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('[jev]\nendpoint = "https://example.com/jev"\n')
+    config = load_config(toml_path)
+    assert not hasattr(config, "jev_endpoint")
+
+
 def test_jev_mode_gate_valid(tmp_path, monkeypatch):
     for var in ("AUTOLOOP_TRIAGE_MODEL", "AUTOLOOP_IMPL_MODEL", "AUTOLOOP_TIMEOUT", "JEV_MODE"):
         monkeypatch.delenv(var, raising=False)
