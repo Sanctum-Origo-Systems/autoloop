@@ -54,6 +54,11 @@ class AutoLoopConfig:
     auto_merge_success_threshold: float = 0.90
     auto_merge_volume_floor: int = 10
     auto_merge_promotion_level: str = "module"
+    jev_mode: str = "off"
+    jev_api_key_env: str = "AI_GATEWAY_API_KEY"
+    jev_timeout_seconds: int = 10
+    jev_gate_low: float = 0.15
+    jev_gate_high: float = 0.85
     project_dir: str = ""
 
 
@@ -132,6 +137,21 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
             )
         config.auto_merge_promotion_level = level
 
+    jev = data.get("jev", {})
+    if "mode" in jev:
+        mode = str(jev["mode"])
+        if mode not in ("off", "shadow", "gate"):
+            raise ValueError(f"jev.mode must be 'off', 'shadow', or 'gate', got '{mode}'")
+        config.jev_mode = mode
+    if "api_key_env" in jev:
+        config.jev_api_key_env = str(jev["api_key_env"])
+    if "timeout_seconds" in jev:
+        config.jev_timeout_seconds = int(jev["timeout_seconds"])
+    if "gate_low" in jev:
+        config.jev_gate_low = float(jev["gate_low"])
+    if "gate_high" in jev:
+        config.jev_gate_high = float(jev["gate_high"])
+
     if "protected_paths" in data:
         config.protected_paths = list(data["protected_paths"])
 
@@ -147,6 +167,11 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
     for env_var, (attr, coerce) in _ENV_MAP.items():
         if value := os.environ.get(env_var):
             setattr(config, attr, coerce(value))
+
+    if jev_mode_env := os.environ.get("JEV_MODE"):
+        if jev_mode_env not in ("off", "shadow", "gate"):
+            raise ValueError(f"jev.mode must be 'off', 'shadow', or 'gate', got '{jev_mode_env}'")
+        config.jev_mode = jev_mode_env
 
     if not config.review_model:
         config.review_model = config.impl_model

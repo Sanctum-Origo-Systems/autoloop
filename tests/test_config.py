@@ -453,3 +453,107 @@ def test_auto_merge_promotion_level_invalid(tmp_path, monkeypatch):
     toml_path.write_text('auto_merge_promotion_level = "invalid"\n')
     with pytest.raises(ValueError, match="must be 'repo' or 'module'"):
         load_config(toml_path)
+
+
+# --- jev config block ---
+
+
+def test_jev_defaults():
+    config = AutoLoopConfig()
+    assert config.jev_mode == "off"
+    assert config.jev_api_key_env == "AI_GATEWAY_API_KEY"
+    assert config.jev_timeout_seconds == 10
+    assert config.jev_gate_low == 0.15
+    assert config.jev_gate_high == 0.85
+
+
+def test_jev_absent_block_yields_defaults(tmp_path, monkeypatch):
+    for var in ("AUTOLOOP_TRIAGE_MODEL", "AUTOLOOP_IMPL_MODEL", "AUTOLOOP_TIMEOUT", "JEV_MODE"):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('repo = "acme-corp/widget"\n')
+    config = load_config(toml_path)
+    assert config.jev_mode == "off"
+    assert config.jev_api_key_env == "AI_GATEWAY_API_KEY"
+    assert config.jev_timeout_seconds == 10
+    assert config.jev_gate_low == 0.15
+    assert config.jev_gate_high == 0.85
+
+
+def test_jev_full_block_from_toml(tmp_path, monkeypatch):
+    for var in ("AUTOLOOP_TRIAGE_MODEL", "AUTOLOOP_IMPL_MODEL", "AUTOLOOP_TIMEOUT", "JEV_MODE"):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text(
+        'repo = "acme-corp/widget"\n'
+        "\n"
+        "[jev]\n"
+        'mode = "shadow"\n'
+        'api_key_env = "CUSTOM_KEY"\n'
+        "timeout_seconds = 30\n"
+        "gate_low = 0.20\n"
+        "gate_high = 0.90\n"
+    )
+    config = load_config(toml_path)
+    assert config.jev_mode == "shadow"
+    assert config.jev_api_key_env == "CUSTOM_KEY"
+    assert config.jev_timeout_seconds == 30
+    assert config.jev_gate_low == 0.20
+    assert config.jev_gate_high == 0.90
+
+
+def test_jev_mode_gate_valid(tmp_path, monkeypatch):
+    for var in ("AUTOLOOP_TRIAGE_MODEL", "AUTOLOOP_IMPL_MODEL", "AUTOLOOP_TIMEOUT", "JEV_MODE"):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('[jev]\nmode = "gate"\n')
+    config = load_config(toml_path)
+    assert config.jev_mode == "gate"
+
+
+def test_jev_mode_invalid_raises(tmp_path, monkeypatch):
+    for var in ("AUTOLOOP_TRIAGE_MODEL", "AUTOLOOP_IMPL_MODEL", "AUTOLOOP_TIMEOUT", "JEV_MODE"):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('[jev]\nmode = "auto"\n')
+    with pytest.raises(ValueError, match="got 'auto'"):
+        load_config(toml_path)
+
+
+def test_jev_mode_invalid_lists_accepted(tmp_path, monkeypatch):
+    for var in ("AUTOLOOP_TRIAGE_MODEL", "AUTOLOOP_IMPL_MODEL", "AUTOLOOP_TIMEOUT", "JEV_MODE"):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('[jev]\nmode = "bogus"\n')
+    with pytest.raises(ValueError, match="'off', 'shadow', or 'gate'"):
+        load_config(toml_path)
+
+
+def test_jev_mode_env_var_override(tmp_path, monkeypatch):
+    for var in ("AUTOLOOP_TRIAGE_MODEL", "AUTOLOOP_IMPL_MODEL", "AUTOLOOP_TIMEOUT"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("JEV_MODE", "gate")
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('[jev]\nmode = "off"\n')
+    config = load_config(toml_path)
+    assert config.jev_mode == "gate"
+
+
+def test_jev_mode_env_var_override_no_toml_block(tmp_path, monkeypatch):
+    for var in ("AUTOLOOP_TRIAGE_MODEL", "AUTOLOOP_IMPL_MODEL", "AUTOLOOP_TIMEOUT"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("JEV_MODE", "shadow")
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('repo = "acme-corp/widget"\n')
+    config = load_config(toml_path)
+    assert config.jev_mode == "shadow"
+
+
+def test_jev_mode_env_var_invalid_raises(tmp_path, monkeypatch):
+    for var in ("AUTOLOOP_TRIAGE_MODEL", "AUTOLOOP_IMPL_MODEL", "AUTOLOOP_TIMEOUT"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("JEV_MODE", "auto")
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('repo = "acme-corp/widget"\n')
+    with pytest.raises(ValueError, match="got 'auto'"):
+        load_config(toml_path)
