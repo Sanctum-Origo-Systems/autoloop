@@ -37,9 +37,17 @@ def test_log_decision_creates_file(tmp_path, monkeypatch):
     log_file = tmp_path / "autoloop" / "jev_decisions.jsonl"
     assert not log_file.exists()
 
-    log_decision({"point": "x", "jev_call": "A", "incumbent_call": "B",
-                  "outcome": "tie", "ttft": 0.5, "cost": 0.001,
-                  "timestamp": "2026-01-01T00:00:00Z"})
+    log_decision(
+        {
+            "point": "x",
+            "jev_call": "A",
+            "incumbent_call": "B",
+            "outcome": "tie",
+            "ttft": 0.5,
+            "cost": 0.001,
+            "timestamp": "2026-01-01T00:00:00Z",
+        }
+    )
     assert log_file.exists()
     lines = log_file.read_text().strip().splitlines()
     assert len(lines) == 1
@@ -47,12 +55,24 @@ def test_log_decision_creates_file(tmp_path, monkeypatch):
 
 def test_log_decision_appends_without_overwrite(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    record1 = {"point": "p1", "jev_call": "A", "incumbent_call": "B",
-               "outcome": "jev_wins", "ttft": 1.0, "cost": 0.002,
-               "timestamp": "2026-01-01T00:00:00Z"}
-    record2 = {"point": "p2", "jev_call": "C", "incumbent_call": "D",
-               "outcome": "incumbent_wins", "ttft": 2.0, "cost": 0.004,
-               "timestamp": "2026-01-02T00:00:00Z"}
+    record1 = {
+        "point": "p1",
+        "jev_call": "A",
+        "incumbent_call": "B",
+        "outcome": "jev_wins",
+        "ttft": 1.0,
+        "cost": 0.002,
+        "timestamp": "2026-01-01T00:00:00Z",
+    }
+    record2 = {
+        "point": "p2",
+        "jev_call": "C",
+        "incumbent_call": "D",
+        "outcome": "incumbent_wins",
+        "ttft": 2.0,
+        "cost": 0.004,
+        "timestamp": "2026-01-02T00:00:00Z",
+    }
 
     log_decision(record1)
     log_decision(record2)
