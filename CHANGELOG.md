@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.7.0
+
+- feat: Jev decision model integration — experimental, off by default (#210-#214)
+- `jev.py` client: stdlib HTTP POST to Vercel AI Gateway with full wire contract
+- `triage()` and `should_auto_merge()` typed decision helpers with fallback semantics
+- Shadow-mode triage wiring: Jev runs alongside incumbent, logs comparison, acts on nothing
+- `log_decision()` shadow logger writing to `autoloop/jev_decisions.jsonl`
+- `[jev]` config block in `autoloop.toml` with `mode`, `api_key_env`, `timeout_seconds`, `gate_low`, `gate_high`
+- Fix: Jev question schemas require `instructions` and `criteria` fields (#222)
+
 ## v0.6.1
 
 - Fix: `total_implementations` excludes closed-without-merge PRs (#206)
