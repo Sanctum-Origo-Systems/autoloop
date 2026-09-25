@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from autoloop.jev_log import log_decision
 
 
@@ -60,3 +62,12 @@ def test_log_decision_appends_without_overwrite(tmp_path, monkeypatch):
     assert len(lines) == 2
     assert json.loads(lines[0])["point"] == "p1"
     assert json.loads(lines[1])["point"] == "p2"
+
+
+def test_log_decision_rejects_missing_keys(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    incomplete = {"point": "p1", "jev_call": "A"}
+    with pytest.raises(ValueError, match="Missing required keys"):
+        log_decision(incomplete)
+    log_file = tmp_path / "autoloop" / "jev_decisions.jsonl"
+    assert not log_file.exists()
