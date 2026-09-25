@@ -36,7 +36,6 @@ class AutoLoopConfig:
     test_pattern: str = "tests/*.py"
     timer_prefix: str = "autoloop"
     protected_paths: list[str] = field(default_factory=lambda: ["autoloop/"])
-    review_model: str = ""
     test_gate_skip_types: list[str] = field(default_factory=lambda: ["refactor", "docs", "chore"])
     triage_labels: list[str] = field(
         default_factory=lambda: [
@@ -59,6 +58,7 @@ class AutoLoopConfig:
     jev_timeout_seconds: int = 10
     jev_gate_low: float = 0.15
     jev_gate_high: float = 0.85
+    jev_endpoint: str = ""
     project_dir: str = ""
 
 
@@ -152,6 +152,8 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
         config.jev_gate_low = float(jev["gate_low"])
     if "gate_high" in jev:
         config.jev_gate_high = float(jev["gate_high"])
+    if "endpoint" in jev:
+        config.jev_endpoint = str(jev["endpoint"])
 
     if "protected_paths" in data:
         config.protected_paths = list(data["protected_paths"])

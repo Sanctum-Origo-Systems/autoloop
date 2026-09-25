@@ -499,6 +499,43 @@ def log_run(
         f.write(json.dumps(entry) + "\n")
 
 
+# --- Jev shadow-mode helpers ---
+
+
+def jev_triage(issue: dict, cfg: AutoLoopConfig) -> dict:
+    """Call the Jev triage helper via the jev module and return its response."""
+    from autoloop.jev import triage
+
+    issue_text = f"Title: {issue.get('title', '')}\n\nBody:\n{issue.get('body') or ''}"
+    return triage(
+        issue_text,
+        api_key_env=cfg.jev_api_key_env,
+        timeout=cfg.jev_timeout_seconds,
+        gate_low=cfg.jev_gate_low,
+        gate_high=cfg.jev_gate_high,
+    )
+
+
+def log_jev_decision(
+    issue_number: int,
+    incumbent: dict,
+    jev: dict | None,
+    error: str | None = None,
+) -> None:
+    """Append a shadow-mode comparison record to jev_decisions.jsonl."""
+    entry = {
+        "timestamp": datetime.now(UTC).isoformat(),
+        "issue": issue_number,
+        "incumbent": incumbent,
+        "jev": jev,
+        "error": error,
+    }
+    log_file = Path.cwd() / "autoloop" / "jev_decisions.jsonl"
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_file, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
 # --- Subprocess functions ---
 
 
@@ -1003,6 +1040,15 @@ def triage_issue(
     results: list[ClaudeResult] = []
     verdict, eval_result = evaluate_issue(issue, cfg)
     results.append(eval_result)
+
+    if cfg.jev_mode == "shadow":
+        jev_result = None
+        jev_error = None
+        try:
+            jev_result = jev_triage(issue, cfg)
+        except Exception as exc:
+            jev_error = str(exc)
+        log_jev_decision(issue["number"], verdict, jev_result, jev_error)
 
     if verdict["verdict"] == "rejected":
         if auto_fix:
