@@ -294,6 +294,44 @@ def test_test_gate_skip_types_custom_from_toml(tmp_path, monkeypatch):
     assert config.test_gate_skip_types == ["docs"]
 
 
+def test_test_integrity_guard_default():
+    config = AutoLoopConfig()
+    assert config.test_integrity_guard is False
+
+
+def test_test_integrity_guard_from_toml(tmp_path, monkeypatch):
+    for var in (
+        "AUTOLOOP_TRIAGE_MODEL",
+        "AUTOLOOP_IMPL_MODEL",
+        "AUTOLOOP_TIMEOUT",
+        "AUTOLOOP_REVIEWER",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text("test_integrity_guard = true\n")
+    config = load_config(toml_path)
+    assert config.test_integrity_guard is True
+
+
+def test_test_integrity_patterns_default():
+    config = AutoLoopConfig()
+    assert config.test_integrity_patterns == ["pytest.mark.skip", "pytest.mark.xfail"]
+
+
+def test_test_integrity_patterns_from_toml(tmp_path, monkeypatch):
+    for var in (
+        "AUTOLOOP_TRIAGE_MODEL",
+        "AUTOLOOP_IMPL_MODEL",
+        "AUTOLOOP_TIMEOUT",
+        "AUTOLOOP_REVIEWER",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('test_integrity_patterns = ["unittest.skip"]\n')
+    config = load_config(toml_path)
+    assert config.test_integrity_patterns == ["unittest.skip"]
+
+
 def test_protected_paths_default():
     config = AutoLoopConfig()
     assert config.protected_paths == ["autoloop/"]

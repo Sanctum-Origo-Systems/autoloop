@@ -820,6 +820,66 @@ def mutation_gate(branch: str, issue_type: str) -> None:
         )
 
 
+def scan_test_integrity_violations(diff_text: str, patterns: list[str]) -> list[str]:
+    """Scan a unified diff of test files for patterns that weaken tests.
+
+    Returns a list of human-readable violation descriptions.
+    """
+    violations = []
+    for line in diff_text.splitlines():
+        if line.startswith("-") and not line.startswith("---"):
+            stripped = line[1:].strip()
+            if stripped.startswith("def test_"):
+                violations.append(f"Deleted test function: {stripped}")
+            elif stripped.startswith("class Test"):
+                violations.append(f"Deleted test class: {stripped}")
+            elif stripped.startswith("assert ") or stripped.startswith("assert("):
+                violations.append(f"Removed assertion: {stripped}")
+        elif line.startswith("+") and not line.startswith("+++"):
+            stripped = line[1:].strip()
+            for pattern in patterns:
+                if pattern in stripped:
+                    violations.append(f"Added weakening marker: {stripped}")
+                    break
+            if re.match(r"except\s*:", stripped) or re.match(r"except\s+Exception\s*:", stripped):
+                violations.append(f"Added bare exception handler: {stripped}")
+    return violations
+
+
+def check_test_integrity(branch: str) -> list[str]:
+    """Run the test-integrity guard on test file diffs.
+
+    Returns a list of violations, empty if the guard is disabled or no issues found.
+    """
+    if not cfg.test_integrity_guard:
+        return []
+
+    if not cfg.test_pattern:
+        return []
+
+    diff_files = subprocess.run(
+        ["git", "diff", "--name-only", f"main..{branch}"],
+        capture_output=True,
+        text=True,
+        cwd=Path.cwd(),
+    )
+    test_files = [
+        f
+        for f in diff_files.stdout.strip().split("\n")
+        if f and fnmatch.fnmatch(f, cfg.test_pattern)
+    ]
+    if not test_files:
+        return []
+
+    diff = subprocess.run(
+        ["git", "diff", f"main..{branch}", "--"] + test_files,
+        capture_output=True,
+        text=True,
+        cwd=Path.cwd(),
+    )
+    return scan_test_integrity_violations(diff.stdout, cfg.test_integrity_patterns)
+
+
 def verify_implementation(
     branch: str, issue_body: str = "", title: str = "", repo_dir: Path | None = None
 ) -> tuple[bool, str]:
@@ -1444,6 +1504,8 @@ def implement_single_issue(
             )
             return False
 
+        integrity_violations = check_test_integrity(branch)
+
         subprocess.run(["git", "push", "-u", "origin", branch], cwd=Path.cwd())
         pr_number = create_pr(
             issue,
@@ -1458,6 +1520,39 @@ def implement_single_issue(
         )
         label_in_review(issue["number"])
         print(f"  PR created for #{issue['number']}.")
+
+        if integrity_violations:
+            logging.warning(
+                "Test-integrity guard found %d violation(s) in #%s:\n%s",
+                len(integrity_violations),
+                issue["number"],
+                "\n".join(f"  - {v}" for v in integrity_violations),
+            )
+            subprocess.run(
+                [
+                    "gh",
+                    "issue",
+                    "edit",
+                    str(issue["number"]),
+                    "--repo",
+                    cfg.repo,
+                    "--add-label",
+                    "needs-human",
+                ],
+            )
+            if pr_number is not None:
+                subprocess.run(
+                    [
+                        "gh",
+                        "pr",
+                        "edit",
+                        str(pr_number),
+                        "--repo",
+                        cfg.repo,
+                        "--add-label",
+                        "needs-human",
+                    ],
+                )
 
         if auto_fix and pr_number is not None:
             run_auto_fix_loop(pr_number, issue, cfg)

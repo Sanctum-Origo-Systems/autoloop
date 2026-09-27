@@ -20,6 +20,7 @@ from autoloop.implement_issue import (
     build_changed_files_manifest,
     build_pr_body,
     build_timeout_comment,
+    check_test_integrity,
     cleanup_merged_labels,
     collect_verification_errors,
     create_branch,
@@ -50,6 +51,7 @@ from autoloop.implement_issue import (
     release_lock,
     review_implementation,
     run_auto_fix_loop,
+    scan_test_integrity_violations,
     select_top_issue,
     strip_type_prefix,
     truncate_spec,
@@ -3952,3 +3954,227 @@ def test_review_implementation_jev_shadow_passes_diff_and_issue(monkeypatch, tmp
     assert "Widget spec" in captured["issue_text"]
     assert "+added line" in captured["diff"]
     assert captured["mode"] == "shadow"
+
+
+# --- scan_test_integrity_violations tests ---
+
+
+def test_scan_detects_deleted_test_function():
+    diff = "-def test_something():\n-    assert True\n"
+    violations = scan_test_integrity_violations(diff, [])
+    assert any("Deleted test function" in v for v in violations)
+
+
+def test_scan_detects_deleted_test_class():
+    diff = "-class TestWidget:\n-    def test_create(self):\n"
+    violations = scan_test_integrity_violations(diff, [])
+    assert any("Deleted test class" in v for v in violations)
+
+
+def test_scan_detects_removed_assertion():
+    diff = "-    assert result == 42\n"
+    violations = scan_test_integrity_violations(diff, [])
+    assert any("Removed assertion" in v for v in violations)
+
+
+def test_scan_detects_removed_assertion_no_space():
+    diff = "-    assert(result == 42)\n"
+    violations = scan_test_integrity_violations(diff, [])
+    assert any("Removed assertion" in v for v in violations)
+
+
+def test_scan_detects_skip_marker():
+    diff = "+    @pytest.mark.skip(reason='broken')\n"
+    violations = scan_test_integrity_violations(diff, ["pytest.mark.skip", "pytest.mark.xfail"])
+    assert any("Added weakening marker" in v for v in violations)
+
+
+def test_scan_detects_xfail_marker():
+    diff = "+    @pytest.mark.xfail\n"
+    violations = scan_test_integrity_violations(diff, ["pytest.mark.skip", "pytest.mark.xfail"])
+    assert any("Added weakening marker" in v for v in violations)
+
+
+def test_scan_detects_bare_except():
+    diff = "+        except:\n"
+    violations = scan_test_integrity_violations(diff, [])
+    assert any("Added bare exception handler" in v for v in violations)
+
+
+def test_scan_detects_except_exception():
+    diff = "+        except Exception:\n"
+    violations = scan_test_integrity_violations(diff, [])
+    assert any("Added bare exception handler" in v for v in violations)
+
+
+def test_scan_clean_diff_no_violations():
+    diff = "+def test_new_feature():\n+    result = compute()\n+    assert result == 42\n"
+    violations = scan_test_integrity_violations(diff, ["pytest.mark.skip", "pytest.mark.xfail"])
+    assert violations == []
+
+
+def test_scan_ignores_diff_header_lines():
+    diff = "--- a/tests/test_foo.py\n+++ b/tests/test_foo.py\n+    assert True\n"
+    violations = scan_test_integrity_violations(diff, [])
+    assert violations == []
+
+
+def test_scan_custom_patterns():
+    diff = "+    @unittest.skip('reason')\n"
+    violations = scan_test_integrity_violations(diff, ["unittest.skip"])
+    assert any("Added weakening marker" in v for v in violations)
+
+
+def test_scan_multiple_violations():
+    diff = (
+        "-def test_old():\n-    assert old_result == 1\n+    @pytest.mark.skip\n+        except:\n"
+    )
+    violations = scan_test_integrity_violations(diff, ["pytest.mark.skip", "pytest.mark.xfail"])
+    assert len(violations) == 4
+
+
+# --- check_test_integrity tests ---
+
+
+def test_check_test_integrity_disabled_returns_empty(monkeypatch):
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(test_integrity_guard=False))
+    assert check_test_integrity("some-branch") == []
+
+
+def test_check_test_integrity_no_test_pattern_returns_empty(monkeypatch):
+    monkeypatch.setattr(
+        implement_issue, "cfg", _test_cfg(test_integrity_guard=True, test_pattern="")
+    )
+    assert check_test_integrity("some-branch") == []
+
+
+def test_check_test_integrity_no_test_files_changed_returns_empty(monkeypatch):
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(test_integrity_guard=True, test_pattern="tests/*.py"),
+    )
+
+    def fake_run(cmd, **kwargs):
+        if "--name-only" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "src/foo.py\n", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    assert check_test_integrity("branch") == []
+
+
+def test_check_test_integrity_returns_violations(monkeypatch):
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(
+            test_integrity_guard=True,
+            test_pattern="tests/*.py",
+            test_integrity_patterns=["pytest.mark.skip"],
+        ),
+    )
+
+    def fake_run(cmd, **kwargs):
+        if "--name-only" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "tests/test_foo.py\n", "stderr": ""})()
+        return type(
+            "R",
+            (),
+            {
+                "returncode": 0,
+                "stdout": "-def test_old():\n+    @pytest.mark.skip\n",
+                "stderr": "",
+            },
+        )()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    violations = check_test_integrity("branch")
+    assert len(violations) == 2
+
+
+# --- test_integrity_guard integration in implement_single_issue ---
+
+
+def test_implement_single_issue_integrity_guard_labels_on_violation(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(
+            test_integrity_guard=True,
+            test_pattern="tests/*.py",
+            test_integrity_patterns=["pytest.mark.skip"],
+        ),
+    )
+    monkeypatch.chdir(tmp_path)
+    gh_calls = []
+
+    def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list) and cmd[0] == "gh":
+            gh_calls.append(cmd)
+        if isinstance(cmd, list) and cmd[:3] == ["git", "rev-list", "--count"]:
+            return type("R", (), {"returncode": 0, "stdout": "1\n", "stderr": ""})()
+        if isinstance(cmd, str):
+            return type("R", (), {"returncode": 0, "stdout": "passed", "stderr": ""})()
+        if isinstance(cmd, list) and cmd[:3] == ["git", "diff", "--name-only"]:
+            return type("R", (), {"returncode": 0, "stdout": "tests/test_x.py\n", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        implement_issue, "implement", lambda issue, previous_errors=None: _claude_result()
+    )
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-feat")
+    monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: 99)
+    monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
+    monkeypatch.setattr(implement_issue, "review_implementation", lambda issue, branch: (True, ""))
+    monkeypatch.setattr(
+        implement_issue,
+        "check_test_integrity",
+        lambda branch: ["Deleted test function: def test_old():"],
+    )
+
+    result = implement_single_issue(_FAKE_ISSUE)
+    assert result is True
+
+    needs_human_calls = [c for c in gh_calls if "needs-human" in c and "--add-label" in c]
+    assert len(needs_human_calls) >= 1
+
+
+def test_implement_single_issue_integrity_guard_no_violation_no_label(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(test_integrity_guard=True, test_pattern="tests/*.py"),
+    )
+    monkeypatch.chdir(tmp_path)
+    gh_calls = []
+
+    def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list) and cmd[0] == "gh":
+            gh_calls.append(cmd)
+        if isinstance(cmd, list) and cmd[:3] == ["git", "rev-list", "--count"]:
+            return type("R", (), {"returncode": 0, "stdout": "1\n", "stderr": ""})()
+        if isinstance(cmd, str):
+            return type("R", (), {"returncode": 0, "stdout": "passed", "stderr": ""})()
+        if isinstance(cmd, list) and cmd[:3] == ["git", "diff", "--name-only"]:
+            return type("R", (), {"returncode": 0, "stdout": "tests/test_x.py\n", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        implement_issue, "implement", lambda issue, previous_errors=None: _claude_result()
+    )
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-feat")
+    monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: 99)
+    monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
+    monkeypatch.setattr(implement_issue, "review_implementation", lambda issue, branch: (True, ""))
+    monkeypatch.setattr(implement_issue, "check_test_integrity", lambda branch: [])
+
+    result = implement_single_issue(_FAKE_ISSUE)
+    assert result is True
+
+    needs_human_after_pr = [
+        c for c in gh_calls if "needs-human" in c and "--add-label" in c and "issue" in c[1]
+    ]
+    assert len(needs_human_after_pr) == 0
