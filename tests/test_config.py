@@ -602,11 +602,7 @@ def test_jev_no_warning_for_valid_keys(tmp_path, monkeypatch, capsys):
         monkeypatch.delenv(var, raising=False)
     toml_path = tmp_path / "autoloop.toml"
     toml_path.write_text(
-        'repo = "acme-corp/widget"\n'
-        "\n"
-        "[jev]\n"
-        'mode = "shadow"\n'
-        "timeout_seconds = 30\n"
+        'repo = "acme-corp/widget"\n\n[jev]\nmode = "shadow"\ntimeout_seconds = 30\n'
     )
     load_config(toml_path)
     captured = capsys.readouterr()
