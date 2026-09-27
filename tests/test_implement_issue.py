@@ -13,6 +13,8 @@ from autoloop.implement_issue import (
     REVIEW_PROMPT,
     SystemicError,
     _get_own_pid_chain,
+    _get_ppid_via_proc,
+    _get_ppid_via_ps,
     acquire_lock,
     build_branch_name,
     build_changed_files_manifest,
@@ -2661,7 +2663,7 @@ def test_get_own_pid_chain_returns_set_of_ints():
 
 
 def test_get_own_pid_chain_handles_missing_proc(monkeypatch, tmp_path):
-    """Falls back gracefully when /proc/<pid>/stat is unreadable."""
+    """Falls back to ps when /proc/<pid>/stat is unreadable."""
     original_read_text = Path.read_text
 
     def patched_read_text(self, *args, **kwargs):
@@ -2672,6 +2674,62 @@ def test_get_own_pid_chain_handles_missing_proc(monkeypatch, tmp_path):
     monkeypatch.setattr(Path, "read_text", patched_read_text)
     chain = _get_own_pid_chain()
     assert os.getpid() in chain
+    assert os.getppid() in chain
+
+
+def test_get_ppid_via_proc_returns_parent(monkeypatch):
+    """_get_ppid_via_proc returns a valid parent PID on Linux."""
+    if not Path("/proc").is_dir():
+        pid = os.getpid()
+        monkeypatch.setattr(
+            Path,
+            "read_text",
+            lambda self, *a, **kw: f"1 (test) S {os.getppid()} 1 1",
+        )
+        assert _get_ppid_via_proc(pid) == os.getppid()
+    else:
+        ppid = _get_ppid_via_proc(os.getpid())
+        assert ppid == os.getppid()
+
+
+def test_get_ppid_via_proc_returns_none_on_error():
+    """_get_ppid_via_proc returns None when /proc is unavailable."""
+    assert _get_ppid_via_proc(999999999) is None
+
+
+def test_get_ppid_via_ps_returns_parent():
+    """_get_ppid_via_ps returns the parent PID for the current process."""
+    ppid = _get_ppid_via_ps(os.getpid())
+    assert ppid == os.getppid()
+
+
+def test_get_ppid_via_ps_returns_none_for_missing_pid():
+    """_get_ppid_via_ps returns None for a nonexistent PID."""
+    assert _get_ppid_via_ps(999999999) is None
+
+
+def test_get_ppid_via_ps_returns_none_when_ps_missing(monkeypatch):
+    """_get_ppid_via_ps returns None when ps binary is not found."""
+    import subprocess as sp
+
+    original_run = sp.run
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "ps":
+            raise FileNotFoundError("ps not found")
+        return original_run(cmd, **kwargs)
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    assert _get_ppid_via_ps(os.getpid()) is None
+
+
+def test_get_own_pid_chain_uses_ps_when_no_proc(monkeypatch):
+    """Full chain via ps fallback when /proc directory doesn't exist."""
+    monkeypatch.setattr(Path, "is_dir", lambda self: False)
+    chain = _get_own_pid_chain()
+    assert os.getpid() in chain
+    assert os.getppid() in chain
+    assert len(chain) >= 2
 
 
 # --- session detection excludes own process tree ---
