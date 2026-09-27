@@ -9,6 +9,7 @@ import pytest
 from autoloop.claude_runner import ClaudeResult
 from autoloop.triage_issues import (
     SUB_ISSUE_PROMPT,
+    _extract_dependency_notes,
     _extract_files_from_body,
     _extract_keywords,
     _extract_parent_number,
@@ -3249,3 +3250,297 @@ def test_triage_issue_jev_shadow_failure_continues(monkeypatch, tmp_path):
     assert entry["jev"] is None
     assert "timed out" in entry["error"]
     assert entry["incumbent"]["verdict"] == "ready"
+
+
+# --- _extract_dependency_notes ---
+
+
+def test_extract_dependency_notes_with_section():
+    body = "## Summary\nDo stuff\n\n## Dependencies\nDepends on: #305\n\n## Context\nSome context"
+    assert _extract_dependency_notes(body) == "Depends on: #305"
+
+
+def test_extract_dependency_notes_multiple_deps():
+    body = "## Dependencies\nDepends on: #305, #306\nDepends on: #310\n\n## Context\nctx"
+    result = _extract_dependency_notes(body)
+    assert "Depends on: #305, #306" in result
+    assert "Depends on: #310" in result
+
+
+def test_extract_dependency_notes_at_end_of_body():
+    body = "## Summary\nStuff\n\n## Dependencies\nDepends on: #42"
+    assert _extract_dependency_notes(body) == "Depends on: #42"
+
+
+def test_extract_dependency_notes_no_section():
+    body = "## Summary\nJust a summary\n\n## Context\nSome context"
+    assert _extract_dependency_notes(body) == ""
+
+
+def test_extract_dependency_notes_empty():
+    assert _extract_dependency_notes("") == ""
+
+
+# --- create_sub_issues inherits blocked label ---
+
+
+def test_create_sub_issues_inherits_blocked_label(monkeypatch):
+    """Children inherit the parent's blocked label."""
+    cfg = _cfg(repo="acme/widgets")
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+
+    calls: list[list[str]] = []
+
+    class FakeResult:
+        returncode = 0
+        stdout = "https://github.com/acme/widgets/issues/99"
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return FakeResult()
+
+    result = {
+        "decomposition": [
+            {
+                "order": 1,
+                "title": "Step 1",
+                "points": 2,
+                "depends_on": [],
+                "files": ["src/a.py"],
+            },
+            {
+                "order": 2,
+                "title": "Step 2",
+                "points": 2,
+                "depends_on": [],
+                "files": ["src/b.py"],
+            },
+        ],
+    }
+
+    parent_labels = [{"name": "blocked"}, {"name": "p1"}]
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import create_sub_issues
+
+        created = create_sub_issues(
+            10, result, cfg, parent_summary="parent body", parent_labels=parent_labels
+        )
+
+    assert len(created) == 2
+    edit_calls = [c for c in calls if c[0] == "gh" and "edit" in c and "--add-label" in c]
+    assert len(edit_calls) == 2
+    for call in edit_calls:
+        assert call[call.index("--add-label") + 1] == "blocked"
+
+
+def test_create_sub_issues_no_blocked_label_no_edit(monkeypatch):
+    """Without blocked label on parent, no label-edit calls are made."""
+    cfg = _cfg(repo="acme/widgets")
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+
+    calls: list[list[str]] = []
+
+    class FakeResult:
+        returncode = 0
+        stdout = "https://github.com/acme/widgets/issues/99"
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return FakeResult()
+
+    result = {
+        "decomposition": [
+            {
+                "order": 1,
+                "title": "Step 1",
+                "points": 2,
+                "depends_on": [],
+                "files": ["src/a.py"],
+            },
+        ],
+    }
+
+    parent_labels = [{"name": "p1"}]
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import create_sub_issues
+
+        created = create_sub_issues(
+            10, result, cfg, parent_summary="parent body", parent_labels=parent_labels
+        )
+
+    assert len(created) == 1
+    edit_calls = [c for c in calls if c[0] == "gh" and "edit" in c and "--add-label" in c]
+    assert len(edit_calls) == 0
+
+
+def test_create_sub_issues_no_labels_no_edit(monkeypatch):
+    """With no parent_labels at all (None), no label-edit calls are made."""
+    cfg = _cfg(repo="acme/widgets")
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+
+    calls: list[list[str]] = []
+
+    class FakeResult:
+        returncode = 0
+        stdout = "https://github.com/acme/widgets/issues/99"
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return FakeResult()
+
+    result = {
+        "decomposition": [
+            {
+                "order": 1,
+                "title": "Step 1",
+                "points": 2,
+                "depends_on": [],
+                "files": ["src/a.py"],
+            },
+        ],
+    }
+
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import create_sub_issues
+
+        created = create_sub_issues(10, result, cfg, parent_summary="parent body")
+
+    assert len(created) == 1
+    edit_calls = [c for c in calls if c[0] == "gh" and "edit" in c and "--add-label" in c]
+    assert len(edit_calls) == 0
+
+
+# --- create_sub_issues inherits dependency notes ---
+
+
+def test_create_sub_issues_inherits_parent_dependency_notes(monkeypatch):
+    """Children inherit dependency notes from the parent body."""
+    cfg = _cfg(repo="acme/widgets")
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+
+    bodies: list[str] = []
+
+    class FakeResult:
+        returncode = 0
+        stdout = "https://github.com/acme/widgets/issues/99"
+
+    def fake_run(cmd, **_kwargs):
+        if cmd[0] == "gh" and cmd[2] == "create":
+            body_idx = cmd.index("--body") + 1
+            bodies.append(cmd[body_idx])
+        return FakeResult()
+
+    result = {
+        "decomposition": [
+            {
+                "order": 1,
+                "title": "Step 1",
+                "points": 2,
+                "depends_on": [],
+                "files": ["src/a.py"],
+            },
+        ],
+    }
+
+    parent_body = (
+        "## Summary\nFix something\n\n## Type\nfix\n\n"
+        "## Dependencies\nDepends on: #305\n\n## Context\nSome context"
+    )
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import create_sub_issues
+
+        created = create_sub_issues(10, result, cfg, parent_summary=parent_body)
+
+    assert len(created) == 1
+    assert "Depends on: #305" in bodies[0]
+
+
+def test_create_sub_issues_merges_parent_and_step_deps(monkeypatch):
+    """Parent deps and inter-step deps are both included in child body."""
+    cfg = _cfg(repo="acme/widgets")
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+
+    bodies: list[str] = []
+    issue_counter = {"n": 98}
+
+    class FakeResult:
+        returncode = 0
+
+        @property
+        def stdout(self):
+            return f"https://github.com/acme/widgets/issues/{issue_counter['n']}"
+
+    def fake_run(cmd, **_kwargs):
+        if cmd[0] == "gh" and cmd[2] == "create":
+            issue_counter["n"] += 1
+            body_idx = cmd.index("--body") + 1
+            bodies.append(cmd[body_idx])
+        return FakeResult()
+
+    result = {
+        "decomposition": [
+            {
+                "order": 1,
+                "title": "Step 1",
+                "points": 2,
+                "depends_on": [],
+                "files": ["src/a.py"],
+            },
+            {
+                "order": 2,
+                "title": "Step 2",
+                "points": 2,
+                "depends_on": [1],
+                "files": ["src/b.py"],
+            },
+        ],
+    }
+
+    parent_body = "## Summary\nFix\n\n## Dependencies\nDepends on: #305"
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import create_sub_issues
+
+        created = create_sub_issues(10, result, cfg, parent_summary=parent_body)
+
+    assert len(created) == 2
+    assert "Depends on: #305" in bodies[1]
+    assert "#99" in bodies[1]
+
+
+def test_create_sub_issues_no_parent_deps_no_change(monkeypatch):
+    """Without parent deps, child body has no extra dependency notes."""
+    cfg = _cfg(repo="acme/widgets")
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+
+    bodies: list[str] = []
+
+    class FakeResult:
+        returncode = 0
+        stdout = "https://github.com/acme/widgets/issues/99"
+
+    def fake_run(cmd, **_kwargs):
+        if cmd[0] == "gh" and cmd[2] == "create":
+            body_idx = cmd.index("--body") + 1
+            bodies.append(cmd[body_idx])
+        return FakeResult()
+
+    result = {
+        "decomposition": [
+            {
+                "order": 1,
+                "title": "Step 1",
+                "points": 2,
+                "depends_on": [],
+                "files": ["src/a.py"],
+            },
+        ],
+    }
+
+    parent_body = "## Summary\nNo deps here\n\n## Type\nfix"
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import create_sub_issues
+
+        created = create_sub_issues(10, result, cfg, parent_summary=parent_body)
+
+    assert len(created) == 1
+    assert "## Dependencies" not in bodies[0]

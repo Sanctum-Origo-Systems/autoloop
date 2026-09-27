@@ -177,6 +177,14 @@ Rules:
 # --- Pure functions (testable without mocking) ---
 
 
+def _extract_dependency_notes(body: str) -> str:
+    """Extract dependency content from a '## Dependencies' section in an issue body."""
+    match = re.search(r"## Dependencies\n(.*?)(?:\n## |\Z)", body, re.DOTALL)
+    if not match:
+        return ""
+    return match.group(1).strip()
+
+
 def _extract_files_from_body(body: str) -> list[str]:
     """Extract file paths from a '## Files to Modify' section in an issue body."""
     match = re.search(r"## Files to Modify\n(.*?)(?:\n## |\Z)", body, re.DOTALL)
@@ -851,9 +859,12 @@ def create_sub_issues(
     result: dict,
     cfg: AutoLoopConfig,
     parent_summary: str = "",
+    parent_labels: list[dict] | None = None,
 ) -> list[int]:
     """Create sub-issues from a decomposition and return their numbers."""
     parent_type = detect_issue_type(parent_summary)
+    parent_deps = _extract_dependency_notes(parent_summary)
+    parent_is_blocked = any(lbl.get("name") == "blocked" for lbl in (parent_labels or []))
     step_to_issue: dict[int, int] = {}
     created: list[int] = []
     for step in result.get("decomposition", []):
@@ -861,6 +872,10 @@ def create_sub_issues(
             f"#{step_to_issue[d]}" for d in step.get("depends_on", []) if d in step_to_issue
         ]
         deps = "Depends on: " + ", ".join(dep_refs) if dep_refs else ""
+        if parent_deps and deps:
+            deps = parent_deps + "\n" + deps
+        elif parent_deps:
+            deps = parent_deps
 
         fields = suggest_sub_issue_fields(parent_number, parent_summary, step, cfg)
         if fields:
@@ -909,6 +924,19 @@ def create_sub_issues(
             issue_num = int(issue_url.rstrip("/").split("/")[-1])
             step_to_issue[step["order"]] = issue_num
             created.append(issue_num)
+            if parent_is_blocked:
+                subprocess.run(
+                    [
+                        "gh",
+                        "issue",
+                        "edit",
+                        str(issue_num),
+                        "--repo",
+                        cfg.repo,
+                        "--add-label",
+                        "blocked",
+                    ],
+                )
 
     return created
 
@@ -918,6 +946,7 @@ def decompose_issue(
     result: dict,
     cfg: AutoLoopConfig,
     parent_summary: str = "",
+    parent_labels: list[dict] | None = None,
 ):
     """Label the parent needs-decomposition, create sub-issues, post summary."""
     validated = dict(result)
@@ -957,7 +986,7 @@ def decompose_issue(
             comment,
         ],
     )
-    sub_issues = create_sub_issues(number, validated, cfg, parent_summary)
+    sub_issues = create_sub_issues(number, validated, cfg, parent_summary, parent_labels)
     if sub_issues:
         subprocess.run(
             [
@@ -1156,7 +1185,13 @@ def triage_issue(
         elif depth >= 1 and points <= 5:
             approve_issue(issue["number"], verdict["priority"], verdict["reason"], cfg)
         else:
-            decompose_issue(issue["number"], verdict, cfg, issue.get("body") or "")
+            decompose_issue(
+                issue["number"],
+                verdict,
+                cfg,
+                issue.get("body") or "",
+                issue.get("labels", []),
+            )
             if _pass_stats is not None:
                 _pass_stats["decomposed"] += 1
 
