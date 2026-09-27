@@ -997,7 +997,7 @@ def review_implementation(
                 timeout=cfg.jev_timeout_seconds,
                 gate_low=cfg.jev_gate_low,
                 gate_high=cfg.jev_gate_high,
-                mode="shadow",
+                mode=cfg.jev_mode,
             )
         except Exception as exc:
             jev_error = str(exc)
