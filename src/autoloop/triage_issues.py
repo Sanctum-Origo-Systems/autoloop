@@ -510,6 +510,7 @@ def jev_triage(issue: dict, cfg: AutoLoopConfig) -> dict:
     return triage(
         issue_text,
         api_key_env=cfg.jev_api_key_env,
+        model=cfg.jev_model,
         timeout=cfg.jev_timeout_seconds,
         gate_low=cfg.jev_gate_low,
         gate_high=cfg.jev_gate_high,

@@ -8,6 +8,7 @@ import pytest
 
 from autoloop.jev import (
     DEFAULT_API_KEY_ENV,
+    DEFAULT_MODEL,
     GATE_HIGH,
     GATE_LOW,
     JEV_ENDPOINT,
@@ -22,31 +23,11 @@ from autoloop.jev import (
 SAMPLE_RESPONSE = {
     "answers": {
         "well_formed": {
-            "type": "boolean",
-            "probability": 0.5,
+            "type": "noul",
+            "noul": 0.5,
         }
     },
-    "rounding": {"probabilityDecimals": 2, "scoreDecimals": 2},
-    "usage": {"inputTokens": 337, "outputTokens": 23},
-    "warnings": [],
-    "providerMetadata": {
-        "typesafe": {"confidence": {}},
-        "gateway": {
-            "routing": {
-                "originalModelId": "typesafe-ai/jev",
-                "resolvedProvider": "digitalocean",
-                "fallbacksAvailable": ["typesafe-ai"],
-                "canonicalSlug": "typesafe-ai/jev",
-                "finalProvider": "typesafe-ai",
-                "modelAttemptCount": 1,
-            },
-            "cost": "0",
-            "marketCost": "0.000014154",
-            "surchargeCost": "0",
-            "gatewayCost": "0",
-            "generationId": "gen_01M3BN3ACG1QA8BPPB1W2FP42P",
-        },
-    },
+    "usage": {"cost": 0.000014154},
 }
 
 
@@ -79,7 +60,9 @@ def _mock_urlopen(monkeypatch, response_bytes):
 def _mock_evaluate(monkeypatch, answers):
     """Patch evaluate() to return a JevResult with the given answers."""
 
-    def fake_evaluate(state, questions, *, api_key=None, api_key_env=None, timeout=10.0):
+    def fake_evaluate(
+        state, questions, *, api_key=None, api_key_env=None, model=None, timeout=10.0
+    ):
         return JevResult(answers=answers, latency_seconds=0.05, raw={"answers": answers})
 
     monkeypatch.setattr("autoloop.jev.evaluate", fake_evaluate)
@@ -102,12 +85,13 @@ class TestEvaluateSuccess:
         monkeypatch.setenv(DEFAULT_API_KEY_ENV, "test-key")
         _mock_urlopen(monkeypatch, json.dumps(SAMPLE_RESPONSE).encode())
 
-        result = evaluate("some state", {"well_formed": {"type": "boolean"}})
+        result = evaluate("some state", {"well_formed": {"type": "noul"}})
 
         assert isinstance(result, JevResult)
         assert result.answers == SAMPLE_RESPONSE["answers"]
         assert result.raw == SAMPLE_RESPONSE
         assert result.latency_seconds > 0
+        assert result.cost_usd == 0.000014154
 
     def test_explicit_api_key(self, monkeypatch):
         monkeypatch.delenv(DEFAULT_API_KEY_ENV, raising=False)
@@ -123,7 +107,7 @@ class TestEvaluateSuccess:
         monkeypatch.setenv(DEFAULT_API_KEY_ENV, "test-key")
         calls = _mock_urlopen(monkeypatch, json.dumps(SAMPLE_RESPONSE).encode())
 
-        questions = {"well_formed": {"type": "boolean"}}
+        questions = {"well_formed": {"type": "noul"}}
         evaluate("my state", questions)
 
         req = calls[0][0]
@@ -131,15 +115,18 @@ class TestEvaluateSuccess:
         assert req.get_header("Content-type") == "application/json"
         assert req.get_header("Authorization") == "Bearer test-key"
         assert req.get_method() == "POST"
-        assert req.get_header("Ai-model-id") == "typesafe-ai/jev"
-        assert req.get_header("Ai-gateway-auth-method") == "api-key"
-        assert req.get_header("Ai-gateway-protocol-version") == "0.0.1"
-        assert req.get_header("Ai-evaluation-model-specification-version") == "4"
+        for header in (
+            "Ai-model-id",
+            "Ai-gateway-auth-method",
+            "Ai-gateway-protocol-version",
+            "Ai-evaluation-model-specification-version",
+        ):
+            assert req.get_header(header) is None
         body = json.loads(req.data)
         assert body == {
+            "model": DEFAULT_MODEL,
             "state": "my state",
             "questions": questions,
-            "providerOptions": {},
         }
 
     def test_timeout_passed_to_urlopen(self, monkeypatch):
@@ -168,17 +155,56 @@ class TestEvaluateSuccess:
         with pytest.raises(JevError, match="CUSTOM_JEV_KEY"):
             evaluate("state", {}, api_key_env="CUSTOM_JEV_KEY")
 
+    def test_custom_model_in_body(self, monkeypatch):
+        monkeypatch.setenv(DEFAULT_API_KEY_ENV, "test-key")
+        calls = _mock_urlopen(monkeypatch, json.dumps(SAMPLE_RESPONSE).encode())
+
+        evaluate("state", {"q": {}}, model="custom/model-2.0")
+
+        body = json.loads(calls[0][0].data)
+        assert body["model"] == "custom/model-2.0"
+
+    def test_cost_usd_from_usage(self, monkeypatch):
+        monkeypatch.setenv(DEFAULT_API_KEY_ENV, "test-key")
+        resp = {"answers": {"q": {"noul": 0.5}}, "usage": {"cost": 0.0042}}
+        _mock_urlopen(monkeypatch, json.dumps(resp).encode())
+
+        result = evaluate("state", {"q": {}})
+
+        assert result.cost_usd == 0.0042
+
+    def test_cost_usd_none_when_no_usage(self, monkeypatch):
+        monkeypatch.setenv(DEFAULT_API_KEY_ENV, "test-key")
+        resp = {"answers": {"q": {"noul": 0.5}}}
+        _mock_urlopen(monkeypatch, json.dumps(resp).encode())
+
+        result = evaluate("state", {"q": {}})
+
+        assert result.cost_usd is None
+
 
 class TestEvaluateErrors:
-    def test_http_error(self, monkeypatch):
+    def test_http_error_with_openrouter_body(self, monkeypatch):
         monkeypatch.setenv(DEFAULT_API_KEY_ENV, "test-key")
+        error_body = json.dumps({"error": {"code": 403, "message": "Invalid API key"}}).encode()
 
         def fake_urlopen(req, *, timeout=None):
-            raise urllib.error.HTTPError(JEV_ENDPOINT, 403, "Forbidden", {}, io.BytesIO(b""))
+            raise urllib.error.HTTPError(JEV_ENDPOINT, 403, "Forbidden", {}, io.BytesIO(error_body))
 
         monkeypatch.setattr("autoloop.jev.urllib.request.urlopen", fake_urlopen)
 
-        with pytest.raises(JevError, match="HTTP 403"):
+        with pytest.raises(JevError, match="HTTP 403: Invalid API key"):
+            evaluate("state", {})
+
+    def test_http_error_without_json_body(self, monkeypatch):
+        monkeypatch.setenv(DEFAULT_API_KEY_ENV, "test-key")
+
+        def fake_urlopen(req, *, timeout=None):
+            raise urllib.error.HTTPError(JEV_ENDPOINT, 500, "Server Error", {}, io.BytesIO(b""))
+
+        monkeypatch.setattr("autoloop.jev.urllib.request.urlopen", fake_urlopen)
+
+        with pytest.raises(JevError, match="HTTP 500"):
             evaluate("state", {})
 
     def test_timeout_error(self, monkeypatch):
@@ -214,9 +240,9 @@ class TestEvaluateErrors:
 
 
 class TestProbability:
-    def test_returns_probability_for_valid_key(self):
+    def test_returns_noul_for_valid_key(self):
         result = JevResult(
-            answers={"well_formed": {"type": "boolean", "probability": 0.5}},
+            answers={"well_formed": {"type": "noul", "noul": 0.5}},
             latency_seconds=0.1,
             raw={},
         )
@@ -224,7 +250,7 @@ class TestProbability:
 
     def test_returns_none_for_missing_key(self):
         result = JevResult(
-            answers={"well_formed": {"type": "boolean", "probability": 0.5}},
+            answers={"well_formed": {"type": "noul", "noul": 0.5}},
             latency_seconds=0.1,
             raw={},
         )
@@ -242,8 +268,8 @@ class TestTriageQuestionSchema:
             captured["questions"] = questions
             return JevResult(
                 answers={
-                    "well_formed": {"type": "boolean", "probability": 0.91},
-                    "needs_decomposition": {"type": "boolean", "probability": 0.08},
+                    "well_formed": {"type": "noul", "noul": 0.91},
+                    "needs_decomposition": {"type": "noul", "noul": 0.08},
                 },
                 latency_seconds=0.05,
                 raw={},
@@ -254,11 +280,11 @@ class TestTriageQuestionSchema:
         triage("some issue text")
 
         assert "well_formed" in captured["questions"]
-        assert captured["questions"]["well_formed"]["type"] == "boolean"
+        assert captured["questions"]["well_formed"]["type"] == "noul"
         assert "instructions" in captured["questions"]["well_formed"]
         assert "criteria" in captured["questions"]["well_formed"]
         assert "needs_decomposition" in captured["questions"]
-        assert captured["questions"]["needs_decomposition"]["type"] == "boolean"
+        assert captured["questions"]["needs_decomposition"]["type"] == "noul"
         assert "instructions" in captured["questions"]["needs_decomposition"]
 
     def test_passes_issue_text_as_state(self, monkeypatch):
@@ -268,8 +294,8 @@ class TestTriageQuestionSchema:
             captured["state"] = state
             return JevResult(
                 answers={
-                    "well_formed": {"type": "boolean", "probability": 0.91},
-                    "needs_decomposition": {"type": "boolean", "probability": 0.08},
+                    "well_formed": {"type": "noul", "noul": 0.91},
+                    "needs_decomposition": {"type": "noul", "noul": 0.08},
                 },
                 latency_seconds=0.05,
                 raw={},
@@ -287,8 +313,8 @@ class TestTriageSuccess:
         _mock_evaluate(
             monkeypatch,
             {
-                "well_formed": {"type": "boolean", "probability": 0.91},
-                "needs_decomposition": {"type": "boolean", "probability": 0.08},
+                "well_formed": {"type": "noul", "noul": 0.91},
+                "needs_decomposition": {"type": "noul", "noul": 0.08},
             },
         )
 
@@ -304,8 +330,8 @@ class TestTriageSuccess:
         _mock_evaluate(
             monkeypatch,
             {
-                "well_formed": {"type": "boolean", "probability": 0.12},
-                "needs_decomposition": {"type": "boolean", "probability": 0.05},
+                "well_formed": {"type": "noul", "noul": 0.12},
+                "needs_decomposition": {"type": "noul", "noul": 0.05},
             },
         )
 
@@ -327,8 +353,8 @@ class TestTriageFallback:
         _mock_evaluate(
             monkeypatch,
             {
-                "well_formed": {"type": "boolean", "probability": 0.50},
-                "needs_decomposition": {"type": "boolean", "probability": 0.08},
+                "well_formed": {"type": "noul", "noul": 0.50},
+                "needs_decomposition": {"type": "noul", "noul": 0.08},
             },
         )
 
@@ -342,8 +368,8 @@ class TestTriageFallback:
         _mock_evaluate(
             monkeypatch,
             {
-                "well_formed": {"type": "boolean", "probability": 0.90},
-                "needs_decomposition": {"type": "boolean", "probability": 0.50},
+                "well_formed": {"type": "noul", "noul": 0.90},
+                "needs_decomposition": {"type": "noul", "noul": 0.50},
             },
         )
 
@@ -356,8 +382,8 @@ class TestTriageFallback:
         _mock_evaluate(
             monkeypatch,
             {
-                "well_formed": {"type": "boolean", "probability": GATE_LOW},
-                "needs_decomposition": {"type": "boolean", "probability": GATE_HIGH},
+                "well_formed": {"type": "noul", "noul": GATE_LOW},
+                "needs_decomposition": {"type": "noul", "noul": GATE_HIGH},
             },
         )
 
@@ -371,8 +397,8 @@ class TestTriageFallback:
         _mock_evaluate(
             monkeypatch,
             {
-                "well_formed": {"type": "boolean", "probability": 0.45},
-                "needs_decomposition": {"type": "boolean", "probability": 0.10},
+                "well_formed": {"type": "noul", "noul": 0.45},
+                "needs_decomposition": {"type": "noul", "noul": 0.10},
             },
         )
 
@@ -404,7 +430,7 @@ class TestShouldAutoMergeQuestionSchema:
             captured["state"] = state
             return JevResult(
                 answers={
-                    "meets_acceptance_criteria": {"type": "boolean", "probability": 0.95},
+                    "meets_acceptance_criteria": {"type": "noul", "noul": 0.95},
                 },
                 latency_seconds=0.05,
                 raw={},
@@ -415,7 +441,7 @@ class TestShouldAutoMergeQuestionSchema:
         should_auto_merge("issue body", "diff content")
 
         assert "meets_acceptance_criteria" in captured["questions"]
-        assert captured["questions"]["meets_acceptance_criteria"]["type"] == "boolean"
+        assert captured["questions"]["meets_acceptance_criteria"]["type"] == "noul"
         assert "instructions" in captured["questions"]["meets_acceptance_criteria"]
         assert "criteria" in captured["questions"]["meets_acceptance_criteria"]
 
@@ -426,7 +452,7 @@ class TestShouldAutoMergeQuestionSchema:
             captured["state"] = state
             return JevResult(
                 answers={
-                    "meets_acceptance_criteria": {"type": "boolean", "probability": 0.95},
+                    "meets_acceptance_criteria": {"type": "noul", "noul": 0.95},
                 },
                 latency_seconds=0.05,
                 raw={},
@@ -445,7 +471,7 @@ class TestShouldAutoMergeSuccess:
         _mock_evaluate(
             monkeypatch,
             {
-                "meets_acceptance_criteria": {"type": "boolean", "probability": 0.95},
+                "meets_acceptance_criteria": {"type": "noul", "noul": 0.95},
             },
         )
 
@@ -454,13 +480,13 @@ class TestShouldAutoMergeSuccess:
         assert result == {"meets_acceptance_criteria": 0.95}
         assert "fallback" not in result
 
-    def test_ignores_score_field_on_boolean_question(self, monkeypatch):
+    def test_ignores_score_field_on_noul_question(self, monkeypatch):
         _mock_evaluate(
             monkeypatch,
             {
                 "meets_acceptance_criteria": {
-                    "type": "boolean",
-                    "probability": 0.88,
+                    "type": "noul",
+                    "noul": 0.88,
                     "score": 0.92,
                 },
             },
@@ -469,7 +495,6 @@ class TestShouldAutoMergeSuccess:
         result = should_auto_merge("issue", "diff")
 
         assert result == {"meets_acceptance_criteria": 0.88}
-        assert "readiness_score" not in result
 
 
 class TestShouldAutoMergeFallback:
@@ -485,7 +510,7 @@ class TestShouldAutoMergeFallback:
         _mock_evaluate(
             monkeypatch,
             {
-                "meets_acceptance_criteria": {"type": "boolean", "probability": 0.50},
+                "meets_acceptance_criteria": {"type": "noul", "noul": 0.50},
             },
         )
 
@@ -499,7 +524,7 @@ class TestShouldAutoMergeFallback:
         _mock_evaluate(
             monkeypatch,
             {
-                "meets_acceptance_criteria": {"type": "boolean", "probability": GATE_HIGH},
+                "meets_acceptance_criteria": {"type": "noul", "noul": GATE_HIGH},
             },
         )
 
@@ -512,7 +537,7 @@ class TestShouldAutoMergeFallback:
         _mock_evaluate(
             monkeypatch,
             {
-                "meets_acceptance_criteria": {"type": "boolean", "probability": 0.50},
+                "meets_acceptance_criteria": {"type": "noul", "noul": 0.50},
             },
         )
 
