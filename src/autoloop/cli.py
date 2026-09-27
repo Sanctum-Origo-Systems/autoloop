@@ -339,7 +339,11 @@ def review_pr(pr_number, cfg, repo_dir: Path | None = None):
         "cache_creation_tokens": 0,
     }
 
+    import os
+
     cwd = repo_dir or Path.cwd()
+    original_cwd = os.getcwd()
+    os.chdir(cwd)
     impl.cfg = cfg
     start_time = time.time()
 
@@ -589,6 +593,7 @@ def review_pr(pr_number, cfg, repo_dir: Path | None = None):
             capture_output=True,
             cwd=cwd,
         )
+        os.chdir(original_cwd)
 
 
 def _show_status():
