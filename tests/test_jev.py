@@ -454,7 +454,7 @@ class TestShouldAutoMergeSuccess:
         assert result == {"meets_acceptance_criteria": 0.95}
         assert "fallback" not in result
 
-    def test_includes_readiness_score_when_present(self, monkeypatch):
+    def test_ignores_score_field_on_boolean_question(self, monkeypatch):
         _mock_evaluate(
             monkeypatch,
             {
@@ -468,19 +468,7 @@ class TestShouldAutoMergeSuccess:
 
         result = should_auto_merge("issue", "diff")
 
-        assert result["meets_acceptance_criteria"] == 0.88
-        assert result["readiness_score"] == 0.92
-
-    def test_omits_readiness_score_when_absent(self, monkeypatch):
-        _mock_evaluate(
-            monkeypatch,
-            {
-                "meets_acceptance_criteria": {"type": "boolean", "probability": 0.88},
-            },
-        )
-
-        result = should_auto_merge("issue", "diff")
-
+        assert result == {"meets_acceptance_criteria": 0.88}
         assert "readiness_score" not in result
 
 
