@@ -14,6 +14,7 @@ from autoloop.jev import (
     JEV_ENDPOINT,
     JevError,
     JevResult,
+    _extract_cost,
     evaluate,
     probability,
     should_auto_merge,
@@ -57,13 +58,19 @@ def _mock_urlopen(monkeypatch, response_bytes):
     return calls
 
 
+_MOCK_RAW_WITH_COST = {
+    "providerMetadata": {"gateway": {"marketCost": "0.000014"}},
+}
+
+
 def _mock_evaluate(monkeypatch, answers):
     """Patch evaluate() to return a JevResult with the given answers."""
 
     def fake_evaluate(
         state, questions, *, api_key=None, api_key_env=None, model=None, timeout=10.0
     ):
-        return JevResult(answers=answers, latency_seconds=0.05, raw={"answers": answers})
+        raw = {"answers": answers, **_MOCK_RAW_WITH_COST}
+        return JevResult(answers=answers, latency_seconds=0.05, raw=raw)
 
     monkeypatch.setattr("autoloop.jev.evaluate", fake_evaluate)
 
@@ -320,10 +327,10 @@ class TestTriageSuccess:
 
         result = triage("some issue text")
 
-        assert result == {
-            "well_formed": 0.91,
-            "needs_decomposition": 0.08,
-        }
+        assert result["well_formed"] == 0.91
+        assert result["needs_decomposition"] == 0.08
+        assert result["latency"] == 0.05
+        assert result["cost"] == 0.000014
         assert "fallback" not in result
 
     def test_high_confidence_reject(self, monkeypatch):
@@ -348,6 +355,7 @@ class TestTriageFallback:
 
         assert result["fallback"] is True
         assert "HTTP 500" in result["reason"]
+        assert result["fallback_cause"] == "outage"
 
     def test_well_formed_in_middle_band(self, monkeypatch):
         _mock_evaluate(
@@ -363,6 +371,9 @@ class TestTriageFallback:
         assert result["fallback"] is True
         assert "well_formed" in result["reason"]
         assert "uncertain" in result["reason"]
+        assert result["fallback_cause"] == "uncertain"
+        assert "latency" in result
+        assert "cost" in result
 
     def test_needs_decomposition_in_middle_band(self, monkeypatch):
         _mock_evaluate(
@@ -377,6 +388,7 @@ class TestTriageFallback:
 
         assert result["fallback"] is True
         assert "needs_decomposition" in result["reason"]
+        assert result["fallback_cause"] == "uncertain"
 
     def test_boundary_values_not_in_middle_band(self, monkeypatch):
         _mock_evaluate(
@@ -416,6 +428,7 @@ class TestTriageFallback:
 
         assert isinstance(result, dict)
         assert result["fallback"] is True
+        assert result["fallback_cause"] == "outage"
 
 
 # --- should_auto_merge() tests ---
@@ -477,7 +490,9 @@ class TestShouldAutoMergeSuccess:
 
         result = should_auto_merge("issue", "diff")
 
-        assert result == {"meets_acceptance_criteria": 0.95}
+        assert result["meets_acceptance_criteria"] == 0.95
+        assert result["latency"] == 0.05
+        assert result["cost"] == 0.000014
         assert "fallback" not in result
 
     def test_ignores_score_field_on_noul_question(self, monkeypatch):
@@ -494,7 +509,10 @@ class TestShouldAutoMergeSuccess:
 
         result = should_auto_merge("issue", "diff")
 
-        assert result == {"meets_acceptance_criteria": 0.88}
+        assert result["meets_acceptance_criteria"] == 0.88
+        assert result["latency"] == 0.05
+        assert result["cost"] == 0.000014
+        assert result["readiness_score"] == 0.92
 
 
 class TestShouldAutoMergeFallback:
@@ -505,6 +523,7 @@ class TestShouldAutoMergeFallback:
 
         assert result["fallback"] is True
         assert "timed out" in result["reason"]
+        assert result["fallback_cause"] == "outage"
 
     def test_middle_band_returns_fallback(self, monkeypatch):
         _mock_evaluate(
@@ -519,6 +538,9 @@ class TestShouldAutoMergeFallback:
         assert result["fallback"] is True
         assert "meets_acceptance_criteria" in result["reason"]
         assert "uncertain" in result["reason"]
+        assert result["fallback_cause"] == "uncertain"
+        assert "latency" in result
+        assert "cost" in result
 
     def test_boundary_values_not_in_middle_band(self, monkeypatch):
         _mock_evaluate(
@@ -555,3 +577,181 @@ class TestShouldAutoMergeFallback:
 
         assert isinstance(result, dict)
         assert result["fallback"] is True
+        assert result["fallback_cause"] == "outage"
+
+
+# --- _extract_cost tests ---
+
+
+class TestExtractCost:
+    def test_extracts_market_cost(self):
+        raw = {"providerMetadata": {"gateway": {"marketCost": "0.000014154"}}}
+        assert _extract_cost(raw) == 0.000014154
+
+    def test_missing_provider_metadata(self):
+        assert _extract_cost({}) == 0.0
+
+    def test_missing_gateway(self):
+        assert _extract_cost({"providerMetadata": {}}) == 0.0
+
+    def test_missing_market_cost(self):
+        assert _extract_cost({"providerMetadata": {"gateway": {}}}) == 0.0
+
+    def test_non_numeric_cost(self):
+        raw = {"providerMetadata": {"gateway": {"marketCost": "not-a-number"}}}
+        assert _extract_cost(raw) == 0.0
+
+    def test_integer_cost(self):
+        raw = {"providerMetadata": {"gateway": {"marketCost": "0"}}}
+        assert _extract_cost(raw) == 0.0
+
+
+# --- Shadow mode tests ---
+
+
+class TestTriageShadowMode:
+    def test_returns_raw_probabilities_in_middle_band(self, monkeypatch):
+        _mock_evaluate(
+            monkeypatch,
+            {
+                "well_formed": {"type": "noul", "noul": 0.50},
+                "needs_decomposition": {"type": "noul", "noul": 0.08},
+            },
+        )
+
+        result = triage("ambiguous issue", mode="shadow")
+
+        assert result["well_formed"] == 0.50
+        assert result["needs_decomposition"] == 0.08
+        assert result["would_fallback"] is True
+        assert "well_formed" in result["fallback_reason"]
+        assert result["fallback_cause"] == "uncertain"
+        assert "fallback" not in result
+
+    def test_both_probabilities_in_middle_band(self, monkeypatch):
+        _mock_evaluate(
+            monkeypatch,
+            {
+                "well_formed": {"type": "noul", "noul": 0.50},
+                "needs_decomposition": {"type": "noul", "noul": 0.55},
+            },
+        )
+
+        result = triage("issue", mode="shadow")
+
+        assert result["well_formed"] == 0.50
+        assert result["needs_decomposition"] == 0.55
+        assert result["would_fallback"] is True
+        assert "well_formed" in result["fallback_reason"]
+        assert "needs_decomposition" in result["fallback_reason"]
+
+    def test_high_confidence_no_fallback_flag(self, monkeypatch):
+        _mock_evaluate(
+            monkeypatch,
+            {
+                "well_formed": {"type": "noul", "noul": 0.91},
+                "needs_decomposition": {"type": "noul", "noul": 0.08},
+            },
+        )
+
+        result = triage("clear issue", mode="shadow")
+
+        assert result["well_formed"] == 0.91
+        assert result["needs_decomposition"] == 0.08
+        assert result["would_fallback"] is False
+        assert "fallback_reason" not in result
+        assert "fallback_cause" not in result
+
+    def test_includes_latency_and_cost(self, monkeypatch):
+        _mock_evaluate(
+            monkeypatch,
+            {
+                "well_formed": {"type": "noul", "noul": 0.50},
+                "needs_decomposition": {"type": "noul", "noul": 0.50},
+            },
+        )
+
+        result = triage("issue", mode="shadow")
+
+        assert result["latency"] == 0.05
+        assert result["cost"] == 0.000014
+
+    def test_error_still_returns_fallback(self, monkeypatch):
+        _mock_evaluate_raises(monkeypatch, "HTTP 429: Too Many Requests")
+
+        result = triage("issue", mode="shadow")
+
+        assert result["fallback"] is True
+        assert result["fallback_cause"] == "outage"
+        assert "429" in result["reason"]
+
+
+class TestShouldAutoMergeShadowMode:
+    def test_returns_raw_probability_in_middle_band(self, monkeypatch):
+        _mock_evaluate(
+            monkeypatch,
+            {
+                "meets_acceptance_criteria": {"type": "noul", "noul": 0.50},
+            },
+        )
+
+        result = should_auto_merge("issue", "diff", mode="shadow")
+
+        assert result["meets_acceptance_criteria"] == 0.50
+        assert result["would_fallback"] is True
+        assert "meets_acceptance_criteria" in result["fallback_reason"]
+        assert result["fallback_cause"] == "uncertain"
+        assert "fallback" not in result
+
+    def test_high_confidence_no_fallback_flag(self, monkeypatch):
+        _mock_evaluate(
+            monkeypatch,
+            {
+                "meets_acceptance_criteria": {"type": "noul", "noul": 0.95},
+            },
+        )
+
+        result = should_auto_merge("issue", "diff", mode="shadow")
+
+        assert result["meets_acceptance_criteria"] == 0.95
+        assert result["would_fallback"] is False
+        assert "fallback_reason" not in result
+
+    def test_includes_latency_and_cost(self, monkeypatch):
+        _mock_evaluate(
+            monkeypatch,
+            {
+                "meets_acceptance_criteria": {"type": "noul", "noul": 0.50},
+            },
+        )
+
+        result = should_auto_merge("issue", "diff", mode="shadow")
+
+        assert result["latency"] == 0.05
+        assert result["cost"] == 0.000014
+
+    def test_includes_readiness_score(self, monkeypatch):
+        _mock_evaluate(
+            monkeypatch,
+            {
+                "meets_acceptance_criteria": {
+                    "type": "noul",
+                    "noul": 0.50,
+                    "score": 0.72,
+                },
+            },
+        )
+
+        result = should_auto_merge("issue", "diff", mode="shadow")
+
+        assert result["meets_acceptance_criteria"] == 0.50
+        assert result["readiness_score"] == 0.72
+        assert result["would_fallback"] is True
+
+    def test_error_still_returns_fallback(self, monkeypatch):
+        _mock_evaluate_raises(monkeypatch, "HTTP 503: Service Unavailable")
+
+        result = should_auto_merge("issue", "diff", mode="shadow")
+
+        assert result["fallback"] is True
+        assert result["fallback_cause"] == "outage"

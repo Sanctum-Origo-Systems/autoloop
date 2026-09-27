@@ -1,7 +1,16 @@
 import json
 from pathlib import Path
 
-REQUIRED_KEYS = ("point", "jev_call", "incumbent_call", "outcome", "ttft", "cost", "timestamp")
+REQUIRED_KEYS = (
+    "point",
+    "issue",
+    "jev_call",
+    "incumbent_call",
+    "outcome",
+    "ttft",
+    "cost",
+    "timestamp",
+)
 
 
 def log_decision(record: dict) -> None:

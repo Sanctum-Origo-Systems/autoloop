@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import shutil
 import subprocess
@@ -522,27 +523,8 @@ def jev_triage(issue: dict, cfg: AutoLoopConfig) -> dict:
         timeout=cfg.jev_timeout_seconds,
         gate_low=cfg.jev_gate_low,
         gate_high=cfg.jev_gate_high,
+        mode=cfg.jev_mode,
     )
-
-
-def log_jev_decision(
-    issue_number: int,
-    incumbent: dict,
-    jev: dict | None,
-    error: str | None = None,
-) -> None:
-    """Append a shadow-mode comparison record to jev_decisions.jsonl."""
-    entry = {
-        "timestamp": datetime.now(UTC).isoformat(),
-        "issue": issue_number,
-        "incumbent": incumbent,
-        "jev": jev,
-        "error": error,
-    }
-    log_file = Path.cwd() / "autoloop" / "jev_decisions.jsonl"
-    log_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(log_file, "a") as f:
-        f.write(json.dumps(entry) + "\n")
 
 
 # --- Subprocess functions ---
@@ -1072,13 +1054,31 @@ def triage_issue(
     results.append(eval_result)
 
     if cfg.jev_mode == "shadow":
+        from autoloop.jev_log import log_decision
+
         jev_result = None
         jev_error = None
+        t0 = time.monotonic()
         try:
             jev_result = jev_triage(issue, cfg)
         except Exception as exc:
             jev_error = str(exc)
-        log_jev_decision(issue["number"], verdict, jev_result, jev_error)
+        latency = time.monotonic() - t0
+
+        record = {
+            "point": "triage",
+            "issue": issue["number"],
+            "jev_call": jev_result if jev_error is None else {"error": jev_error},
+            "incumbent_call": verdict,
+            "outcome": "incumbent",
+            "ttft": round((jev_result or {}).get("latency", latency), 3),
+            "cost": (jev_result or {}).get("cost", 0.0),
+            "timestamp": datetime.now(UTC).isoformat(),
+        }
+        try:
+            log_decision(record)
+        except Exception:
+            logging.exception("Failed to log Jev triage decision")
 
     if verdict["verdict"] == "rejected":
         if auto_fix:

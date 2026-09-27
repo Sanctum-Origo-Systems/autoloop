@@ -94,12 +94,19 @@ def probability(result: JevResult, question: str) -> float | None:
     return entry.get("noul")
 
 
+def _extract_cost(raw: dict) -> float:
+    try:
+        return float(raw.get("providerMetadata", {}).get("gateway", {}).get("marketCost", 0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _in_middle_band(p: float, gate_low: float = GATE_LOW, gate_high: float = GATE_HIGH) -> bool:
     return gate_low < p < gate_high
 
 
-def _fallback(reason: str) -> dict:
-    return {"fallback": True, "reason": reason}
+def _fallback(reason: str, cause: str = "outage", **extra: object) -> dict:
+    return {"fallback": True, "reason": reason, "fallback_cause": cause, **extra}
 
 
 def triage(
@@ -111,6 +118,7 @@ def triage(
     timeout: float = 10.0,
     gate_low: float = GATE_LOW,
     gate_high: float = GATE_HIGH,
+    mode: str = "gate",
 ) -> dict:
     questions = {
         "well_formed": {
@@ -141,19 +149,55 @@ def triage(
             timeout=timeout,
         )
     except JevError as exc:
-        return _fallback(str(exc))
+        return _fallback(str(exc), cause="outage")
 
     wf_p = probability(result, "well_formed")
     nd_p = probability(result, "needs_decomposition")
+    latency = result.latency_seconds
+    cost = _extract_cost(result.raw)
+
+    if mode == "shadow":
+        out: dict = {
+            "well_formed": wf_p,
+            "needs_decomposition": nd_p,
+            "latency": round(latency, 3),
+            "cost": cost,
+        }
+        wf_band = wf_p is not None and _in_middle_band(wf_p, gate_low, gate_high)
+        nd_band = nd_p is not None and _in_middle_band(nd_p, gate_low, gate_high)
+        if wf_band or nd_band:
+            reasons = []
+            if wf_band:
+                reasons.append(f"well_formed probability {wf_p} in uncertain band")
+            if nd_band:
+                reasons.append(f"needs_decomposition probability {nd_p} in uncertain band")
+            out["would_fallback"] = True
+            out["fallback_reason"] = "; ".join(reasons)
+            out["fallback_cause"] = "uncertain"
+        else:
+            out["would_fallback"] = False
+        return out
 
     if wf_p is not None and _in_middle_band(wf_p, gate_low, gate_high):
-        return _fallback(f"well_formed probability {wf_p} in uncertain band")
+        return _fallback(
+            f"well_formed probability {wf_p} in uncertain band",
+            cause="uncertain",
+            latency=round(latency, 3),
+            cost=cost,
+        )
     if nd_p is not None and _in_middle_band(nd_p, gate_low, gate_high):
-        return _fallback(f"needs_decomposition probability {nd_p} in uncertain band")
+        return _fallback(
+            f"needs_decomposition probability {nd_p} in uncertain band",
+            cause="uncertain",
+            latency=round(latency, 3),
+            cost=cost,
+        )
 
     return {
         "well_formed": wf_p,
         "needs_decomposition": nd_p,
+        "latency": round(latency, 3),
+        "cost": cost,
     }
 
 
@@ -167,6 +211,7 @@ def should_auto_merge(
     timeout: float = 10.0,
     gate_low: float = GATE_LOW,
     gate_high: float = GATE_HIGH,
+    mode: str = "gate",
 ) -> dict:
     questions = {
         "meets_acceptance_criteria": {
@@ -191,11 +236,47 @@ def should_auto_merge(
             timeout=timeout,
         )
     except JevError as exc:
-        return _fallback(str(exc))
+        return _fallback(str(exc), cause="outage")
 
     mac_p = probability(result, "meets_acceptance_criteria")
+    latency = result.latency_seconds
+    cost = _extract_cost(result.raw)
+
+    if mode == "shadow":
+        out: dict = {
+            "meets_acceptance_criteria": mac_p,
+            "latency": round(latency, 3),
+            "cost": cost,
+        }
+        if mac_p is not None and _in_middle_band(mac_p, gate_low, gate_high):
+            out["would_fallback"] = True
+            out["fallback_reason"] = (
+                f"meets_acceptance_criteria probability {mac_p} in uncertain band"
+            )
+            out["fallback_cause"] = "uncertain"
+        else:
+            out["would_fallback"] = False
+        readiness = result.answers.get("meets_acceptance_criteria", {}).get("score")
+        if readiness is not None:
+            out["readiness_score"] = readiness
+        return out
 
     if mac_p is not None and _in_middle_band(mac_p, gate_low, gate_high):
-        return _fallback(f"meets_acceptance_criteria probability {mac_p} in uncertain band")
+        return _fallback(
+            f"meets_acceptance_criteria probability {mac_p} in uncertain band",
+            cause="uncertain",
+            latency=round(latency, 3),
+            cost=cost,
+        )
 
-    return {"meets_acceptance_criteria": mac_p}
+    out: dict = {
+        "meets_acceptance_criteria": mac_p,
+        "latency": round(latency, 3),
+        "cost": cost,
+    }
+
+    readiness = result.answers.get("meets_acceptance_criteria", {}).get("score")
+    if readiness is not None:
+        out["readiness_score"] = readiness
+
+    return out
