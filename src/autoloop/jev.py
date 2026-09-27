@@ -16,6 +16,13 @@ DEFAULT_MODEL = "typesafe/jev-1.13"
 GATE_LOW = 0.35
 GATE_HIGH = 0.65
 
+MAX_RETRIES = 3
+BACKOFF_SCHEDULE = (1, 2, 4)
+
+
+def _is_retryable(status_code: int) -> bool:
+    return status_code == 429 or status_code >= 500
+
 
 class JevError(Exception):
     """Raised when a Jev evaluation request fails."""
@@ -55,19 +62,49 @@ def evaluate(
     )
 
     t0 = time.monotonic()
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw_bytes = resp.read()
-    except urllib.error.HTTPError as exc:
-        error_body = exc.read()
+    deadline = t0 + timeout
+    last_err: urllib.error.HTTPError | None = None
+    raw_bytes = None
+
+    for attempt in range(1 + MAX_RETRIES):
+        if attempt > 0:
+            backoff = BACKOFF_SCHEDULE[attempt - 1]
+            if last_err is not None and last_err.headers:
+                ra = last_err.headers.get("Retry-After")
+                if ra is not None:
+                    try:
+                        backoff = max(backoff, float(ra))
+                    except ValueError:
+                        pass
+            if time.monotonic() + backoff > deadline:
+                break
+            time.sleep(backoff)
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+
         try:
-            err = json.loads(error_body).get("error", {})
-            msg = err.get("message", exc.reason)
-        except (json.JSONDecodeError, ValueError, AttributeError):
-            msg = exc.reason
-        raise JevError(f"HTTP {exc.code}: {msg}") from exc
-    except urllib.error.URLError as exc:
-        raise JevError(f"Request failed: {exc.reason}") from exc
+            with urllib.request.urlopen(req, timeout=remaining) as resp:
+                raw_bytes = resp.read()
+            break
+        except urllib.error.HTTPError as exc:
+            if not _is_retryable(exc.code):
+                error_body = exc.read()
+                try:
+                    err = json.loads(error_body).get("error", {})
+                    msg = err.get("message", exc.reason)
+                except (json.JSONDecodeError, ValueError, AttributeError):
+                    msg = exc.reason
+                raise JevError(f"HTTP {exc.code}: {msg}") from exc
+            last_err = exc
+        except urllib.error.URLError as exc:
+            raise JevError(f"Request failed: {exc.reason}") from exc
+
+    if raw_bytes is None:
+        if last_err is not None:
+            raise JevError(f"HTTP {last_err.code}: {last_err.reason}") from last_err
+        raise JevError("Retry timeout exceeded")
 
     try:
         data = json.loads(raw_bytes)
