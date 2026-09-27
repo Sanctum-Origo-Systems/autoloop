@@ -189,9 +189,7 @@ def test_detect_issue_type_title_fallback_refactor():
 
 
 def test_detect_issue_type_body_takes_precedence_over_title():
-    assert (
-        detect_issue_type("## Summary\nFix\n\n## Type\nbug", title="chore: something") == "fix"
-    )
+    assert detect_issue_type("## Summary\nFix\n\n## Type\nbug", title="chore: something") == "fix"
 
 
 def test_detect_issue_type_no_body_no_title():
