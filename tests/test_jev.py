@@ -454,6 +454,23 @@ class TestShouldAutoMergeSuccess:
         assert result == {"meets_acceptance_criteria": 0.95}
         assert "fallback" not in result
 
+    def test_ignores_score_field_on_boolean_question(self, monkeypatch):
+        _mock_evaluate(
+            monkeypatch,
+            {
+                "meets_acceptance_criteria": {
+                    "type": "boolean",
+                    "probability": 0.88,
+                    "score": 0.92,
+                },
+            },
+        )
+
+        result = should_auto_merge("issue", "diff")
+
+        assert result == {"meets_acceptance_criteria": 0.88}
+        assert "readiness_score" not in result
+
 
 class TestShouldAutoMergeFallback:
     def test_jev_error_returns_fallback(self, monkeypatch):
