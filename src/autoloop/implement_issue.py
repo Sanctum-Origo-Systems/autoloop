@@ -531,6 +531,10 @@ def build_implementation_prompt(issue: dict) -> str:
     issue_url = f"https://github.com/{cfg.repo}/issues/{issue['number']}"
     full_context = truncate_spec(full_context, cfg.spec_truncation, issue_url)
 
+    issue_type = detect_issue_type(issue.get("body", ""))
+    skip_types = cfg.test_gate_skip_types if cfg.test_gate_skip_types else []
+    tests_required = cfg.test_pattern and issue_type not in skip_types
+
     prompt = (
         f"## Task\n\n"
         f"Implement GitHub issue #{issue['number']}: {issue['title']}\n\n"
@@ -542,8 +546,11 @@ def build_implementation_prompt(issue: dict) -> str:
     )
 
     step = 3
-    if cfg.test_pattern:
-        prompt += f"{step}. Write comprehensive unit tests for every new/changed function\n"
+    if tests_required:
+        prompt += (
+            f"{step}. Add or update tests matching the nearest existing test file"
+            f" for every new/changed function\n"
+        )
         step += 1
     prompt += f"{step}. Run `{cfg.verify_cmd}` — all tests must pass\n"
     step += 1
@@ -552,16 +559,23 @@ def build_implementation_prompt(issue: dict) -> str:
         step += 1
     prompt += f"{step}. If README.md needs updating (new tools, commands), update it\n"
     step += 1
+
+    all_types = sorted({"fix", "feat", "refactor"} | set(skip_types))
+    types_str = ", ".join(all_types)
     prompt += (
         f"{step}. Stage and commit:\n"
         f"   `git add <specific files>`\n"
         f"   `git commit -m '<type>: <description> (#{issue['number']})'\n"
-        f"   Types: fix (bugs), feat (features), refactor\n"
+        f"   Types: {types_str}\n"
         f"   Keep first line under 70 chars\n\n"
         f"## Rules\n\n"
-        f"- Never use real person or company names in test data\n"
         f"- Follow existing code patterns in this repo\n"
         f"- Do not add features beyond what the issue asks for\n"
+        f"- When verification fails, fix the implementation — do not delete, skip,"
+        f" or loosen tests, and do not add broad exception handlers to force green\n"
+        f"- When acceptance criteria are ambiguous, take the most conservative reading,"
+        f" state the assumption in the PR body, and label needs-human"
+        f" if acceptance criteria conflict\n"
     )
     if cfg.test_pattern or cfg.lint_command:
         skippable = " or ".join(

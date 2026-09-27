@@ -1015,7 +1015,7 @@ def test_build_implementation_prompt_omits_test_step_when_test_pattern_empty(mon
     issue = {"number": 1, "title": "Test issue", "body": "details"}
     prompt = implement_issue.build_implementation_prompt(issue)
 
-    assert "Write comprehensive unit tests" not in prompt
+    assert "Add or update tests" not in prompt
     assert "Do not skip tests" not in prompt
 
 
@@ -1039,7 +1039,7 @@ def test_build_implementation_prompt_includes_test_step_when_test_pattern_set(
     issue = {"number": 1, "title": "Test issue", "body": "details"}
     prompt = implement_issue.build_implementation_prompt(issue)
 
-    assert "Write comprehensive unit tests" in prompt
+    assert "Add or update tests matching the nearest existing test file" in prompt
     assert "Do not skip tests or lint" in prompt
 
 
@@ -1084,6 +1084,158 @@ def test_build_implementation_prompt_no_skip_rule_when_both_empty(monkeypatch, t
     prompt = implement_issue.build_implementation_prompt(issue)
 
     assert "Do not skip" not in prompt
+
+
+def test_build_implementation_prompt_no_real_names_removed(monkeypatch, tmp_path):
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(repo="my-org/my-repo"))
+    claude_md = tmp_path / "CLAUDE.md"
+    claude_md.write_text("# Project\nTest project")
+    monkeypatch.chdir(tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    issue = {"number": 1, "title": "Test issue", "body": "details"}
+    prompt = implement_issue.build_implementation_prompt(issue)
+
+    assert "No real person or company names" not in prompt
+    assert "real person" not in prompt.lower()
+
+
+def test_build_implementation_prompt_fix_implementation_not_tests_rule(monkeypatch, tmp_path):
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(repo="my-org/my-repo"))
+    claude_md = tmp_path / "CLAUDE.md"
+    claude_md.write_text("# Project\nTest project")
+    monkeypatch.chdir(tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    issue = {"number": 1, "title": "Test issue", "body": "details"}
+    prompt = implement_issue.build_implementation_prompt(issue)
+
+    assert "fix the implementation" in prompt
+    assert "do not delete, skip, or loosen tests" in prompt.lower()
+    assert "broad exception handlers" in prompt
+
+
+def test_build_implementation_prompt_ambiguity_rule(monkeypatch, tmp_path):
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(repo="my-org/my-repo"))
+    claude_md = tmp_path / "CLAUDE.md"
+    claude_md.write_text("# Project\nTest project")
+    monkeypatch.chdir(tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    issue = {"number": 1, "title": "Test issue", "body": "details"}
+    prompt = implement_issue.build_implementation_prompt(issue)
+
+    assert "most conservative reading" in prompt
+    assert "needs-human" in prompt
+    assert "assumption in the PR body" in prompt
+
+
+def test_build_implementation_prompt_test_step_skipped_for_skip_types(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(
+            test_pattern="tests/*.py",
+            test_gate_skip_types=["docs", "chore", "refactor"],
+            repo="my-org/my-repo",
+        ),
+    )
+    claude_md = tmp_path / "CLAUDE.md"
+    claude_md.write_text("# Project\nTest project")
+    monkeypatch.chdir(tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    issue = {"number": 1, "title": "Update docs", "body": "## Type\ndocs\n\nUpdate README"}
+    prompt = implement_issue.build_implementation_prompt(issue)
+
+    assert "Add or update tests" not in prompt
+    assert "verify_cmd" in prompt or "echo ok" in prompt
+
+
+def test_build_implementation_prompt_test_step_required_for_non_skip_types(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(
+            test_pattern="tests/*.py",
+            test_gate_skip_types=["docs", "chore", "refactor"],
+            repo="my-org/my-repo",
+        ),
+    )
+    claude_md = tmp_path / "CLAUDE.md"
+    claude_md.write_text("# Project\nTest project")
+    monkeypatch.chdir(tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    issue = {"number": 1, "title": "Add feature", "body": "## Type\nfeat\n\nNew feature"}
+    prompt = implement_issue.build_implementation_prompt(issue)
+
+    assert "Add or update tests matching the nearest existing test file" in prompt
+
+
+def test_build_implementation_prompt_commit_types_include_skip_types(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(
+            test_gate_skip_types=["docs", "chore", "refactor"],
+            repo="my-org/my-repo",
+        ),
+    )
+    claude_md = tmp_path / "CLAUDE.md"
+    claude_md.write_text("# Project\nTest project")
+    monkeypatch.chdir(tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    issue = {"number": 1, "title": "Test issue", "body": "details"}
+    prompt = implement_issue.build_implementation_prompt(issue)
+
+    assert "Types: chore, docs, feat, fix, refactor" in prompt
+
+
+def test_build_implementation_prompt_commit_types_default_when_no_skip_types(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(test_gate_skip_types=[], repo="my-org/my-repo"),
+    )
+    claude_md = tmp_path / "CLAUDE.md"
+    claude_md.write_text("# Project\nTest project")
+    monkeypatch.chdir(tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    issue = {"number": 1, "title": "Test issue", "body": "details"}
+    prompt = implement_issue.build_implementation_prompt(issue)
+
+    assert "Types: feat, fix, refactor" in prompt
 
 
 # --- Config-driven tests: review_implementation uses cfg.impl_model ---
