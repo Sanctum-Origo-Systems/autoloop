@@ -577,3 +577,71 @@ def test_jev_mode_env_var_invalid_raises(tmp_path, monkeypatch):
     toml_path.write_text('repo = "acme-corp/widget"\n')
     with pytest.raises(ValueError, match="got 'auto'"):
         load_config(toml_path)
+
+
+# --- jev unexpected-key warning ---
+
+
+def test_jev_unexpected_keys_warning(tmp_path, monkeypatch, capsys):
+    for var in ("AUTOLOOP_TRIAGE_MODEL", "AUTOLOOP_IMPL_MODEL", "AUTOLOOP_TIMEOUT", "JEV_MODE"):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text(
+        'repo = "acme-corp/widget"\n'
+        "\n"
+        "[jev]\n"
+        'mode = "off"\n'
+        'triage_labels = ["ready"]\n'
+        "some_other = 42\n"
+    )
+    load_config(toml_path)
+    captured = capsys.readouterr()
+    assert "Warning: unexpected key(s) in [jev]:" in captured.err
+    assert "some_other" in captured.err
+    assert "triage_labels" in captured.err
+
+
+def test_jev_no_warning_for_valid_keys(tmp_path, monkeypatch, capsys):
+    for var in ("AUTOLOOP_TRIAGE_MODEL", "AUTOLOOP_IMPL_MODEL", "AUTOLOOP_TIMEOUT", "JEV_MODE"):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text(
+        'repo = "acme-corp/widget"\n\n[jev]\nmode = "shadow"\ntimeout_seconds = 30\n'
+    )
+    load_config(toml_path)
+    captured = capsys.readouterr()
+    assert captured.err == ""
+
+
+def test_jev_no_warning_when_block_absent(tmp_path, monkeypatch, capsys):
+    for var in ("AUTOLOOP_TRIAGE_MODEL", "AUTOLOOP_IMPL_MODEL", "AUTOLOOP_TIMEOUT", "JEV_MODE"):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('repo = "acme-corp/widget"\n')
+    load_config(toml_path)
+    captured = capsys.readouterr()
+    assert captured.err == ""
+
+
+def test_triage_labels_from_repo_autoloop_toml(monkeypatch):
+    """The repo's own autoloop.toml must parse triage_labels as a top-level key."""
+    for var in (
+        "AUTOLOOP_TRIAGE_MODEL",
+        "AUTOLOOP_IMPL_MODEL",
+        "AUTOLOOP_TIMEOUT",
+        "AUTOLOOP_REVIEWER",
+        "AUTOLOOP_TRIAGE_TIMEOUT",
+        "AUTOLOOP_TEST_TIMEOUT",
+        "AUTOLOOP_MAX_RETRIES",
+        "AUTOLOOP_REPO",
+        "JEV_MODE",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    from pathlib import Path
+
+    repo_toml = Path(__file__).resolve().parent.parent / "autoloop.toml"
+    config = load_config(repo_toml)
+    assert "ready" in config.triage_labels
+    assert "rejected" in config.triage_labels
+    assert "needs-human" in config.triage_labels
+    assert len(config.triage_labels) == 6

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -139,6 +140,13 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
         config.auto_merge_promotion_level = level
 
     jev = data.get("jev", {})
+    _jev_known_keys = {"mode", "api_key_env", "timeout_seconds", "gate_low", "gate_high"}
+    _jev_unexpected = sorted(set(jev) - _jev_known_keys)
+    if _jev_unexpected:
+        print(
+            f"Warning: unexpected key(s) in [jev]: {', '.join(_jev_unexpected)}",
+            file=sys.stderr,
+        )
     if "mode" in jev:
         mode = str(jev["mode"])
         if mode not in ("off", "shadow", "gate"):
