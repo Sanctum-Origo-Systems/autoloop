@@ -274,6 +274,7 @@ def _run_jev_shadow(
     diff: str,
     review_passed: bool,
     review_feedback: str,
+    repo_dir: Path | None = None,
 ) -> None:
     """Fire the Jev auto-merge shadow call and log the result.
 
@@ -313,12 +314,12 @@ def _run_jev_shadow(
         "timestamp": datetime.now(UTC).isoformat(),
     }
     try:
-        log_decision(record)
+        log_decision(record, repo_dir=repo_dir)
     except Exception:
         logging.exception("Failed to log Jev auto-merge decision")
 
 
-def review_pr(pr_number, cfg):
+def review_pr(pr_number, cfg, repo_dir: Path | None = None):
     """Review a PR: checkout, run mutation gate + semantic review, post findings.
 
     Never merges. Applies needs-human label on failure.
@@ -338,6 +339,7 @@ def review_pr(pr_number, cfg):
         "cache_creation_tokens": 0,
     }
 
+    cwd = repo_dir or Path.cwd()
     impl.cfg = cfg
     start_time = time.time()
 
@@ -345,7 +347,7 @@ def review_pr(pr_number, cfg):
         ["git", "rev-parse", "--abbrev-ref", "HEAD"],
         capture_output=True,
         text=True,
-        cwd=Path.cwd(),
+        cwd=cwd,
     ).stdout.strip()
 
     # Clean up any stale local branch before checkout to avoid conflicts
@@ -358,15 +360,16 @@ def review_pr(pr_number, cfg):
     if pr_head.returncode == 0:
         try:
             branch_name = json.loads(pr_head.stdout)["headRefName"]
-            subprocess.run(["git", "branch", "-D", branch_name], capture_output=True)
+            subprocess.run(["git", "branch", "-D", branch_name], capture_output=True, cwd=cwd)
         except (json.JSONDecodeError, KeyError):
             pass
-    subprocess.run(["git", "fetch", "origin"], capture_output=True)
+    subprocess.run(["git", "fetch", "origin"], capture_output=True, cwd=cwd)
 
     checkout = subprocess.run(
         ["gh", "pr", "checkout", str(pr_number), "--repo", cfg.repo],
         capture_output=True,
         text=True,
+        cwd=cwd,
     )
     if checkout.returncode != 0:
         print(f"Failed to checkout PR #{pr_number}")
@@ -379,6 +382,7 @@ def review_pr(pr_number, cfg):
             cost_usd=0,
             run_type="review",
             pr_number=pr_number,
+            repo_dir=repo_dir,
         )
         return _zero_result
 
@@ -408,6 +412,7 @@ def review_pr(pr_number, cfg):
                 cost_usd=0,
                 run_type="review",
                 pr_number=pr_number,
+                repo_dir=repo_dir,
             )
             return _zero_result
 
@@ -437,7 +442,7 @@ def review_pr(pr_number, cfg):
                 issue_body = issue_data.get("body", "") or ""
 
         gate_passed, gate_errors = impl.verify_implementation(
-            branch, issue_body=issue_body, title=pr_data.get("title", "")
+            branch, issue_body=issue_body, title=pr_data.get("title", ""), repo_dir=repo_dir
         )
 
         diff = subprocess.run(
@@ -480,6 +485,7 @@ def review_pr(pr_number, cfg):
                 diff=diff,
                 review_passed=review_passed,
                 review_feedback=review_feedback,
+                repo_dir=repo_dir,
             )
 
         cost_line = (
@@ -551,6 +557,7 @@ def review_pr(pr_number, cfg):
             cache_creation_tokens=result.cache_creation_tokens,
             run_type="review",
             pr_number=pr_number,
+            repo_dir=repo_dir,
         )
 
         if success:
@@ -580,7 +587,7 @@ def review_pr(pr_number, cfg):
         subprocess.run(
             ["git", "checkout", original_branch],
             capture_output=True,
-            cwd=Path.cwd(),
+            cwd=cwd,
         )
 
 

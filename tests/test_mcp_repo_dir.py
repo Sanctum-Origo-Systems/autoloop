@@ -279,6 +279,41 @@ def test_review_pr_returns_cost_from_return_dict(mcp_tools, tmp_path, monkeypatc
     assert "300 output" in result
 
 
+def test_review_pr_passes_repo_dir_to_review_pr(mcp_tools, tmp_path, monkeypatch):
+    """autoloop_review_pr passes repo_dir as a Path to review_pr()."""
+    import asyncio
+
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('repo = "acme-corp/widget"\n')
+    for var in (
+        "AUTOLOOP_TRIAGE_MODEL",
+        "AUTOLOOP_IMPL_MODEL",
+        "AUTOLOOP_TIMEOUT",
+        "AUTOLOOP_REVIEWER",
+        "AUTOLOOP_REPO",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    captured = []
+
+    def fake_review_pr(pr_number, cfg, repo_dir=None):
+        captured.append({"pr_number": pr_number, "repo_dir": repo_dir})
+        return {
+            "success": True,
+            "cost_usd": 0.05,
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "cache_read_tokens": 0,
+        }
+
+    with patch("autoloop.cli.review_pr", side_effect=fake_review_pr):
+        asyncio.run(mcp_tools["autoloop_review_pr"](pr_number=99, repo_dir=str(tmp_path)))
+
+    assert len(captured) == 1
+    assert captured[0]["pr_number"] == 99
+    assert captured[0]["repo_dir"] == tmp_path
+
+
 def test_review_pr_failure_returns_status(mcp_tools, tmp_path, monkeypatch):
     """autoloop_review_pr returns failure status with cost."""
     import asyncio
