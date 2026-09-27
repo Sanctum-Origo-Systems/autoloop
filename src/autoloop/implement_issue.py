@@ -95,8 +95,8 @@ def extract_linked_issue_number(title: str, body: str) -> int | None:
     return None
 
 
-def detect_issue_type(body: str) -> str:
-    """Determine conventional commit type from issue body."""
+def detect_issue_type(body: str, title: str = "") -> str:
+    """Determine conventional commit type from issue body, falling back to title prefix."""
     body_lower = (body or "").lower()
     if "## type\nbug" in body_lower:
         return "fix"
@@ -108,6 +108,10 @@ def detect_issue_type(body: str) -> str:
         return "docs"
     if "## type\nchore" in body_lower:
         return "chore"
+    if "## type\n" not in body_lower and title:
+        match = _TYPE_PREFIX_RE.match(title)
+        if match:
+            return match.group(1).lower()
     return "feat"
 
 
@@ -815,7 +819,7 @@ def mutation_gate(branch: str, issue_type: str) -> None:
         )
 
 
-def verify_implementation(branch: str, issue_body: str = "") -> tuple[bool, str]:
+def verify_implementation(branch: str, issue_body: str = "", title: str = "") -> tuple[bool, str]:
     """Verify the agent actually produced valid work."""
     ahead = subprocess.run(
         ["git", "rev-list", "--count", f"main..{branch}"],
@@ -857,7 +861,7 @@ def verify_implementation(branch: str, issue_body: str = "") -> tuple[bool, str]
         lint_rc=lint_rc,
         changed_files=changed,
         test_pattern=cfg.test_pattern,
-        issue_type=detect_issue_type(issue_body),
+        issue_type=detect_issue_type(issue_body, title),
         test_gate_skip_types=cfg.test_gate_skip_types,
     )
     if errors:
@@ -1053,7 +1057,7 @@ def create_pr(
     cache_read_tokens: int = 0,
 ) -> int | None:
     """Create PR with conventional format. Returns PR number or None."""
-    issue_type = detect_issue_type(issue.get("body", ""))
+    issue_type = detect_issue_type(issue.get("body", ""), issue.get("title", ""))
     clean_title = strip_type_prefix(issue["title"])[:60]
     title = f"{issue_type}: {clean_title} (#{issue['number']})"
     body = build_pr_body(
@@ -1359,7 +1363,9 @@ def implement_single_issue(
                 empty_branch_failure = True
                 break
 
-            valid, errors = verify_implementation(branch, issue_body=issue.get("body", ""))
+            valid, errors = verify_implementation(
+                branch, issue_body=issue.get("body", ""), title=issue.get("title", "")
+            )
             if not valid:
                 print(f"  Verification failed:\n{errors}")
                 last_errors = errors
@@ -1367,7 +1373,9 @@ def implement_single_issue(
                 continue
 
             try:
-                mutation_gate(branch, detect_issue_type(issue.get("body", "")))
+                mutation_gate(
+                    branch, detect_issue_type(issue.get("body", ""), issue.get("title", ""))
+                )
             except (RuntimeError, subprocess.TimeoutExpired, subprocess.CalledProcessError) as e:
                 gate_msg = f"Mutation gate error: {e}"
                 print(f"  {gate_msg}")

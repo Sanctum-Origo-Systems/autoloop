@@ -172,6 +172,34 @@ def test_detect_issue_type_default_feat():
     assert detect_issue_type("no type section here") == "feat"
 
 
+def test_detect_issue_type_title_fallback_chore():
+    assert detect_issue_type("no type section", title="chore: update data file") == "chore"
+
+
+def test_detect_issue_type_title_fallback_docs():
+    assert detect_issue_type("", title="docs: update README") == "docs"
+
+
+def test_detect_issue_type_title_fallback_fix():
+    assert detect_issue_type("", title="fix: correct typo") == "fix"
+
+
+def test_detect_issue_type_title_fallback_refactor():
+    assert detect_issue_type("", title="refactor: simplify logic") == "refactor"
+
+
+def test_detect_issue_type_body_takes_precedence_over_title():
+    assert detect_issue_type("## Summary\nFix\n\n## Type\nbug", title="chore: something") == "fix"
+
+
+def test_detect_issue_type_no_body_no_title():
+    assert detect_issue_type("", title="") == "feat"
+
+
+def test_detect_issue_type_title_no_prefix():
+    assert detect_issue_type("", title="update something without prefix") == "feat"
+
+
 # --- Pure function tests: strip_type_prefix ---
 
 
@@ -1286,7 +1314,7 @@ def test_implement_single_issue_uses_cfg_max_retries(monkeypatch, tmp_path):
     monkeypatch.setattr(
         implement_issue,
         "verify_implementation",
-        lambda branch, issue_body="": (False, "Tests failed"),
+        lambda branch, issue_body="", title="": (False, "Tests failed"),
     )
     monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
 
@@ -1316,7 +1344,7 @@ def test_implement_single_issue_returns_false_after_all_retries(monkeypatch, tmp
     monkeypatch.setattr(
         implement_issue,
         "verify_implementation",
-        lambda branch, issue_body="": (False, "Tests failed"),
+        lambda branch, issue_body="", title="": (False, "Tests failed"),
     )
     monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
 
@@ -1377,7 +1405,7 @@ def test_implement_single_issue_logs_summed_token_totals(monkeypatch, tmp_path):
 
     verify_calls = [0]
 
-    def fake_verify(branch, issue_body=""):
+    def fake_verify(branch, issue_body="", title=""):
         verify_calls[0] += 1
         if verify_calls[0] < 2:
             return False, "attempt 1 failed"
@@ -2164,7 +2192,7 @@ def test_implement_single_issue_verification_failure_returns_false_not_systemic(
     monkeypatch.setattr(
         implement_issue,
         "verify_implementation",
-        lambda branch, issue_body="": (False, "Tests failed"),
+        lambda branch, issue_body="", title="": (False, "Tests failed"),
     )
     monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
     monkeypatch.setattr(
@@ -2314,7 +2342,7 @@ def test_implement_single_issue_nonempty_branch_still_retries(monkeypatch, tmp_p
         attempt_count[0] += 1
         return _claude_result()
 
-    def fake_verify(branch, issue_body=""):
+    def fake_verify(branch, issue_body="", title=""):
         return False, "Tests failed:\nsome test output"
 
     monkeypatch.setattr(implement_issue, "implement", fake_implement)
@@ -2413,7 +2441,7 @@ def test_implement_single_issue_non_timeout_failure_still_retries(monkeypatch, t
     monkeypatch.setattr(
         implement_issue,
         "verify_implementation",
-        lambda branch, issue_body="": (False, "Tests failed"),
+        lambda branch, issue_body="", title="": (False, "Tests failed"),
     )
     monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
     monkeypatch.setattr(
@@ -3290,7 +3318,7 @@ def test_implement_single_issue_mutation_gate_triggers_retry(monkeypatch, tmp_pa
     monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
     monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: False)
     monkeypatch.setattr(
-        implement_issue, "verify_implementation", lambda branch, issue_body="": (True, "")
+        implement_issue, "verify_implementation", lambda branch, issue_body="", title="": (True, "")
     )
     monkeypatch.setattr(implement_issue, "mutation_gate", fake_mutation_gate)
     monkeypatch.setattr(implement_issue, "review_implementation", lambda issue, branch: (True, ""))
@@ -3336,7 +3364,7 @@ def test_implement_single_issue_mutation_gate_timeout_triggers_retry(monkeypatch
     monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
     monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: False)
     monkeypatch.setattr(
-        implement_issue, "verify_implementation", lambda branch, issue_body="": (True, "")
+        implement_issue, "verify_implementation", lambda branch, issue_body="", title="": (True, "")
     )
     monkeypatch.setattr(implement_issue, "mutation_gate", fake_mutation_gate)
     monkeypatch.setattr(implement_issue, "review_implementation", lambda issue, branch: (True, ""))
@@ -3390,7 +3418,7 @@ def test_implement_single_issue_mutation_gate_called_process_error_triggers_retr
     monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
     monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: False)
     monkeypatch.setattr(
-        implement_issue, "verify_implementation", lambda branch, issue_body="": (True, "")
+        implement_issue, "verify_implementation", lambda branch, issue_body="", title="": (True, "")
     )
     monkeypatch.setattr(implement_issue, "mutation_gate", fake_mutation_gate)
     monkeypatch.setattr(implement_issue, "review_implementation", lambda issue, branch: (True, ""))

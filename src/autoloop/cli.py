@@ -421,7 +421,9 @@ def review_pr(pr_number, cfg):
                 issue_data = json.loads(issue_view.stdout)
                 issue_body = issue_data.get("body", "") or ""
 
-        gate_passed, gate_errors = impl.verify_implementation(branch, issue_body=issue_body)
+        gate_passed, gate_errors = impl.verify_implementation(
+            branch, issue_body=issue_body, title=pr_data.get("title", "")
+        )
 
         diff = subprocess.run(
             ["gh", "pr", "diff", str(pr_number), "--repo", cfg.repo],
