@@ -7,6 +7,7 @@ import urllib.error
 import pytest
 
 from autoloop.jev import (
+    BACKOFF_SCHEDULE,
     DEFAULT_API_KEY_ENV,
     DEFAULT_MODEL,
     GATE_HIGH,
@@ -15,6 +16,7 @@ from autoloop.jev import (
     JevError,
     JevResult,
     _extract_cost,
+    MAX_RETRIES,
     evaluate,
     probability,
     should_auto_merge,
@@ -142,7 +144,7 @@ class TestEvaluateSuccess:
 
         evaluate("state", {}, timeout=5.0)
 
-        assert calls[0][1] == 5.0
+        assert calls[0][1] == pytest.approx(5.0, abs=0.1)
 
     def test_api_key_env_override(self, monkeypatch):
         monkeypatch.delenv(DEFAULT_API_KEY_ENV, raising=False)
@@ -244,6 +246,138 @@ class TestEvaluateErrors:
 
         with pytest.raises(JevError, match="No API key"):
             evaluate("state", {})
+
+
+def _mock_urlopen_sequence(monkeypatch, responses):
+    """Patch urlopen to return a sequence of responses.
+
+    Each response is either:
+    - bytes: successful response body
+    - (code, reason, headers): HTTPError to raise
+    """
+    call_count = [0]
+
+    class FakeResponse:
+        def __init__(self, data):
+            self._data = data
+
+        def read(self):
+            return self._data
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    def fake_urlopen(req, *, timeout=None):
+        idx = call_count[0]
+        call_count[0] += 1
+        resp = responses[idx]
+        if isinstance(resp, bytes):
+            return FakeResponse(resp)
+        code, reason, headers = resp
+        raise urllib.error.HTTPError(JEV_ENDPOINT, code, reason, headers, io.BytesIO(b""))
+
+    monkeypatch.setattr("autoloop.jev.urllib.request.urlopen", fake_urlopen)
+    return call_count
+
+
+class TestEvaluateRetry:
+    def test_429_then_success(self, monkeypatch):
+        monkeypatch.setenv(DEFAULT_API_KEY_ENV, "test-key")
+        sleeps = []
+        monkeypatch.setattr("autoloop.jev.time.sleep", lambda s: sleeps.append(s))
+        success_body = json.dumps(SAMPLE_RESPONSE).encode()
+        call_count = _mock_urlopen_sequence(
+            monkeypatch,
+            [(429, "Too Many Requests", {}), success_body],
+        )
+
+        result = evaluate("state", {"q": {}})
+
+        assert call_count[0] == 2
+        assert result.answers == SAMPLE_RESPONSE["answers"]
+        assert sleeps == [BACKOFF_SCHEDULE[0]]
+
+    def test_500_then_success(self, monkeypatch):
+        monkeypatch.setenv(DEFAULT_API_KEY_ENV, "test-key")
+        sleeps = []
+        monkeypatch.setattr("autoloop.jev.time.sleep", lambda s: sleeps.append(s))
+        success_body = json.dumps(SAMPLE_RESPONSE).encode()
+        call_count = _mock_urlopen_sequence(
+            monkeypatch,
+            [(500, "Internal Server Error", {}), success_body],
+        )
+
+        result = evaluate("state", {"q": {}})
+
+        assert call_count[0] == 2
+        assert result.answers == SAMPLE_RESPONSE["answers"]
+        assert sleeps == [BACKOFF_SCHEDULE[0]]
+
+    def test_429_exhausted_raises(self, monkeypatch):
+        monkeypatch.setenv(DEFAULT_API_KEY_ENV, "test-key")
+        sleeps = []
+        monkeypatch.setattr("autoloop.jev.time.sleep", lambda s: sleeps.append(s))
+        errors = [(429, "Too Many Requests", {})] * (1 + MAX_RETRIES)
+        call_count = _mock_urlopen_sequence(monkeypatch, errors)
+
+        with pytest.raises(JevError, match="HTTP 429"):
+            evaluate("state", {"q": {}}, timeout=30.0)
+
+        assert call_count[0] == 1 + MAX_RETRIES
+        assert sleeps == list(BACKOFF_SCHEDULE)
+
+    def test_non_retryable_4xx_raises_immediately(self, monkeypatch):
+        monkeypatch.setenv(DEFAULT_API_KEY_ENV, "test-key")
+        sleeps = []
+        monkeypatch.setattr("autoloop.jev.time.sleep", lambda s: sleeps.append(s))
+        call_count = _mock_urlopen_sequence(
+            monkeypatch,
+            [(403, "Forbidden", {})],
+        )
+
+        with pytest.raises(JevError, match="HTTP 403"):
+            evaluate("state", {"q": {}})
+
+        assert call_count[0] == 1
+        assert sleeps == []
+
+    def test_respects_retry_after_header(self, monkeypatch):
+        monkeypatch.setenv(DEFAULT_API_KEY_ENV, "test-key")
+        sleeps = []
+        monkeypatch.setattr("autoloop.jev.time.sleep", lambda s: sleeps.append(s))
+        success_body = json.dumps(SAMPLE_RESPONSE).encode()
+        _mock_urlopen_sequence(
+            monkeypatch,
+            [(429, "Too Many Requests", {"Retry-After": "5"}), success_body],
+        )
+
+        result = evaluate("state", {"q": {}}, timeout=30.0)
+
+        assert result.answers == SAMPLE_RESPONSE["answers"]
+        assert sleeps == [5.0]
+
+    def test_timeout_bounds_retries(self, monkeypatch):
+        monkeypatch.setenv(DEFAULT_API_KEY_ENV, "test-key")
+        clock = [1000.0]
+
+        def fake_monotonic():
+            return clock[0]
+
+        def fake_sleep(s):
+            clock[0] += s
+
+        monkeypatch.setattr("autoloop.jev.time.monotonic", fake_monotonic)
+        monkeypatch.setattr("autoloop.jev.time.sleep", fake_sleep)
+        errors = [(429, "Too Many Requests", {})] * (1 + MAX_RETRIES)
+        call_count = _mock_urlopen_sequence(monkeypatch, errors)
+
+        with pytest.raises(JevError, match="HTTP 429"):
+            evaluate("state", {"q": {}}, timeout=2.5)
+
+        assert call_count[0] == 2
 
 
 class TestProbability:
