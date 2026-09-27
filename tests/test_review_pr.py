@@ -841,3 +841,145 @@ class TestReviewPrIssueTypeDetection:
             result = review_pr(42, cfg)
 
         assert result["success"] is True
+
+
+class TestReviewPrJevShadow:
+    """Verify Jev auto-merge shadow fires from the standalone review-pr path."""
+
+    def test_shadow_mode_calls_should_auto_merge(self, tmp_path, monkeypatch):
+        """When jev_mode is shadow, should_auto_merge is called and logged."""
+        monkeypatch.chdir(tmp_path)
+        cfg = _cfg(jev_mode="shadow")
+        pr_body = "Closes #55\n\n## Summary\nFix bug"
+        pr_data = json.dumps(
+            {"headRefName": "fix/55", "title": "fix: thing (#55)", "body": pr_body}
+        )
+        issue_body = "## Summary\nFix thing\n\n## Type\nbug"
+        issue_data = json.dumps({"body": issue_body})
+        review_json = json.dumps({"approved": True, "summary": "ok"})
+
+        jev_result = {"meets_acceptance_criteria": 0.9, "latency": 0.5, "cost": 0.001}
+
+        dispatch = _make_dispatcher(
+            pr_data,
+            {("gh", "issue", "view"): _ok(stdout=issue_data)},
+        )
+
+        with (
+            patch("subprocess.run", side_effect=dispatch),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(text=review_json),
+            ),
+            patch("autoloop.jev.should_auto_merge", return_value=jev_result) as mock_jev,
+        ):
+            result = review_pr(42, cfg)
+
+        assert result["success"] is True
+        mock_jev.assert_called_once()
+        kwargs = mock_jev.call_args[1]
+        assert kwargs["mode"] == "shadow"
+
+        log_file = tmp_path / "autoloop" / "jev_decisions.jsonl"
+        assert log_file.exists()
+        record = json.loads(log_file.read_text().strip())
+        assert record["point"] == "auto-merge"
+        assert record["issue"] == 55
+        assert record["pr"] == 42
+
+    def test_off_mode_skips_jev(self, tmp_path, monkeypatch):
+        """When jev_mode is off, should_auto_merge is never called."""
+        monkeypatch.chdir(tmp_path)
+        cfg = _cfg(jev_mode="off")
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
+        review_json = json.dumps({"approved": True, "summary": "ok"})
+        dispatch = _make_dispatcher(pr_data)
+
+        with (
+            patch("subprocess.run", side_effect=dispatch),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(text=review_json),
+            ),
+            patch("autoloop.jev.should_auto_merge") as mock_jev,
+        ):
+            result = review_pr(42, cfg)
+
+        assert result["success"] is True
+        mock_jev.assert_not_called()
+
+    def test_jev_failure_does_not_affect_review(self, tmp_path, monkeypatch):
+        """A Jev exception should not break the review outcome."""
+        monkeypatch.chdir(tmp_path)
+        cfg = _cfg(jev_mode="shadow")
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
+        review_json = json.dumps({"approved": True, "summary": "ok"})
+        dispatch = _make_dispatcher(pr_data)
+
+        with (
+            patch("subprocess.run", side_effect=dispatch),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(text=review_json),
+            ),
+            patch(
+                "autoloop.jev.should_auto_merge",
+                side_effect=RuntimeError("Jev is down"),
+            ),
+        ):
+            result = review_pr(42, cfg)
+
+        assert result["success"] is True
+        log_file = tmp_path / "autoloop" / "jev_decisions.jsonl"
+        assert log_file.exists()
+        record = json.loads(log_file.read_text().strip())
+        assert record["jev_call"] == {"error": "Jev is down"}
+
+    def test_shadow_record_has_no_linked_issue(self, tmp_path, monkeypatch):
+        """When there is no linked issue, the record uses issue=0."""
+        monkeypatch.chdir(tmp_path)
+        cfg = _cfg(jev_mode="shadow")
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": "No issue link"})
+        review_json = json.dumps({"approved": True, "summary": "ok"})
+        jev_result = {"meets_acceptance_criteria": 0.8, "latency": 0.3, "cost": 0.001}
+        dispatch = _make_dispatcher(pr_data)
+
+        with (
+            patch("subprocess.run", side_effect=dispatch),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(text=review_json),
+            ),
+            patch("autoloop.jev.should_auto_merge", return_value=jev_result),
+        ):
+            review_pr(42, cfg)
+
+        log_file = tmp_path / "autoloop" / "jev_decisions.jsonl"
+        record = json.loads(log_file.read_text().strip())
+        assert record["issue"] == 0
+        assert record["pr"] == 42
+
+    def test_shadow_fires_on_review_failure(self, tmp_path, monkeypatch):
+        """Shadow should fire even when the semantic review fails."""
+        monkeypatch.chdir(tmp_path)
+        cfg = _cfg(jev_mode="shadow")
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
+        review_json = json.dumps({"approved": False, "issues": ["missing tests"], "summary": "no"})
+        jev_result = {"meets_acceptance_criteria": 0.3, "latency": 0.4, "cost": 0.001}
+        dispatch = _make_dispatcher(pr_data)
+
+        with (
+            patch("subprocess.run", side_effect=dispatch),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(text=review_json),
+            ),
+            patch("autoloop.jev.should_auto_merge", return_value=jev_result) as mock_jev,
+        ):
+            result = review_pr(42, cfg)
+
+        assert result["success"] is False
+        mock_jev.assert_called_once()
+        log_file = tmp_path / "autoloop" / "jev_decisions.jsonl"
+        record = json.loads(log_file.read_text().strip())
+        assert record["incumbent_call"]["approved"] is False

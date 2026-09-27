@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import subprocess
 import sys
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 from autoloop import __version__
@@ -261,6 +264,60 @@ def main():
         sys.exit(1 if any_failed else 0)
 
 
+def _run_jev_shadow(
+    *,
+    cfg,
+    pr_number: int,
+    linked_issue: int | None,
+    pr_title: str,
+    issue_body: str,
+    diff: str,
+    review_passed: bool,
+    review_feedback: str,
+) -> None:
+    """Fire the Jev auto-merge shadow call and log the result.
+
+    Failures are swallowed so they never affect the review outcome.
+    """
+    from autoloop.jev import should_auto_merge
+    from autoloop.jev_log import log_decision
+
+    issue_text = f"Title: {pr_title}\n\nBody:\n{issue_body}"
+    jev_result = None
+    jev_error = None
+    t0 = time.monotonic()
+    try:
+        jev_result = should_auto_merge(
+            issue_text,
+            diff,
+            api_key_env=cfg.jev_api_key_env,
+            model=cfg.jev_model,
+            timeout=cfg.jev_timeout_seconds,
+            gate_low=cfg.jev_gate_low,
+            gate_high=cfg.jev_gate_high,
+            mode=cfg.jev_mode,
+        )
+    except Exception as exc:
+        jev_error = str(exc)
+    latency = time.monotonic() - t0
+
+    record = {
+        "point": "auto-merge",
+        "issue": linked_issue or 0,
+        "pr": pr_number,
+        "jev_call": jev_result if jev_error is None else {"error": jev_error},
+        "incumbent_call": {"approved": review_passed, "feedback": review_feedback},
+        "outcome": "incumbent",
+        "ttft": round((jev_result or {}).get("latency", latency), 3),
+        "cost": (jev_result or {}).get("cost", 0.0),
+        "timestamp": datetime.now(UTC).isoformat(),
+    }
+    try:
+        log_decision(record)
+    except Exception:
+        logging.exception("Failed to log Jev auto-merge decision")
+
+
 def review_pr(pr_number, cfg):
     """Review a PR: checkout, run mutation gate + semantic review, post findings.
 
@@ -269,8 +326,6 @@ def review_pr(pr_number, cfg):
     Returns a dict with keys: success, cost_usd, input_tokens, output_tokens,
     cache_read_tokens, cache_creation_tokens.
     """
-    import time
-
     import autoloop.implement_issue as impl
     from autoloop.claude_runner import run_claude
 
@@ -396,6 +451,18 @@ def review_pr(pr_number, cfg):
             review_passed, review_feedback = (
                 False,
                 "Review call failed (timeout or non-zero exit).",
+            )
+
+        if cfg.jev_mode != "off":
+            _run_jev_shadow(
+                cfg=cfg,
+                pr_number=pr_number,
+                linked_issue=linked_issue,
+                pr_title=pr_data.get("title", ""),
+                issue_body=issue_body,
+                diff=diff,
+                review_passed=review_passed,
+                review_feedback=review_feedback,
             )
 
         cost_line = (
