@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import subprocess
 import sys
 import time
@@ -339,11 +340,8 @@ def review_pr(pr_number, cfg, repo_dir: Path | None = None):
         "cache_creation_tokens": 0,
     }
 
-    import os
-
     cwd = repo_dir or Path.cwd()
     original_cwd = os.getcwd()
-    os.chdir(cwd)
     impl.cfg = cfg
     start_time = time.time()
 
@@ -391,6 +389,7 @@ def review_pr(pr_number, cfg, repo_dir: Path | None = None):
         return _zero_result
 
     try:
+        os.chdir(cwd)
         pr_view = subprocess.run(
             [
                 "gh",
