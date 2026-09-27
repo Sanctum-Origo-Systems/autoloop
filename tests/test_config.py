@@ -401,6 +401,32 @@ def test_load_config_no_path_missing_toml(tmp_path, monkeypatch):
         load_config()
 
 
+# --- auto_merge boolean flag ---
+
+
+def test_auto_merge_default_false():
+    config = AutoLoopConfig()
+    assert config.auto_merge is False
+
+
+def test_auto_merge_omitted_yields_false(tmp_path, monkeypatch):
+    for var in ("AUTOLOOP_TRIAGE_MODEL", "AUTOLOOP_IMPL_MODEL", "AUTOLOOP_TIMEOUT"):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('repo = "acme-corp/widget"\n')
+    config = load_config(toml_path)
+    assert config.auto_merge is False
+
+
+def test_auto_merge_true_from_toml(tmp_path, monkeypatch):
+    for var in ("AUTOLOOP_TRIAGE_MODEL", "AUTOLOOP_IMPL_MODEL", "AUTOLOOP_TIMEOUT"):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('repo = "acme-corp/widget"\nauto_merge = true\n')
+    config = load_config(toml_path)
+    assert config.auto_merge is True
+
+
 # --- auto-merge gate config fields ---
 
 

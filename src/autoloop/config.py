@@ -54,6 +54,7 @@ class AutoLoopConfig:
     auto_merge_success_threshold: float = 0.90
     auto_merge_volume_floor: int = 10
     auto_merge_promotion_level: str = "module"
+    auto_merge: bool = False
     jev_mode: str = "off"
     jev_api_key_env: str = "OPENROUTER_API_KEY"
     jev_model: str = "typesafe/jev-1.13"
@@ -130,6 +131,9 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
 
     if "auto_merge_volume_floor" in data:
         config.auto_merge_volume_floor = int(data["auto_merge_volume_floor"])
+
+    if "auto_merge" in data:
+        config.auto_merge = bool(data["auto_merge"])
 
     if "auto_merge_promotion_level" in data:
         level = str(data["auto_merge_promotion_level"])
