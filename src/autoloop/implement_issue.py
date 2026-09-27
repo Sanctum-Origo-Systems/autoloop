@@ -997,6 +997,7 @@ def review_implementation(
                 timeout=cfg.jev_timeout_seconds,
                 gate_low=cfg.jev_gate_low,
                 gate_high=cfg.jev_gate_high,
+                mode="shadow",
             )
         except Exception as exc:
             jev_error = str(exc)
@@ -1004,13 +1005,16 @@ def review_implementation(
 
         record = {
             "point": "auto-merge",
+            "issue": issue["number"],
             "jev_call": jev_result if jev_error is None else {"error": jev_error},
             "incumbent_call": {"approved": approved, "feedback": feedback},
             "outcome": "incumbent",
-            "ttft": round(latency, 3),
-            "cost": 0.0,
+            "ttft": round((jev_result or {}).get("latency", latency), 3),
+            "cost": (jev_result or {}).get("cost", 0.0),
             "timestamp": datetime.now(UTC).isoformat(),
         }
+        if pr_number is not None:
+            record["pr"] = pr_number
         try:
             log_decision(record)
         except Exception:

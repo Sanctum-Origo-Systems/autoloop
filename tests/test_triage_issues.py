@@ -22,7 +22,6 @@ from autoloop.triage_issues import (
     fetch_single_issue,
     get_decomposition_depth,
     jev_triage,
-    log_jev_decision,
     parse_file_discovery_response,
     parse_rewritten_body,
     parse_sub_issue_response,
@@ -2955,52 +2954,10 @@ def test_main_drain_aggregates_stats(monkeypatch, capsys):
 # --- Jev shadow-mode helpers ---
 
 
-def test_log_jev_decision_writes_jsonl(tmp_path, monkeypatch):
-    monkeypatch.setattr("autoloop.triage_issues.Path.cwd", lambda: tmp_path)
-
-    incumbent = {"verdict": "ready", "points": 2, "priority": "p1", "reason": "ok"}
-    jev = {"answers": {"well_formed": {"type": "boolean", "probability": 0.85}}}
-    log_jev_decision(1, incumbent, jev)
-
-    log_file = tmp_path / "autoloop" / "jev_decisions.jsonl"
-    assert log_file.exists()
-    entry = json.loads(log_file.read_text().strip())
-    assert entry["issue"] == 1
-    assert entry["incumbent"] == incumbent
-    assert entry["jev"] == jev
-    assert entry["error"] is None
-    assert "timestamp" in entry
-
-
-def test_log_jev_decision_records_error(tmp_path, monkeypatch):
-    monkeypatch.setattr("autoloop.triage_issues.Path.cwd", lambda: tmp_path)
-
-    incumbent = {"verdict": "rejected", "reason": "vague"}
-    log_jev_decision(42, incumbent, None, error="connection timeout")
-
-    log_file = tmp_path / "autoloop" / "jev_decisions.jsonl"
-    entry = json.loads(log_file.read_text().strip())
-    assert entry["issue"] == 42
-    assert entry["jev"] is None
-    assert entry["error"] == "connection timeout"
-
-
-def test_log_jev_decision_appends_multiple(tmp_path, monkeypatch):
-    monkeypatch.setattr("autoloop.triage_issues.Path.cwd", lambda: tmp_path)
-
-    log_jev_decision(1, {"verdict": "ready"}, {"answers": {}})
-    log_jev_decision(2, {"verdict": "rejected"}, None, error="timeout")
-
-    log_file = tmp_path / "autoloop" / "jev_decisions.jsonl"
-    lines = log_file.read_text().strip().split("\n")
-    assert len(lines) == 2
-    assert json.loads(lines[0])["issue"] == 1
-    assert json.loads(lines[1])["issue"] == 2
-
-
 def test_jev_triage_calls_jev_module(monkeypatch):
     cfg = _cfg(
-        jev_api_key_env="OPENROUTER_API_KEY",
+        jev_mode="shadow",
+        jev_api_key_env="AI_GATEWAY_API_KEY",
         jev_timeout_seconds=10,
         jev_gate_low=0.15,
         jev_gate_high=0.85,
@@ -3009,11 +2966,12 @@ def test_jev_triage_calls_jev_module(monkeypatch):
 
     captured = {}
 
-    def fake_triage(issue_text, *, api_key_env, model, timeout, gate_low, gate_high):
+    def fake_triage(issue_text, *, api_key_env, model, timeout, gate_low, gate_high, mode):
         captured["issue_text"] = issue_text
         captured["api_key_env"] = api_key_env
         captured["timeout"] = timeout
-        return {"well_formed": 0.9, "needs_decomposition": 0.1, "route": {}}
+        captured["mode"] = mode
+        return {"well_formed": 0.9, "needs_decomposition": 0.1}
 
     monkeypatch.setattr("autoloop.jev.triage", fake_triage)
 
@@ -3021,7 +2979,8 @@ def test_jev_triage_calls_jev_module(monkeypatch):
 
     assert "Test issue" in captured["issue_text"]
     assert "Issue body" in captured["issue_text"]
-    assert captured["api_key_env"] == "OPENROUTER_API_KEY"
+    assert captured["api_key_env"] == "AI_GATEWAY_API_KEY"
+    assert captured["mode"] == "shadow"
     assert result["well_formed"] == 0.9
 
 
@@ -3131,7 +3090,13 @@ def test_triage_issue_jev_shadow_logs_decision(monkeypatch, tmp_path):
     monkeypatch.setattr("autoloop.triage_issues.list_issues_with_labels", lambda cfg, labels: [])
     monkeypatch.setattr("autoloop.triage_issues.Path.cwd", lambda: tmp_path)
 
-    jev_response = {"answers": {"well_formed": {"type": "boolean", "probability": 0.85}}}
+    jev_response = {
+        "well_formed": 0.85,
+        "needs_decomposition": 0.1,
+        "latency": 0.05,
+        "cost": 0.000014,
+        "would_fallback": False,
+    }
     monkeypatch.setattr("autoloop.triage_issues.jev_triage", lambda issue, cfg: jev_response)
 
     class FakeResult:
@@ -3145,10 +3110,13 @@ def test_triage_issue_jev_shadow_logs_decision(monkeypatch, tmp_path):
     log_file = tmp_path / "autoloop" / "jev_decisions.jsonl"
     assert log_file.exists()
     entry = json.loads(log_file.read_text().strip())
+    assert entry["point"] == "triage"
     assert entry["issue"] == 5
-    assert entry["incumbent"]["verdict"] == "ready"
-    assert entry["jev"] == jev_response
-    assert entry["error"] is None
+    assert entry["incumbent_call"]["verdict"] == "ready"
+    assert entry["jev_call"] == jev_response
+    assert entry["outcome"] == "incumbent"
+    assert entry["ttft"] == 0.05
+    assert entry["cost"] == 0.000014
 
 
 def test_triage_issue_jev_shadow_uses_incumbent_verdict(monkeypatch, tmp_path):
@@ -3174,7 +3142,13 @@ def test_triage_issue_jev_shadow_uses_incumbent_verdict(monkeypatch, tmp_path):
     monkeypatch.setattr("autoloop.triage_issues.run_claude", fake_run_claude)
     monkeypatch.setattr("autoloop.triage_issues.Path.cwd", lambda: tmp_path)
 
-    jev_response = {"answers": {"well_formed": {"type": "boolean", "probability": 0.95}}}
+    jev_response = {
+        "well_formed": 0.95,
+        "needs_decomposition": 0.05,
+        "latency": 0.05,
+        "cost": 0.000014,
+        "would_fallback": False,
+    }
     monkeypatch.setattr("autoloop.triage_issues.jev_triage", lambda issue, cfg: jev_response)
 
     calls: list[list[str]] = []
@@ -3246,10 +3220,11 @@ def test_triage_issue_jev_shadow_failure_continues(monkeypatch, tmp_path):
     log_file = tmp_path / "autoloop" / "jev_decisions.jsonl"
     assert log_file.exists()
     entry = json.loads(log_file.read_text().strip())
+    assert entry["point"] == "triage"
     assert entry["issue"] == 9
-    assert entry["jev"] is None
-    assert "timed out" in entry["error"]
-    assert entry["incumbent"]["verdict"] == "ready"
+    assert "timed out" in entry["jev_call"]["error"]
+    assert entry["incumbent_call"]["verdict"] == "ready"
+    assert entry["outcome"] == "incumbent"
 
 
 # --- _extract_dependency_notes ---

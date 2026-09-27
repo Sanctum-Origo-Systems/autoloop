@@ -3771,7 +3771,12 @@ def test_review_implementation_jev_shadow_logs_decision(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     _stub_subprocess_for_review(monkeypatch)
 
-    jev_response = {"meets_acceptance_criteria": 0.9}
+    jev_response = {
+        "meets_acceptance_criteria": 0.9,
+        "latency": 0.05,
+        "cost": 0.000014,
+        "would_fallback": False,
+    }
     monkeypatch.setattr("autoloop.jev.should_auto_merge", lambda *a, **kw: jev_response)
 
     approved, feedback = review_implementation(
@@ -3784,12 +3789,13 @@ def test_review_implementation_jev_shadow_logs_decision(monkeypatch, tmp_path):
     assert log_file.exists()
     entry = json.loads(log_file.read_text().strip())
     assert entry["point"] == "auto-merge"
+    assert entry["issue"] == 5
     assert entry["jev_call"] == jev_response
     assert entry["incumbent_call"]["approved"] is True
     assert entry["outcome"] == "incumbent"
+    assert entry["ttft"] == 0.05
+    assert entry["cost"] == 0.000014
     assert "timestamp" in entry
-    assert "ttft" in entry
-    assert "cost" in entry
 
 
 def test_review_implementation_jev_shadow_returns_incumbent(monkeypatch, tmp_path):
@@ -3822,7 +3828,12 @@ def test_review_implementation_jev_shadow_returns_incumbent(monkeypatch, tmp_pat
 
     monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
 
-    jev_response = {"meets_acceptance_criteria": 0.95}
+    jev_response = {
+        "meets_acceptance_criteria": 0.95,
+        "latency": 0.05,
+        "cost": 0.000014,
+        "would_fallback": False,
+    }
     monkeypatch.setattr("autoloop.jev.should_auto_merge", lambda *a, **kw: jev_response)
 
     approved, feedback = review_implementation(
@@ -3834,6 +3845,7 @@ def test_review_implementation_jev_shadow_returns_incumbent(monkeypatch, tmp_pat
 
     log_file = tmp_path / "autoloop" / "jev_decisions.jsonl"
     entry = json.loads(log_file.read_text().strip())
+    assert entry["issue"] == 7
     assert entry["incumbent_call"]["approved"] is False
     assert entry["jev_call"] == jev_response
 
@@ -3858,6 +3870,7 @@ def test_review_implementation_jev_shadow_failure_continues(monkeypatch, tmp_pat
     log_file = tmp_path / "autoloop" / "jev_decisions.jsonl"
     entry = json.loads(log_file.read_text().strip())
     assert entry["point"] == "auto-merge"
+    assert entry["issue"] == 9
     assert entry["jev_call"]["error"] == "jev endpoint timed out"
     assert entry["incumbent_call"]["approved"] is True
 
@@ -3895,7 +3908,13 @@ def test_review_implementation_jev_shadow_passes_diff_and_issue(monkeypatch, tmp
     def capture_jev(issue_text, diff, **kw):
         captured["issue_text"] = issue_text
         captured["diff"] = diff
-        return {"meets_acceptance_criteria": 0.8}
+        captured["mode"] = kw.get("mode")
+        return {
+            "meets_acceptance_criteria": 0.8,
+            "latency": 0.05,
+            "cost": 0.000014,
+            "would_fallback": False,
+        }
 
     monkeypatch.setattr("autoloop.jev.should_auto_merge", capture_jev)
 
@@ -3904,3 +3923,4 @@ def test_review_implementation_jev_shadow_passes_diff_and_issue(monkeypatch, tmp
     assert "Add widget" in captured["issue_text"]
     assert "Widget spec" in captured["issue_text"]
     assert "+added line" in captured["diff"]
+    assert captured["mode"] == "shadow"
