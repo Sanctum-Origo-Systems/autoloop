@@ -244,17 +244,44 @@ def log_run(
 # --- Active session detection ---
 
 
+def _get_ppid_via_proc(pid: int) -> int | None:
+    """Read parent PID from /proc (Linux)."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        return int(stat.split(")")[1].split()[1])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _get_ppid_via_ps(pid: int) -> int | None:
+    """Read parent PID via ps (portable fallback for macOS, etc.)."""
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "ppid=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return int(result.stdout.strip())
+    except (FileNotFoundError, ValueError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
 def _get_own_pid_chain() -> set[int]:
     """Collect PIDs from the current process up through all ancestors."""
     chain = set()
     pid = os.getpid()
+    use_proc = Path("/proc").is_dir()
     while pid > 0:
         chain.add(pid)
-        try:
-            stat = Path(f"/proc/{pid}/stat").read_text()
-            ppid = int(stat.split(")")[1].split()[1])
-        except (OSError, ValueError, IndexError):
-            break
+        ppid = _get_ppid_via_proc(pid) if use_proc else _get_ppid_via_ps(pid)
+        if ppid is None:
+            if use_proc:
+                ppid = _get_ppid_via_ps(pid)
+            if ppid is None:
+                break
         if ppid in chain or ppid <= 0:
             break
         pid = ppid
