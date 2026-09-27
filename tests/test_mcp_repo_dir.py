@@ -247,9 +247,11 @@ def test_review_pr_registered(mcp_tools):
     assert "autoloop_review_pr" in mcp_tools
 
 
-def test_review_pr_returns_cost_from_return_dict(mcp_tools, tmp_path, monkeypatch):
-    """autoloop_review_pr returns cost info from review_pr() return dict."""
+def test_review_pr_returns_cost_from_subprocess(mcp_tools, tmp_path, monkeypatch):
+    """autoloop_review_pr parses JSON from subprocess stdout."""
     import asyncio
+    import json
+    from types import SimpleNamespace
 
     toml_path = tmp_path / "autoloop.toml"
     toml_path.write_text('repo = "acme-corp/widget"\n')
@@ -262,15 +264,21 @@ def test_review_pr_returns_cost_from_return_dict(mcp_tools, tmp_path, monkeypatc
     ):
         monkeypatch.delenv(var, raising=False)
 
-    review_result = {
-        "success": True,
-        "cost_usd": 0.12,
-        "input_tokens": 1500,
-        "output_tokens": 300,
-        "cache_read_tokens": 100,
-    }
+    review_json = json.dumps(
+        {
+            "success": True,
+            "cost_usd": 0.12,
+            "input_tokens": 1500,
+            "output_tokens": 300,
+            "cache_read_tokens": 100,
+            "cache_creation_tokens": 0,
+        }
+    )
 
-    with patch("autoloop.cli.review_pr", return_value=review_result):
+    with patch(
+        "subprocess.run",
+        return_value=SimpleNamespace(returncode=0, stdout=review_json, stderr=""),
+    ):
         result = asyncio.run(mcp_tools["autoloop_review_pr"](pr_number=55, repo_dir=str(tmp_path)))
 
     assert "passed" in result
@@ -279,9 +287,11 @@ def test_review_pr_returns_cost_from_return_dict(mcp_tools, tmp_path, monkeypatc
     assert "300 output" in result
 
 
-def test_review_pr_passes_repo_dir_to_review_pr(mcp_tools, tmp_path, monkeypatch):
-    """autoloop_review_pr passes repo_dir as a Path to review_pr()."""
+def test_review_pr_subprocess_uses_cwd(mcp_tools, tmp_path, monkeypatch):
+    """autoloop_review_pr runs subprocess with cwd=base and --json flag."""
     import asyncio
+    import json
+    from types import SimpleNamespace
 
     toml_path = tmp_path / "autoloop.toml"
     toml_path.write_text('repo = "acme-corp/widget"\n')
@@ -294,29 +304,39 @@ def test_review_pr_passes_repo_dir_to_review_pr(mcp_tools, tmp_path, monkeypatch
     ):
         monkeypatch.delenv(var, raising=False)
 
-    captured = []
+    captured_calls = []
 
-    def fake_review_pr(pr_number, cfg, repo_dir=None):
-        captured.append({"pr_number": pr_number, "repo_dir": repo_dir})
-        return {
-            "success": True,
-            "cost_usd": 0.05,
-            "input_tokens": 100,
-            "output_tokens": 50,
-            "cache_read_tokens": 0,
-        }
+    def tracking_run(*args, **kwargs):
+        captured_calls.append((args, kwargs))
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "success": True,
+                    "cost_usd": 0.05,
+                    "input_tokens": 100,
+                    "output_tokens": 50,
+                    "cache_read_tokens": 0,
+                    "cache_creation_tokens": 0,
+                }
+            ),
+            stderr="",
+        )
 
-    with patch("autoloop.cli.review_pr", side_effect=fake_review_pr):
+    with patch("subprocess.run", side_effect=tracking_run):
         asyncio.run(mcp_tools["autoloop_review_pr"](pr_number=99, repo_dir=str(tmp_path)))
 
-    assert len(captured) == 1
-    assert captured[0]["pr_number"] == 99
-    assert captured[0]["repo_dir"] == tmp_path
+    assert len(captured_calls) == 1
+    call_args, call_kwargs = captured_calls[0]
+    assert call_args[0] == ["autoloop", "review-pr", "99", "--json"]
+    assert call_kwargs["cwd"] == tmp_path
 
 
 def test_review_pr_failure_returns_status(mcp_tools, tmp_path, monkeypatch):
-    """autoloop_review_pr returns failure status with cost."""
+    """autoloop_review_pr returns failure status with cost from subprocess."""
     import asyncio
+    import json
+    from types import SimpleNamespace
 
     toml_path = tmp_path / "autoloop.toml"
     toml_path.write_text('repo = "acme-corp/widget"\n')
@@ -329,15 +349,21 @@ def test_review_pr_failure_returns_status(mcp_tools, tmp_path, monkeypatch):
     ):
         monkeypatch.delenv(var, raising=False)
 
-    review_result = {
-        "success": False,
-        "cost_usd": 0.08,
-        "input_tokens": 1000,
-        "output_tokens": 200,
-        "cache_read_tokens": 50,
-    }
+    review_json = json.dumps(
+        {
+            "success": False,
+            "cost_usd": 0.08,
+            "input_tokens": 1000,
+            "output_tokens": 200,
+            "cache_read_tokens": 50,
+            "cache_creation_tokens": 0,
+        }
+    )
 
-    with patch("autoloop.cli.review_pr", return_value=review_result):
+    with patch(
+        "subprocess.run",
+        return_value=SimpleNamespace(returncode=1, stdout=review_json, stderr=""),
+    ):
         result = asyncio.run(mcp_tools["autoloop_review_pr"](pr_number=55, repo_dir=str(tmp_path)))
 
     assert "failed" in result

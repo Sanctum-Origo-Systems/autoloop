@@ -179,8 +179,8 @@ def main():
     async def autoloop_review_pr(pr_number: int, repo_dir: str | None = None) -> str:
         """Review a PR (mutation gate + semantic review, no merge).
 
-        Returns the review result with cost information. Runs in a thread
-        so it does not block the MCP server for other callers.
+        Returns the review result with cost information. Runs as a subprocess
+        so it does not change the server's working directory.
 
         Args:
             pr_number: The PR number to review.
@@ -188,19 +188,49 @@ def main():
         """
         import asyncio
 
-        from autoloop.cli import review_pr
         from autoloop.config import load_config
 
         base = Path(repo_dir) if repo_dir else Path.cwd()
         cfg = load_config(path=base / "autoloop.toml")
 
         loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, review_pr, pr_number, cfg, base)
+        try:
+            result = await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(
+                    ["autoloop", "review-pr", str(pr_number), "--json"],
+                    cwd=base,
+                    capture_output=True,
+                    text=True,
+                    timeout=cfg.impl_timeout,
+                ),
+            )
+        except subprocess.TimeoutExpired:
+            return f"Review of PR #{pr_number} timed out after {cfg.impl_timeout}s."
 
-        status = "passed" if result["success"] else "failed"
-        cost = result["cost_usd"]
-        inp = result["input_tokens"]
-        out = result["output_tokens"]
+        if result.returncode != 0:
+            try:
+                data = json.loads(result.stdout)
+                cost = data.get("cost_usd", 0)
+                inp = data.get("input_tokens", 0)
+                out = data.get("output_tokens", 0)
+                return (
+                    f"Review failed for PR #{pr_number}. "
+                    f"Cost: ${cost:.2f}, tokens: {inp:,} input / {out:,} output."
+                )
+            except (json.JSONDecodeError, ValueError):
+                error = result.stderr.strip() or "Review failed (no details available)"
+                return f"Review failed for PR #{pr_number}: {error}"
+
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return f"Review of PR #{pr_number} completed but returned invalid output."
+
+        status = "passed" if data.get("success") else "failed"
+        cost = data.get("cost_usd", 0)
+        inp = data.get("input_tokens", 0)
+        out = data.get("output_tokens", 0)
         return (
             f"Review {status} for PR #{pr_number}. "
             f"Cost: ${cost:.2f}, tokens: {inp:,} input / {out:,} output."

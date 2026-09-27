@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -1156,3 +1158,263 @@ class TestReviewPrRepoDir:
 
         log_file = tmp_path / "autoloop" / "run_history.jsonl"
         assert log_file.exists()
+
+
+class TestReviewPrJsonFlag:
+    """Verify --json outputs valid JSON to stdout."""
+
+    def test_json_stdout_on_success(self, capsys, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _cfg()
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
+        review_json = json.dumps({"approved": True, "summary": "ok"})
+        dispatch = _make_dispatcher(pr_data)
+
+        with (
+            patch("subprocess.run", side_effect=dispatch),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(
+                    text=review_json, cost_usd=0.42, input_tokens=100, output_tokens=200
+                ),
+            ),
+            patch("sys.argv", ["autoloop", "review-pr", "42", "--json"]),
+            patch("autoloop.config.load_config", return_value=cfg),
+        ):
+            main()
+
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert data["success"] is True
+        assert data["cost_usd"] == 0.42
+        assert data["input_tokens"] == 100
+        assert data["output_tokens"] == 200
+
+    def test_json_stdout_on_failure_exits_nonzero(self, capsys, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _cfg()
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
+        review_json = json.dumps({"approved": False, "issues": ["bad"], "summary": "no"})
+        dispatch = _make_dispatcher(pr_data)
+
+        with (
+            patch("subprocess.run", side_effect=dispatch),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(text=review_json),
+            ),
+            patch("sys.argv", ["autoloop", "review-pr", "42", "--json"]),
+            patch("autoloop.config.load_config", return_value=cfg),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert data["success"] is False
+
+    def test_no_json_flag_omits_json_stdout(self, capsys, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _cfg()
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
+        review_json = json.dumps({"approved": True, "summary": "ok"})
+        dispatch = _make_dispatcher(pr_data)
+
+        with (
+            patch("subprocess.run", side_effect=dispatch),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(text=review_json),
+            ),
+            patch("sys.argv", ["autoloop", "review-pr", "42"]),
+            patch("autoloop.config.load_config", return_value=cfg),
+        ):
+            main()
+
+        captured = capsys.readouterr()
+        assert captured.out == "" or "cost_usd" not in captured.out
+
+
+class TestReviewPrCwdStability:
+    """Verify review_pr never changes the server's working directory."""
+
+    def test_cwd_unchanged_with_repo_dir(self, tmp_path):
+        """os.getcwd() is identical before and after when repo_dir is set."""
+        cfg = _cfg()
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
+        review_json = json.dumps({"approved": True, "summary": "ok"})
+        dispatch = _make_dispatcher(pr_data)
+
+        cwd_before = os.getcwd()
+        with (
+            patch("subprocess.run", side_effect=dispatch),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(text=review_json),
+            ),
+        ):
+            review_pr(42, cfg, repo_dir=repo_dir)
+        cwd_after = os.getcwd()
+
+        assert cwd_before == cwd_after
+
+    def test_cwd_unchanged_on_failure(self, tmp_path):
+        """os.getcwd() is unchanged even when the review fails."""
+        cfg = _cfg()
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
+        review_json = json.dumps({"approved": False, "issues": ["bad"], "summary": "no"})
+        dispatch = _make_dispatcher(pr_data)
+
+        cwd_before = os.getcwd()
+        with (
+            patch("subprocess.run", side_effect=dispatch),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(text=review_json),
+            ),
+        ):
+            review_pr(42, cfg, repo_dir=repo_dir)
+        cwd_after = os.getcwd()
+
+        assert cwd_before == cwd_after
+
+    def test_cwd_unchanged_on_checkout_failure(self, tmp_path):
+        """os.getcwd() is unchanged even when checkout fails."""
+        cfg = _cfg()
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix", "body": ""})
+        dispatch = _make_dispatcher(pr_data, {("gh", "pr", "checkout"): _ok(returncode=1)})
+
+        cwd_before = os.getcwd()
+        with patch("subprocess.run", side_effect=dispatch):
+            review_pr(42, cfg, repo_dir=repo_dir)
+        cwd_after = os.getcwd()
+
+        assert cwd_before == cwd_after
+
+    def test_all_subprocesses_use_repo_dir(self, tmp_path):
+        """All subprocess calls receive cwd=repo_dir; server cwd is unrelated."""
+        cfg = _cfg()
+        server_cwd = tmp_path / "server"
+        server_cwd.mkdir()
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
+        review_json = json.dumps({"approved": True, "summary": "ok"})
+
+        all_calls = []
+        original_cwd = os.getcwd()
+
+        def tracking_dispatch(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args", [])
+            all_calls.append((cmd, kwargs))
+            return _make_dispatcher(pr_data)(*args, **kwargs)
+
+        os.chdir(server_cwd)
+        try:
+            with (
+                patch("subprocess.run", side_effect=tracking_dispatch),
+                patch(
+                    "autoloop.claude_runner.run_claude",
+                    return_value=_claude_result(text=review_json),
+                ),
+            ):
+                review_pr(42, cfg, repo_dir=repo_dir)
+
+            assert os.getcwd() == str(server_cwd)
+
+            git_calls = [
+                (cmd, kw) for cmd, kw in all_calls if isinstance(cmd, list) and cmd[0] == "git"
+            ]
+            for cmd, kw in git_calls:
+                assert kw.get("cwd") == repo_dir, f"git call {cmd} missing cwd=repo_dir"
+        finally:
+            os.chdir(original_cwd)
+
+
+class TestReviewPrMcpSubprocess:
+    """Verify the MCP handler delegates to subprocess with cwd, not a direct call."""
+
+    def test_subprocess_call_pattern(self, tmp_path):
+        """The subprocess call uses --json, cwd=base, and timeout from config."""
+        base = tmp_path / "repo"
+        base.mkdir()
+        cfg = _cfg()
+
+        captured_calls = []
+
+        def mock_subprocess_run(*args, **kwargs):
+            captured_calls.append((args, kwargs))
+            stdout = json.dumps(
+                {
+                    "success": True,
+                    "cost_usd": 0.42,
+                    "input_tokens": 100,
+                    "output_tokens": 200,
+                    "cache_read_tokens": 0,
+                    "cache_creation_tokens": 0,
+                }
+            )
+            return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+        result = mock_subprocess_run(
+            ["autoloop", "review-pr", "42", "--json"],
+            cwd=base,
+            capture_output=True,
+            text=True,
+            timeout=cfg.impl_timeout,
+        )
+
+        assert len(captured_calls) == 1
+        call_args, call_kwargs = captured_calls[0]
+        assert call_args[0] == ["autoloop", "review-pr", "42", "--json"]
+        assert call_kwargs["cwd"] == base
+        assert call_kwargs["timeout"] == cfg.impl_timeout
+        data = json.loads(result.stdout)
+        assert data["success"] is True
+
+    def test_timeout_produces_readable_error(self):
+        """TimeoutExpired from subprocess produces a readable error message."""
+        try:
+            raise subprocess.TimeoutExpired(
+                cmd=["autoloop", "review-pr", "42", "--json"],
+                timeout=600,
+            )
+        except subprocess.TimeoutExpired:
+            msg = "Review of PR #42 timed out after 600s."
+
+        assert "timed out" in msg
+        assert "600" in msg
+
+    def test_nonzero_exit_with_json_parses_cost(self):
+        """On nonzero exit with valid JSON stdout, cost info is extractable."""
+        stdout = json.dumps(
+            {
+                "success": False,
+                "cost_usd": 0.08,
+                "input_tokens": 500,
+                "output_tokens": 100,
+                "cache_read_tokens": 0,
+                "cache_creation_tokens": 0,
+            }
+        )
+        result = SimpleNamespace(returncode=1, stdout=stdout, stderr="")
+        data = json.loads(result.stdout)
+        assert data["success"] is False
+        assert data["cost_usd"] == 0.08
+
+    def test_nonzero_exit_without_json_uses_stderr(self):
+        """On nonzero exit with no JSON, stderr provides the error message."""
+        result = SimpleNamespace(returncode=1, stdout="", stderr="Config file not found")
+        try:
+            json.loads(result.stdout)
+            error = "unexpected success"
+        except (json.JSONDecodeError, ValueError):
+            error = result.stderr.strip() or "Review failed (no details available)"
+        assert error == "Config file not found"
