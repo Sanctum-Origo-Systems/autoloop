@@ -348,6 +348,21 @@ def review_pr(pr_number, cfg):
         cwd=Path.cwd(),
     ).stdout.strip()
 
+    # Clean up any stale local branch before checkout to avoid conflicts
+    # when the local branch exists with different commits than the remote.
+    pr_head = subprocess.run(
+        ["gh", "pr", "view", str(pr_number), "--repo", cfg.repo, "--json", "headRefName"],
+        capture_output=True,
+        text=True,
+    )
+    if pr_head.returncode == 0:
+        try:
+            branch_name = json.loads(pr_head.stdout)["headRefName"]
+            subprocess.run(["git", "branch", "-D", branch_name], capture_output=True)
+        except (json.JSONDecodeError, KeyError):
+            pass
+    subprocess.run(["git", "fetch", "origin"], capture_output=True)
+
     checkout = subprocess.run(
         ["gh", "pr", "checkout", str(pr_number), "--repo", cfg.repo],
         capture_output=True,
