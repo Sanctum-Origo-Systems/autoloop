@@ -54,7 +54,8 @@ class AutoLoopConfig:
     auto_merge_volume_floor: int = 10
     auto_merge_promotion_level: str = "module"
     jev_mode: str = "off"
-    jev_api_key_env: str = "AI_GATEWAY_API_KEY"
+    jev_api_key_env: str = "OPENROUTER_API_KEY"
+    jev_model: str = "typesafe/jev-1.13"
     jev_timeout_seconds: int = 10
     jev_gate_low: float = 0.15
     jev_gate_high: float = 0.85
@@ -145,6 +146,8 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
         config.jev_mode = mode
     if "api_key_env" in jev:
         config.jev_api_key_env = str(jev["api_key_env"])
+    if "model" in jev:
+        config.jev_model = str(jev["model"])
     if "timeout_seconds" in jev:
         config.jev_timeout_seconds = int(jev["timeout_seconds"])
     if "gate_low" in jev:

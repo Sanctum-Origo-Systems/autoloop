@@ -52,7 +52,8 @@ def _cfg(**overrides):
             "needs-human",
         ],
         "jev_mode": "off",
-        "jev_api_key_env": "AI_GATEWAY_API_KEY",
+        "jev_api_key_env": "OPENROUTER_API_KEY",
+        "jev_model": "typesafe/jev-1.13",
         "jev_timeout_seconds": 10,
         "jev_gate_low": 0.15,
         "jev_gate_high": 0.85,
@@ -2998,7 +2999,7 @@ def test_log_jev_decision_appends_multiple(tmp_path, monkeypatch):
 
 def test_jev_triage_calls_jev_module(monkeypatch):
     cfg = _cfg(
-        jev_api_key_env="AI_GATEWAY_API_KEY",
+        jev_api_key_env="OPENROUTER_API_KEY",
         jev_timeout_seconds=10,
         jev_gate_low=0.15,
         jev_gate_high=0.85,
@@ -3007,7 +3008,7 @@ def test_jev_triage_calls_jev_module(monkeypatch):
 
     captured = {}
 
-    def fake_triage(issue_text, *, api_key_env, timeout, gate_low, gate_high):
+    def fake_triage(issue_text, *, api_key_env, model, timeout, gate_low, gate_high):
         captured["issue_text"] = issue_text
         captured["api_key_env"] = api_key_env
         captured["timeout"] = timeout
@@ -3019,7 +3020,7 @@ def test_jev_triage_calls_jev_module(monkeypatch):
 
     assert "Test issue" in captured["issue_text"]
     assert "Issue body" in captured["issue_text"]
-    assert captured["api_key_env"] == "AI_GATEWAY_API_KEY"
+    assert captured["api_key_env"] == "OPENROUTER_API_KEY"
     assert result["well_formed"] == 0.9
 
 
@@ -3027,7 +3028,7 @@ def test_jev_triage_propagates_error(monkeypatch):
     from autoloop.jev import JevError
 
     cfg = _cfg(
-        jev_api_key_env="AI_GATEWAY_API_KEY",
+        jev_api_key_env="OPENROUTER_API_KEY",
         jev_timeout_seconds=10,
         jev_gate_low=0.15,
         jev_gate_high=0.85,
@@ -3099,7 +3100,7 @@ def test_triage_issue_jev_off_no_jev_call(monkeypatch, tmp_path):
 
 def test_triage_issue_jev_shadow_logs_decision(monkeypatch, tmp_path):
     """With jev_mode='shadow', Jev is called and the decision is logged."""
-    cfg = _cfg(jev_mode="shadow", jev_api_key_env="AI_GATEWAY_API_KEY")
+    cfg = _cfg(jev_mode="shadow", jev_api_key_env="OPENROUTER_API_KEY")
 
     def fake_load():
         return "src/module.py\n", "# CLAUDE.md"
@@ -3151,7 +3152,7 @@ def test_triage_issue_jev_shadow_logs_decision(monkeypatch, tmp_path):
 
 def test_triage_issue_jev_shadow_uses_incumbent_verdict(monkeypatch, tmp_path):
     """With jev_mode='shadow', the pipeline outcome is determined by the incumbent only."""
-    cfg = _cfg(jev_mode="shadow", jev_api_key_env="AI_GATEWAY_API_KEY")
+    cfg = _cfg(jev_mode="shadow", jev_api_key_env="OPENROUTER_API_KEY")
 
     def fake_load():
         return "src/module.py\n", "# CLAUDE.md"
@@ -3196,7 +3197,7 @@ def test_triage_issue_jev_shadow_uses_incumbent_verdict(monkeypatch, tmp_path):
 
 def test_triage_issue_jev_shadow_failure_continues(monkeypatch, tmp_path):
     """Jev failure in shadow mode does not affect the triage pipeline."""
-    cfg = _cfg(jev_mode="shadow", jev_api_key_env="AI_GATEWAY_API_KEY")
+    cfg = _cfg(jev_mode="shadow", jev_api_key_env="OPENROUTER_API_KEY")
 
     def fake_load():
         return "src/module.py\n", "# CLAUDE.md"

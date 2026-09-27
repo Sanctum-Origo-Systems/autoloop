@@ -9,8 +9,9 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
-JEV_ENDPOINT = "https://ai-gateway.vercel.sh/v4/ai/evaluation-model"
-DEFAULT_API_KEY_ENV = "AI_GATEWAY_API_KEY"
+JEV_ENDPOINT = "https://openrouter.ai/api/alpha/decisions"
+DEFAULT_API_KEY_ENV = "OPENROUTER_API_KEY"
+DEFAULT_MODEL = "typesafe/jev-1.13"
 
 GATE_LOW = 0.35
 GATE_HIGH = 0.65
@@ -25,6 +26,7 @@ class JevResult:
     answers: dict
     latency_seconds: float
     raw: dict
+    cost_usd: float | None = None
 
 
 def evaluate(
@@ -33,6 +35,7 @@ def evaluate(
     *,
     api_key: str | None = None,
     api_key_env: str = DEFAULT_API_KEY_ENV,
+    model: str = DEFAULT_MODEL,
     timeout: float = 10.0,
 ) -> JevResult:
     if api_key is None:
@@ -40,17 +43,13 @@ def evaluate(
     if not api_key:
         raise JevError(f"No API key: pass api_key or set ${api_key_env}")
 
-    body = json.dumps({"state": state, "questions": questions, "providerOptions": {}}).encode()
+    body = json.dumps({"model": model, "state": state, "questions": questions}).encode()
     req = urllib.request.Request(
         JEV_ENDPOINT,
         data=body,
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
-            "ai-model-id": "typesafe-ai/jev",
-            "ai-gateway-auth-method": "api-key",
-            "ai-gateway-protocol-version": "0.0.1",
-            "ai-evaluation-model-specification-version": "4",
         },
         method="POST",
     )
@@ -60,7 +59,13 @@ def evaluate(
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw_bytes = resp.read()
     except urllib.error.HTTPError as exc:
-        raise JevError(f"HTTP {exc.code}: {exc.reason}") from exc
+        error_body = exc.read()
+        try:
+            err = json.loads(error_body).get("error", {})
+            msg = err.get("message", exc.reason)
+        except (json.JSONDecodeError, ValueError, AttributeError):
+            msg = exc.reason
+        raise JevError(f"HTTP {exc.code}: {msg}") from exc
     except urllib.error.URLError as exc:
         raise JevError(f"Request failed: {exc.reason}") from exc
 
@@ -74,14 +79,19 @@ def evaluate(
     if "answers" not in data:
         raise JevError("Response missing 'answers' key")
 
-    return JevResult(answers=data["answers"], latency_seconds=latency, raw=data)
+    cost_usd = None
+    usage = data.get("usage")
+    if isinstance(usage, dict):
+        cost_usd = usage.get("cost")
+
+    return JevResult(answers=data["answers"], latency_seconds=latency, raw=data, cost_usd=cost_usd)
 
 
 def probability(result: JevResult, question: str) -> float | None:
     entry = result.answers.get(question)
     if entry is None:
         return None
-    return entry.get("probability")
+    return entry.get("noul")
 
 
 def _in_middle_band(p: float, gate_low: float = GATE_LOW, gate_high: float = GATE_HIGH) -> bool:
@@ -97,13 +107,14 @@ def triage(
     *,
     api_key: str | None = None,
     api_key_env: str = DEFAULT_API_KEY_ENV,
+    model: str = DEFAULT_MODEL,
     timeout: float = 10.0,
     gate_low: float = GATE_LOW,
     gate_high: float = GATE_HIGH,
 ) -> dict:
     questions = {
         "well_formed": {
-            "type": "boolean",
+            "type": "noul",
             "instructions": "Is this GitHub issue well-formed enough to implement?",
             "criteria": {
                 "true": "Has a clear problem statement, expected behavior, and enough context to act on",
@@ -111,7 +122,7 @@ def triage(
             },
         },
         "needs_decomposition": {
-            "type": "boolean",
+            "type": "noul",
             "instructions": "Does this issue need to be decomposed into smaller sub-issues?",
             "criteria": {
                 "true": "Touches multiple files or concerns, estimated at more than 3 story points",
@@ -126,6 +137,7 @@ def triage(
             questions,
             api_key=api_key,
             api_key_env=api_key_env,
+            model=model,
             timeout=timeout,
         )
     except JevError as exc:
@@ -151,13 +163,14 @@ def should_auto_merge(
     *,
     api_key: str | None = None,
     api_key_env: str = DEFAULT_API_KEY_ENV,
+    model: str = DEFAULT_MODEL,
     timeout: float = 10.0,
     gate_low: float = GATE_LOW,
     gate_high: float = GATE_HIGH,
 ) -> dict:
     questions = {
         "meets_acceptance_criteria": {
-            "type": "boolean",
+            "type": "noul",
             "instructions": "Does this PR meet the acceptance criteria from the issue and is it safe to merge?",
             "criteria": {
                 "true": "All acceptance criteria addressed, tests pass, no regressions, code is clean",
@@ -174,6 +187,7 @@ def should_auto_merge(
             questions,
             api_key=api_key,
             api_key_env=api_key_env,
+            model=model,
             timeout=timeout,
         )
     except JevError as exc:

@@ -461,7 +461,8 @@ def test_auto_merge_promotion_level_invalid(tmp_path, monkeypatch):
 def test_jev_defaults():
     config = AutoLoopConfig()
     assert config.jev_mode == "off"
-    assert config.jev_api_key_env == "AI_GATEWAY_API_KEY"
+    assert config.jev_api_key_env == "OPENROUTER_API_KEY"
+    assert config.jev_model == "typesafe/jev-1.13"
     assert config.jev_timeout_seconds == 10
     assert config.jev_gate_low == 0.15
     assert config.jev_gate_high == 0.85
@@ -474,7 +475,8 @@ def test_jev_absent_block_yields_defaults(tmp_path, monkeypatch):
     toml_path.write_text('repo = "acme-corp/widget"\n')
     config = load_config(toml_path)
     assert config.jev_mode == "off"
-    assert config.jev_api_key_env == "AI_GATEWAY_API_KEY"
+    assert config.jev_api_key_env == "OPENROUTER_API_KEY"
+    assert config.jev_model == "typesafe/jev-1.13"
     assert config.jev_timeout_seconds == 10
     assert config.jev_gate_low == 0.15
     assert config.jev_gate_high == 0.85
@@ -490,6 +492,7 @@ def test_jev_full_block_from_toml(tmp_path, monkeypatch):
         "[jev]\n"
         'mode = "shadow"\n'
         'api_key_env = "CUSTOM_KEY"\n'
+        'model = "custom/model-2.0"\n'
         "timeout_seconds = 30\n"
         "gate_low = 0.20\n"
         "gate_high = 0.90\n"
@@ -497,6 +500,7 @@ def test_jev_full_block_from_toml(tmp_path, monkeypatch):
     config = load_config(toml_path)
     assert config.jev_mode == "shadow"
     assert config.jev_api_key_env == "CUSTOM_KEY"
+    assert config.jev_model == "custom/model-2.0"
     assert config.jev_timeout_seconds == 30
     assert config.jev_gate_low == 0.20
     assert config.jev_gate_high == 0.90
