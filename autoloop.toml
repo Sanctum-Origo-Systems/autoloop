@@ -35,11 +35,6 @@ protected_paths = ["autoloop.toml"]
 # timer_prefix = "autoloop"
 
 # Labels that indicate an issue has already been triaged.
-# Jev decision model (experimental, off by default)
-# Override with env var JEV_MODE=shadow to enable
-[jev]
-mode = "off"
-
 triage_labels = [
     "ready",
     "rejected",
@@ -48,3 +43,8 @@ triage_labels = [
     "in-review",
     "needs-human",
 ]
+
+# Jev decision model (experimental, off by default)
+# Override with env var JEV_MODE=shadow to enable
+[jev]
+mode = "off"
