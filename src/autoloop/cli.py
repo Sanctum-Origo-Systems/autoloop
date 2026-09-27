@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import subprocess
 import sys
 import time
@@ -97,6 +96,7 @@ def build_parser():
         "review-pr", help="Review a PR (mutation gate + semantic review, no merge)"
     )
     review_parser.add_argument("pr_number", type=int, help="PR number to review")
+    review_parser.add_argument("--json", action="store_true", help="Output JSON result to stdout")
 
     # auto-close-parent
     acp_parser = subparsers.add_parser(
@@ -207,6 +207,9 @@ def main():
 
         cfg = load_config()
         result = review_pr(args.pr_number, cfg)
+        if args.json:
+            json.dump(result, sys.stdout)
+            print()
         if not result["success"]:
             sys.exit(1)
 
@@ -341,7 +344,6 @@ def review_pr(pr_number, cfg, repo_dir: Path | None = None):
     }
 
     cwd = repo_dir or Path.cwd()
-    original_cwd = os.getcwd()
     impl.cfg = cfg
     start_time = time.time()
 
@@ -374,7 +376,7 @@ def review_pr(pr_number, cfg, repo_dir: Path | None = None):
         cwd=cwd,
     )
     if checkout.returncode != 0:
-        print(f"Failed to checkout PR #{pr_number}")
+        print(f"Failed to checkout PR #{pr_number}", file=sys.stderr)
         elapsed = time.time() - start_time
         impl.log_run(
             issue_number=0,
@@ -389,7 +391,6 @@ def review_pr(pr_number, cfg, repo_dir: Path | None = None):
         return _zero_result
 
     try:
-        os.chdir(cwd)
         pr_view = subprocess.run(
             [
                 "gh",
@@ -405,7 +406,7 @@ def review_pr(pr_number, cfg, repo_dir: Path | None = None):
             text=True,
         )
         if pr_view.returncode != 0:
-            print(f"Failed to get PR #{pr_number} info")
+            print(f"Failed to get PR #{pr_number} info", file=sys.stderr)
             elapsed = time.time() - start_time
             impl.log_run(
                 issue_number=0,
@@ -592,7 +593,6 @@ def review_pr(pr_number, cfg, repo_dir: Path | None = None):
             capture_output=True,
             cwd=cwd,
         )
-        os.chdir(original_cwd)
 
 
 def _show_status():
