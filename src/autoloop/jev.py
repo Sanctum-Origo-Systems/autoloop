@@ -184,10 +184,4 @@ def should_auto_merge(
     if mac_p is not None and _in_middle_band(mac_p, gate_low, gate_high):
         return _fallback(f"meets_acceptance_criteria probability {mac_p} in uncertain band")
 
-    out: dict = {"meets_acceptance_criteria": mac_p}
-
-    readiness = result.answers.get("meets_acceptance_criteria", {}).get("score")
-    if readiness is not None:
-        out["readiness_score"] = readiness
-
-    return out
+    return {"meets_acceptance_criteria": mac_p}
