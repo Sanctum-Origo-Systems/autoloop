@@ -466,6 +466,8 @@ Example workflow from your phone:
 | `timer_prefix` | `autoloop` | Systemd timer prefix for status detection (use your app name, e.g. `myapp`) |
 | `protected_paths` | `["autoloop/"]` | Paths the bot must never modify |
 | `test_gate_skip_types` | `["refactor", "docs", "chore"]` | Issue types that skip the "must add test files" verification check |
+| `test_integrity_guard` | `false` | When enabled, scans diffs for patterns that weaken tests (deleted tests, skip markers, removed assertions) and labels `needs-human` |
+| `test_integrity_patterns` | `["pytest.mark.skip", "pytest.mark.xfail"]` | Patterns to detect in added lines of test files as weakening markers |
 | `auto_merge_edit_rate_threshold` | `0.05` | Maximum human edit rate for auto-merge eligibility (edit_rate must be strictly below this) |
 | `auto_merge_success_threshold` | `0.90` | Minimum first-attempt success rate for auto-merge eligibility (success_rate must be strictly above this) |
 | `auto_merge_volume_floor` | `10` | Minimum merged-clean PRs required before auto-merge can activate |

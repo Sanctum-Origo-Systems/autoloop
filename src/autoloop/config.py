@@ -53,6 +53,13 @@ class AutoLoopConfig:
     auto_merge_success_threshold: float = 0.90
     auto_merge_volume_floor: int = 10
     auto_merge_promotion_level: str = "module"
+    test_integrity_guard: bool = False
+    test_integrity_patterns: list[str] = field(
+        default_factory=lambda: [
+            "pytest.mark.skip",
+            "pytest.mark.xfail",
+        ]
+    )
     jev_mode: str = "off"
     jev_api_key_env: str = "AI_GATEWAY_API_KEY"
     jev_timeout_seconds: int = 10
@@ -156,6 +163,12 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
 
     if "test_gate_skip_types" in data:
         config.test_gate_skip_types = list(data["test_gate_skip_types"])
+
+    if "test_integrity_guard" in data:
+        config.test_integrity_guard = bool(data["test_integrity_guard"])
+
+    if "test_integrity_patterns" in data:
+        config.test_integrity_patterns = list(data["test_integrity_patterns"])
 
     if "triage_labels" in data:
         config.triage_labels = list(data["triage_labels"])

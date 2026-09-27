@@ -788,6 +788,55 @@ def mutation_gate(branch: str, issue_type: str) -> None:
         )
 
 
+def check_test_integrity(branch: str, config: AutoLoopConfig) -> list[str]:
+    """Scan the diff for patterns that weaken tests.
+
+    Returns a list of human-readable violation descriptions (empty if clean).
+    """
+    if not config.test_integrity_guard:
+        return []
+
+    if not config.test_pattern:
+        return []
+
+    diff_result = subprocess.run(
+        ["git", "diff", "-U0", f"main..{branch}"],
+        capture_output=True,
+        text=True,
+        cwd=Path.cwd(),
+    )
+    violations = []
+
+    in_test_file = False
+    current_file = ""
+    for line in diff_result.stdout.splitlines():
+        if line.startswith("diff --git"):
+            parts = line.split(" b/")
+            current_file = parts[-1] if len(parts) >= 2 else ""
+            in_test_file = fnmatch.fnmatch(current_file, config.test_pattern)
+            continue
+
+        if not in_test_file:
+            continue
+
+        if line.startswith("-") and not line.startswith("---"):
+            stripped = line[1:].strip()
+            if re.match(r"^(def test_|class Test)", stripped):
+                violations.append(f"Deleted test: `{stripped}` in {current_file}")
+            elif stripped.startswith("assert"):
+                violations.append(f"Removed assertion in {current_file}: `{stripped}`")
+
+        if line.startswith("+") and not line.startswith("+++"):
+            added = line[1:].strip()
+            for pattern in config.test_integrity_patterns:
+                if pattern in added:
+                    violations.append(f"Added weakening marker `{pattern}` in {current_file}")
+            if re.match(r"except\s*(Exception)?\s*:", added):
+                violations.append(f"Added bare except in test {current_file}: `{added}`")
+
+    return violations
+
+
 def verify_implementation(branch: str, issue_body: str = "") -> tuple[bool, str]:
     """Verify the agent actually produced valid work."""
     ahead = subprocess.run(
@@ -1342,6 +1391,26 @@ def implement_single_issue(
                 last_errors = gate_msg
                 post_attempt_failure(issue["number"], attempt, gate_msg)
                 continue
+
+            integrity_violations = check_test_integrity(branch, cfg)
+            if integrity_violations:
+                msg = "Test integrity guard:\n" + "\n".join(
+                    f"  - {v}" for v in integrity_violations
+                )
+                logging.warning(msg)
+                print(f"  {msg}")
+                subprocess.run(
+                    [
+                        "gh",
+                        "issue",
+                        "edit",
+                        str(issue["number"]),
+                        "--repo",
+                        cfg.repo,
+                        "--add-label",
+                        "needs-human",
+                    ],
+                )
 
             print("  Verification passed. Reviewing implementation...")
             approved, feedback = review_implementation(issue, branch)

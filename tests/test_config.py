@@ -458,6 +458,34 @@ def test_auto_merge_promotion_level_invalid(tmp_path, monkeypatch):
 # --- jev config block ---
 
 
+def test_test_integrity_guard_default():
+    config = AutoLoopConfig()
+    assert config.test_integrity_guard is False
+
+
+def test_test_integrity_patterns_default():
+    config = AutoLoopConfig()
+    assert config.test_integrity_patterns == ["pytest.mark.skip", "pytest.mark.xfail"]
+
+
+def test_test_integrity_guard_from_toml(tmp_path, monkeypatch):
+    for var in ("AUTOLOOP_TRIAGE_MODEL", "AUTOLOOP_IMPL_MODEL", "AUTOLOOP_TIMEOUT"):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text("test_integrity_guard = true\n")
+    config = load_config(toml_path)
+    assert config.test_integrity_guard is True
+
+
+def test_test_integrity_patterns_from_toml(tmp_path, monkeypatch):
+    for var in ("AUTOLOOP_TRIAGE_MODEL", "AUTOLOOP_IMPL_MODEL", "AUTOLOOP_TIMEOUT"):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('test_integrity_patterns = ["unittest.skip", "nose.skip"]\n')
+    config = load_config(toml_path)
+    assert config.test_integrity_patterns == ["unittest.skip", "nose.skip"]
+
+
 def test_jev_defaults():
     config = AutoLoopConfig()
     assert config.jev_mode == "off"

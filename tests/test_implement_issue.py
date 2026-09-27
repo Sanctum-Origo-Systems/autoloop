@@ -18,6 +18,7 @@ from autoloop.implement_issue import (
     build_changed_files_manifest,
     build_pr_body,
     build_timeout_comment,
+    check_test_integrity,
     cleanup_merged_labels,
     collect_verification_errors,
     create_branch,
@@ -3845,3 +3846,200 @@ def test_review_implementation_jev_shadow_passes_diff_and_issue(monkeypatch, tmp
     assert "Add widget" in captured["issue_text"]
     assert "Widget spec" in captured["issue_text"]
     assert "+added line" in captured["diff"]
+
+
+# --- check_test_integrity tests ---
+
+
+def _integrity_diff(removed_lines=None, added_lines=None, file_path="tests/test_foo.py"):
+    """Build a minimal unified diff for test integrity checks."""
+    lines = [
+        f"diff --git a/{file_path} b/{file_path}",
+        "--- a/" + file_path,
+        "+++ b/" + file_path,
+        "@@ -1,10 +1,10 @@",
+    ]
+    for line in removed_lines or []:
+        lines.append(f"-{line}")
+    for line in added_lines or []:
+        lines.append(f"+{line}")
+    return "\n".join(lines)
+
+
+def _integrity_cfg(**overrides):
+    defaults = {
+        "test_integrity_guard": True,
+        "test_pattern": "tests/*.py",
+        "test_integrity_patterns": ["pytest.mark.skip", "pytest.mark.xfail"],
+    }
+    defaults.update(overrides)
+    return AutoLoopConfig(**defaults)
+
+
+def test_check_test_integrity_disabled_returns_empty(monkeypatch):
+    cfg = _integrity_cfg(test_integrity_guard=False)
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    assert check_test_integrity("branch", cfg) == []
+
+
+def test_check_test_integrity_no_test_pattern_returns_empty(monkeypatch):
+    cfg = _integrity_cfg(test_pattern="")
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    assert check_test_integrity("branch", cfg) == []
+
+
+def test_check_test_integrity_detects_deleted_test_function(monkeypatch):
+    cfg = _integrity_cfg()
+    diff = _integrity_diff(removed_lines=["def test_important_behavior():"])
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 0, "stdout": diff, "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    violations = check_test_integrity("branch", cfg)
+    assert len(violations) == 1
+    assert "Deleted test" in violations[0]
+    assert "test_important_behavior" in violations[0]
+
+
+def test_check_test_integrity_detects_deleted_test_class(monkeypatch):
+    cfg = _integrity_cfg()
+    diff = _integrity_diff(removed_lines=["class TestWidget:"])
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 0, "stdout": diff, "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    violations = check_test_integrity("branch", cfg)
+    assert len(violations) == 1
+    assert "Deleted test" in violations[0]
+    assert "TestWidget" in violations[0]
+
+
+def test_check_test_integrity_detects_skip_marker(monkeypatch):
+    cfg = _integrity_cfg()
+    diff = _integrity_diff(added_lines=["@pytest.mark.skip(reason='flaky')"])
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 0, "stdout": diff, "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    violations = check_test_integrity("branch", cfg)
+    assert len(violations) == 1
+    assert "pytest.mark.skip" in violations[0]
+
+
+def test_check_test_integrity_detects_xfail_marker(monkeypatch):
+    cfg = _integrity_cfg()
+    diff = _integrity_diff(added_lines=["@pytest.mark.xfail"])
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 0, "stdout": diff, "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    violations = check_test_integrity("branch", cfg)
+    assert len(violations) == 1
+    assert "pytest.mark.xfail" in violations[0]
+
+
+def test_check_test_integrity_detects_removed_assertion(monkeypatch):
+    cfg = _integrity_cfg()
+    diff = _integrity_diff(removed_lines=["    assert result == 42"])
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 0, "stdout": diff, "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    violations = check_test_integrity("branch", cfg)
+    assert len(violations) == 1
+    assert "Removed assertion" in violations[0]
+
+
+def test_check_test_integrity_detects_bare_except(monkeypatch):
+    cfg = _integrity_cfg()
+    diff = _integrity_diff(added_lines=["    except:"])
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 0, "stdout": diff, "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    violations = check_test_integrity("branch", cfg)
+    assert len(violations) == 1
+    assert "bare except" in violations[0]
+
+
+def test_check_test_integrity_detects_except_exception(monkeypatch):
+    cfg = _integrity_cfg()
+    diff = _integrity_diff(added_lines=["    except Exception:"])
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 0, "stdout": diff, "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    violations = check_test_integrity("branch", cfg)
+    assert len(violations) == 1
+    assert "bare except" in violations[0]
+
+
+def test_check_test_integrity_ignores_non_test_files(monkeypatch):
+    cfg = _integrity_cfg()
+    diff = _integrity_diff(
+        removed_lines=["def test_old():"],
+        file_path="src/autoloop/config.py",
+    )
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 0, "stdout": diff, "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    violations = check_test_integrity("branch", cfg)
+    assert violations == []
+
+
+def test_check_test_integrity_clean_diff_no_violations(monkeypatch):
+    cfg = _integrity_cfg()
+    diff = _integrity_diff(
+        added_lines=["def test_new_feature():", "    assert compute() == 42"],
+    )
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 0, "stdout": diff, "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    assert check_test_integrity("branch", cfg) == []
+
+
+def test_check_test_integrity_multiple_violations(monkeypatch):
+    cfg = _integrity_cfg()
+    diff = _integrity_diff(
+        removed_lines=["def test_old():", "    assert x == 1"],
+        added_lines=["@pytest.mark.skip", "    except:"],
+    )
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 0, "stdout": diff, "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    violations = check_test_integrity("branch", cfg)
+    assert len(violations) == 4
+
+
+def test_check_test_integrity_custom_patterns(monkeypatch):
+    cfg = _integrity_cfg(test_integrity_patterns=["unittest.skip", "@skip"])
+    diff = _integrity_diff(added_lines=["@unittest.skip('reason')"])
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 0, "stdout": diff, "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    violations = check_test_integrity("branch", cfg)
+    assert len(violations) == 1
+    assert "unittest.skip" in violations[0]
