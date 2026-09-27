@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import subprocess
 import sys
 import time
@@ -340,6 +341,7 @@ def review_pr(pr_number, cfg, repo_dir: Path | None = None):
     }
 
     cwd = repo_dir or Path.cwd()
+    original_cwd = os.getcwd()
     impl.cfg = cfg
     start_time = time.time()
 
@@ -387,6 +389,7 @@ def review_pr(pr_number, cfg, repo_dir: Path | None = None):
         return _zero_result
 
     try:
+        os.chdir(cwd)
         pr_view = subprocess.run(
             [
                 "gh",
@@ -589,6 +592,7 @@ def review_pr(pr_number, cfg, repo_dir: Path | None = None):
             capture_output=True,
             cwd=cwd,
         )
+        os.chdir(original_cwd)
 
 
 def _show_status():
