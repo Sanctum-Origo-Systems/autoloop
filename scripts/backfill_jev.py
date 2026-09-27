@@ -25,7 +25,9 @@ def main():
         print("No jev_decisions.jsonl found")
         return
 
-    entries = [json.loads(l) for l in log_file.read_text().strip().splitlines() if l.strip()]
+    entries = [
+        json.loads(line) for line in log_file.read_text().strip().splitlines() if line.strip()
+    ]
 
     # Find issues with 403 failures
     failed_issues = set()
@@ -53,9 +55,18 @@ def main():
     for issue_num in backfill_issues:
         # Fetch current issue body from GitHub
         result = subprocess.run(
-            ["gh", "issue", "view", str(issue_num), "--repo",
-             "Sanctum-Origo-Systems/autoloop", "--json", "title,body"],
-            capture_output=True, text=True,
+            [
+                "gh",
+                "issue",
+                "view",
+                str(issue_num),
+                "--repo",
+                "Sanctum-Origo-Systems/autoloop",
+                "--json",
+                "title,body",
+            ],
+            capture_output=True,
+            text=True,
         )
         if result.returncode != 0:
             print(f"  #{issue_num}: failed to fetch issue — skipping")
@@ -71,6 +82,7 @@ def main():
         # Call Jev
         try:
             from autoloop.jev import triage
+
             jev_result = triage(issue_text)
         except Exception as exc:
             print(f"  #{issue_num}: Jev error — {exc}")
