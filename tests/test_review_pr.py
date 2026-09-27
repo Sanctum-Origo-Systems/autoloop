@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import call, patch
 
@@ -124,6 +125,7 @@ class TestReviewPrHandler:
                 ["gh", "pr", "checkout", "42", "--repo", "acme-corp/widget"],
                 capture_output=True,
                 text=True,
+                cwd=Path.cwd(),
             )
         ]
         assert len(checkout_calls) == 1

@@ -261,7 +261,7 @@ def main():
         sys.exit(1 if any_failed else 0)
 
 
-def review_pr(pr_number, cfg):
+def review_pr(pr_number, cfg, repo_dir=None):
     """Review a PR: checkout, run mutation gate + semantic review, post findings.
 
     Never merges. Applies needs-human label on failure.
@@ -283,20 +283,26 @@ def review_pr(pr_number, cfg):
         "cache_creation_tokens": 0,
     }
 
+    import os
+
     impl.cfg = cfg
+    work_dir = Path(repo_dir) if repo_dir else Path.cwd()
+    original_cwd = os.getcwd()
+    os.chdir(work_dir)
     start_time = time.time()
 
     original_branch = subprocess.run(
         ["git", "rev-parse", "--abbrev-ref", "HEAD"],
         capture_output=True,
         text=True,
-        cwd=Path.cwd(),
+        cwd=work_dir,
     ).stdout.strip()
 
     checkout = subprocess.run(
         ["gh", "pr", "checkout", str(pr_number), "--repo", cfg.repo],
         capture_output=True,
         text=True,
+        cwd=work_dir,
     )
     if checkout.returncode != 0:
         print(f"Failed to checkout PR #{pr_number}")
@@ -496,8 +502,9 @@ def review_pr(pr_number, cfg):
         subprocess.run(
             ["git", "checkout", original_branch],
             capture_output=True,
-            cwd=Path.cwd(),
+            cwd=work_dir,
         )
+        os.chdir(original_cwd)
 
 
 def _show_status():

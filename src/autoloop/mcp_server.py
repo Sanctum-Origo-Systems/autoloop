@@ -195,7 +195,7 @@ def main():
         cfg = load_config(path=base / "autoloop.toml")
 
         loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, review_pr, pr_number, cfg)
+        result = await loop.run_in_executor(None, review_pr, pr_number, cfg, str(base))
 
         status = "passed" if result["success"] else "failed"
         cost = result["cost_usd"]
