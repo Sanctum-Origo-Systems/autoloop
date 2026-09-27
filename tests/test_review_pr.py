@@ -983,3 +983,69 @@ class TestReviewPrJevShadow:
         log_file = tmp_path / "autoloop" / "jev_decisions.jsonl"
         record = json.loads(log_file.read_text().strip())
         assert record["incumbent_call"]["approved"] is False
+
+
+class TestReviewPrStaleBranchCleanup:
+    """Verify review_pr cleans up stale local branches before checkout."""
+
+    def test_stale_branch_deleted_before_checkout(self):
+        """When a stale local branch exists, it is deleted before gh pr checkout."""
+        cfg = _cfg()
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
+        review_json = json.dumps({"approved": True, "summary": "ok"})
+
+        all_calls = []
+
+        def tracking_dispatch(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args", [])
+            all_calls.append(cmd)
+            return _make_dispatcher(pr_data)(*args, **kwargs)
+
+        with (
+            patch("subprocess.run", side_effect=tracking_dispatch),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(text=review_json),
+            ),
+        ):
+            result = review_pr(42, cfg)
+
+        assert result["success"] is True
+        branch_delete_calls = [
+            c for c in all_calls if isinstance(c, list) and c[:2] == ["git", "branch"] and "-D" in c
+        ]
+        assert len(branch_delete_calls) == 1
+        assert "fix/42" in branch_delete_calls[0]
+
+        fetch_calls = [c for c in all_calls if isinstance(c, list) and c[:2] == ["git", "fetch"]]
+        assert len(fetch_calls) >= 1
+
+        delete_idx = all_calls.index(branch_delete_calls[0])
+        checkout_calls = [
+            c for c in all_calls if isinstance(c, list) and c[:3] == ["gh", "pr", "checkout"]
+        ]
+        checkout_idx = all_calls.index(checkout_calls[0])
+        assert delete_idx < checkout_idx
+
+    def test_no_local_branch_still_succeeds(self):
+        """When no stale local branch exists, checkout proceeds normally."""
+        cfg = _cfg()
+        pr_data = json.dumps({"headRefName": "fix/99", "title": "Fix bug", "body": ""})
+        review_json = json.dumps({"approved": True, "summary": "ok"})
+
+        def dispatch_with_branch_fail(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args", [])
+            if isinstance(cmd, list) and cmd[:2] == ["git", "branch"] and "-D" in cmd:
+                return _ok(returncode=1)
+            return _make_dispatcher(pr_data)(*args, **kwargs)
+
+        with (
+            patch("subprocess.run", side_effect=dispatch_with_branch_fail),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(text=review_json),
+            ),
+        ):
+            result = review_pr(42, cfg)
+
+        assert result["success"] is True
