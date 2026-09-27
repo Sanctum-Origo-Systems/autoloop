@@ -207,6 +207,7 @@ class TestEvaluateErrors:
 
     def test_http_error_without_json_body(self, monkeypatch):
         monkeypatch.setenv(DEFAULT_API_KEY_ENV, "test-key")
+        monkeypatch.setattr("autoloop.jev.time.sleep", lambda s: None)
 
         def fake_urlopen(req, *, timeout=None):
             raise urllib.error.HTTPError(JEV_ENDPOINT, 500, "Server Error", {}, io.BytesIO(b""))
