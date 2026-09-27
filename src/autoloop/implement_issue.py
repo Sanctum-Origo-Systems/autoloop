@@ -222,6 +222,7 @@ def log_run(
     cache_creation_tokens: int = 0,
     run_type: str = "implement",
     pr_number: int | None = None,
+    repo_dir: Path | None = None,
 ):
     """Append a JSON entry to the run history log."""
     entry = {
@@ -239,7 +240,7 @@ def log_run(
     }
     if pr_number is not None:
         entry["pr_number"] = pr_number
-    log_file = Path.cwd() / "autoloop" / "run_history.jsonl"
+    log_file = (repo_dir or Path.cwd()) / "autoloop" / "run_history.jsonl"
     log_file.parent.mkdir(parents=True, exist_ok=True)
     with open(log_file, "a") as f:
         f.write(json.dumps(entry) + "\n")
@@ -819,20 +820,23 @@ def mutation_gate(branch: str, issue_type: str) -> None:
         )
 
 
-def verify_implementation(branch: str, issue_body: str = "", title: str = "") -> tuple[bool, str]:
+def verify_implementation(
+    branch: str, issue_body: str = "", title: str = "", repo_dir: Path | None = None
+) -> tuple[bool, str]:
     """Verify the agent actually produced valid work."""
+    cwd = repo_dir or Path.cwd()
     ahead = subprocess.run(
         ["git", "rev-list", "--count", f"main..{branch}"],
         capture_output=True,
         text=True,
-        cwd=Path.cwd(),
+        cwd=cwd,
     )
     tests = subprocess.run(
         cfg.verify_cmd,
         shell=True,
         capture_output=True,
         text=True,
-        cwd=Path.cwd(),
+        cwd=cwd,
         timeout=cfg.test_timeout,
     )
     if cfg.lint_command:
@@ -841,7 +845,7 @@ def verify_implementation(branch: str, issue_body: str = "", title: str = "") ->
             shell=True,
             capture_output=True,
             text=True,
-            cwd=Path.cwd(),
+            cwd=cwd,
         )
         lint_rc = lint.returncode
     else:
@@ -850,7 +854,7 @@ def verify_implementation(branch: str, issue_body: str = "", title: str = "") ->
         ["git", "diff", "--name-only", "main"],
         capture_output=True,
         text=True,
-        cwd=Path.cwd(),
+        cwd=cwd,
     )
     changed = [f for f in diff.stdout.strip().split("\n") if f]
 

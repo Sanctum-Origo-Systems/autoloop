@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from unittest.mock import call, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -119,12 +119,7 @@ class TestReviewPrHandler:
         checkout_calls = [
             c
             for c in mock_run.call_args_list
-            if c
-            == call(
-                ["gh", "pr", "checkout", "42", "--repo", "acme-corp/widget"],
-                capture_output=True,
-                text=True,
-            )
+            if c.args and c.args[0] == ["gh", "pr", "checkout", "42", "--repo", "acme-corp/widget"]
         ]
         assert len(checkout_calls) == 1
 
@@ -1049,3 +1044,115 @@ class TestReviewPrStaleBranchCleanup:
             result = review_pr(42, cfg)
 
         assert result["success"] is True
+
+
+class TestReviewPrRepoDir:
+    """Verify review_pr uses repo_dir for all git operations and file writes."""
+
+    def test_git_operations_use_repo_dir(self, tmp_path):
+        """All subprocess calls receive cwd=repo_dir when repo_dir is passed."""
+        cfg = _cfg()
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
+        review_json = json.dumps({"approved": True, "summary": "ok"})
+
+        all_calls = []
+
+        def tracking_dispatch(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args", [])
+            all_calls.append((cmd, kwargs))
+            return _make_dispatcher(pr_data)(*args, **kwargs)
+
+        with (
+            patch("subprocess.run", side_effect=tracking_dispatch),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(text=review_json),
+            ),
+        ):
+            result = review_pr(42, cfg, repo_dir=tmp_path)
+
+        assert result["success"] is True
+
+        git_calls = [
+            (cmd, kw) for cmd, kw in all_calls if isinstance(cmd, list) and cmd[0] == "git"
+        ]
+        for cmd, kw in git_calls:
+            assert kw.get("cwd") == tmp_path, f"git call {cmd} missing cwd=repo_dir"
+
+    def test_log_run_writes_to_repo_dir(self, tmp_path):
+        """run_history.jsonl is written under repo_dir, not cwd."""
+        cfg = _cfg()
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
+        review_json = json.dumps({"approved": True, "summary": "ok"})
+        dispatch = _make_dispatcher(pr_data)
+
+        with (
+            patch("subprocess.run", side_effect=dispatch),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(text=review_json, cost_usd=0.10),
+            ),
+        ):
+            review_pr(42, cfg, repo_dir=tmp_path)
+
+        log_file = tmp_path / "autoloop" / "run_history.jsonl"
+        assert log_file.exists()
+        entry = json.loads(log_file.read_text().strip())
+        assert entry["type"] == "review"
+        assert entry["pr_number"] == 42
+
+    def test_jev_decisions_written_to_repo_dir(self, tmp_path):
+        """jev_decisions.jsonl is written under repo_dir when jev_mode is on."""
+        cfg = _cfg(jev_mode="shadow")
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
+        review_json = json.dumps({"approved": True, "summary": "ok"})
+        jev_result = {"meets_acceptance_criteria": 0.9, "latency": 0.5, "cost": 0.001}
+        dispatch = _make_dispatcher(pr_data)
+
+        with (
+            patch("subprocess.run", side_effect=dispatch),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(text=review_json),
+            ),
+            patch("autoloop.jev.should_auto_merge", return_value=jev_result),
+        ):
+            review_pr(42, cfg, repo_dir=tmp_path)
+
+        jev_log = tmp_path / "autoloop" / "jev_decisions.jsonl"
+        assert jev_log.exists()
+
+    def test_checkout_failure_logs_to_repo_dir(self, tmp_path):
+        """On checkout failure, run_history.jsonl still goes to repo_dir."""
+        cfg = _cfg()
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix", "body": ""})
+        dispatch = _make_dispatcher(pr_data, {("gh", "pr", "checkout"): _ok(returncode=1)})
+
+        with patch("subprocess.run", side_effect=dispatch):
+            review_pr(42, cfg, repo_dir=tmp_path)
+
+        log_file = tmp_path / "autoloop" / "run_history.jsonl"
+        assert log_file.exists()
+        entry = json.loads(log_file.read_text().strip())
+        assert entry["type"] == "review"
+        assert entry["success"] is False
+
+    def test_none_repo_dir_falls_back_to_cwd(self, tmp_path, monkeypatch):
+        """When repo_dir is None, behavior matches the original Path.cwd() default."""
+        monkeypatch.chdir(tmp_path)
+        cfg = _cfg()
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
+        review_json = json.dumps({"approved": True, "summary": "ok"})
+        dispatch = _make_dispatcher(pr_data)
+
+        with (
+            patch("subprocess.run", side_effect=dispatch),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(text=review_json, cost_usd=0.05),
+            ),
+        ):
+            review_pr(42, cfg)
+
+        log_file = tmp_path / "autoloop" / "run_history.jsonl"
+        assert log_file.exists()
