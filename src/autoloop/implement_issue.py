@@ -1396,7 +1396,7 @@ def wait_for_ci(pr_number: int, timeout: int = 600, poll_interval: int = 30) -> 
     return False
 
 
-def try_auto_merge(issue: dict, branch: str, pr_number: int | None) -> tuple[str, dict]:
+def try_auto_merge(branch: str, pr_number: int | None) -> tuple[str, dict]:
     """Attempt auto-merge after review passes. Returns (decision, gate_metrics)."""
     if not cfg.auto_merge:
         return "skipped-disabled", {}
@@ -1686,7 +1686,10 @@ def implement_single_issue(
         if auto_fix and pr_number is not None:
             run_auto_fix_loop(pr_number, issue, cfg)
 
-        auto_merge_decision, auto_merge_gates = try_auto_merge(issue, branch, pr_number)
+        if integrity_violations:
+            auto_merge_decision, auto_merge_gates = "skipped-integrity", {}
+        else:
+            auto_merge_decision, auto_merge_gates = try_auto_merge(branch, pr_number)
         if cfg.auto_merge:
             print(f"  Auto-merge: {auto_merge_decision}")
 

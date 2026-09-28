@@ -4416,7 +4416,7 @@ def test_try_auto_merge_disabled(monkeypatch):
         lambda *a, **kw: is_ready_called.append(True) or "Yes",
     )
 
-    decision, gates = try_auto_merge({"number": 42, "title": "Test", "body": ""}, "branch", 99)
+    decision, gates = try_auto_merge("branch", 99)
     assert decision == "skipped-disabled"
     assert gates == {}
     assert len(is_ready_called) == 0
@@ -4449,7 +4449,7 @@ def test_try_auto_merge_unqualified(monkeypatch):
 
     monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
 
-    decision, gates = try_auto_merge({"number": 42, "title": "Test", "body": ""}, "branch", 99)
+    decision, gates = try_auto_merge("branch", 99)
     assert decision == "skipped-unqualified"
     assert gates["success_rate"] == 0.5
     assert len(merge_calls) == 0
@@ -4492,7 +4492,7 @@ def test_try_auto_merge_protected(monkeypatch):
 
     monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
 
-    decision, gates = try_auto_merge({"number": 42, "title": "Test", "body": ""}, "branch", 99)
+    decision, gates = try_auto_merge("branch", 99)
     assert decision == "skipped-protected"
     assert len(merge_calls) == 0
 
@@ -4545,7 +4545,7 @@ def test_try_auto_merge_merged(monkeypatch):
 
     monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
 
-    decision, gates = try_auto_merge({"number": 42, "title": "Test", "body": ""}, "branch", 99)
+    decision, gates = try_auto_merge("branch", 99)
     assert decision == "merged"
     assert gates["success_rate"] == 0.95
     assert len(merge_calls) == 1
@@ -4557,9 +4557,133 @@ def test_try_auto_merge_no_pr_number(monkeypatch):
     """When pr_number is None, returns skipped-disabled."""
     monkeypatch.setattr(implement_issue, "cfg", _test_cfg(auto_merge=True))
 
-    decision, gates = try_auto_merge({"number": 42, "title": "Test", "body": ""}, "branch", None)
+    decision, gates = try_auto_merge("branch", None)
     assert decision == "skipped-disabled"
     assert gates == {}
+
+
+def test_try_auto_merge_ci_failed(monkeypatch):
+    """When CI fails, gh pr merge is not called and decision is skipped-ci-failed."""
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(auto_merge=True, protected_paths=[], repo="acme-corp/widget"),
+    )
+
+    monkeypatch.setattr("autoloop.eval.load_run_history", lambda **kw: [])
+    monkeypatch.setattr("autoloop.eval.fetch_pr_data", lambda repo: [])
+    monkeypatch.setattr("autoloop.eval.enrich_pr_data_with_runs", lambda pd, r: pd)
+    monkeypatch.setattr(
+        "autoloop.eval.compute_snapshot",
+        lambda r, pd, **kw: {
+            "first_attempt_rate": 0.95,
+            "human_edit_rate": 0.02,
+            "merged_pr_count": 15,
+            "human_edit_count": 0,
+        },
+    )
+    monkeypatch.setattr("autoloop.eval.is_auto_merge_ready", lambda *a, **kw: "Yes")
+
+    merge_calls = []
+
+    def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list) and len(cmd) >= 3 and cmd[:3] == ["gh", "pr", "merge"]:
+            merge_calls.append(cmd)
+        if isinstance(cmd, list) and cmd[:3] == ["git", "diff", "--name-only"]:
+            return type("R", (), {"returncode": 0, "stdout": "src/app.py\n", "stderr": ""})()
+        if isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "checks"]:
+            return type(
+                "R",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": json.dumps([{"bucket": "fail"}]),
+                    "stderr": "",
+                },
+            )()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    decision, gates = try_auto_merge("branch", 99)
+    assert decision == "skipped-ci-failed"
+    assert gates["success_rate"] == 0.95
+    assert len(merge_calls) == 0
+
+
+def test_try_auto_merge_merge_failed(monkeypatch):
+    """When gh pr merge fails, decision is skipped-merge-failed."""
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(auto_merge=True, protected_paths=[], repo="acme-corp/widget"),
+    )
+
+    monkeypatch.setattr("autoloop.eval.load_run_history", lambda **kw: [])
+    monkeypatch.setattr("autoloop.eval.fetch_pr_data", lambda repo: [])
+    monkeypatch.setattr("autoloop.eval.enrich_pr_data_with_runs", lambda pd, r: pd)
+    monkeypatch.setattr(
+        "autoloop.eval.compute_snapshot",
+        lambda r, pd, **kw: {
+            "first_attempt_rate": 0.95,
+            "human_edit_rate": 0.02,
+            "merged_pr_count": 15,
+            "human_edit_count": 0,
+        },
+    )
+    monkeypatch.setattr("autoloop.eval.is_auto_merge_ready", lambda *a, **kw: "Yes")
+
+    def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list) and len(cmd) >= 3 and cmd[:3] == ["gh", "pr", "merge"]:
+            return type("R", (), {"returncode": 1, "stdout": "", "stderr": "error"})()
+        if isinstance(cmd, list) and cmd[:3] == ["git", "diff", "--name-only"]:
+            return type("R", (), {"returncode": 0, "stdout": "src/app.py\n", "stderr": ""})()
+        if isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "checks"]:
+            return type(
+                "R",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": json.dumps([{"bucket": "pass"}]),
+                    "stderr": "",
+                },
+            )()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    decision, gates = try_auto_merge("branch", 99)
+    assert decision == "skipped-merge-failed"
+    assert gates["success_rate"] == 0.95
+
+
+def test_wait_for_ci_pending_until_timeout(monkeypatch):
+    """When checks stay pending until timeout, returns False."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(repo="acme-corp/widget"))
+
+    call_count = []
+
+    def fake_run(cmd, **kwargs):
+        call_count.append(1)
+        return type(
+            "R",
+            (),
+            {
+                "returncode": 0,
+                "stdout": json.dumps([{"bucket": "pending"}]),
+                "stderr": "",
+            },
+        )()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    monkeypatch.setattr(implement_issue.time, "sleep", lambda s: None)
+
+    start = 0.0
+    times = iter([start, start, start + 1, start + 2, start + 3, start + 100])
+    monkeypatch.setattr(implement_issue.time, "time", lambda: next(times))
+
+    assert wait_for_ci(99, timeout=5, poll_interval=1) is False
+    assert len(call_count) >= 1
 
 
 # --- Auto-merge integration in implement_single_issue ---
@@ -4589,7 +4713,7 @@ def _auto_merge_integration_setup(monkeypatch, tmp_path, auto_merge_decision, au
     monkeypatch.setattr(
         implement_issue,
         "try_auto_merge",
-        lambda issue, branch, pr_number: (auto_merge_decision, auto_merge_gates),
+        lambda branch, pr_number: (auto_merge_decision, auto_merge_gates),
     )
 
 
@@ -4652,6 +4776,55 @@ def test_implement_single_issue_auto_merge_merged_logged(monkeypatch, tmp_path):
     entry = json.loads(log_path.read_text().strip())
     assert entry["auto_merge"]["decision"] == "merged"
     assert entry["auto_merge"]["gates"]["merged_clean_count"] == 15
+
+
+def test_implement_single_issue_auto_merge_skipped_integrity(monkeypatch, tmp_path):
+    """When integrity violations exist, try_auto_merge is NOT called."""
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(auto_merge=True, test_integrity_guard=True, test_pattern="tests/*.py"),
+    )
+    monkeypatch.chdir(tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list) and cmd[:3] == ["git", "rev-list", "--count"]:
+            return type("R", (), {"returncode": 0, "stdout": "1\n", "stderr": ""})()
+        if isinstance(cmd, str):
+            return type("R", (), {"returncode": 0, "stdout": "passed", "stderr": ""})()
+        if isinstance(cmd, list) and cmd[:3] == ["git", "diff", "--name-only"]:
+            return type("R", (), {"returncode": 0, "stdout": "tests/test_x.py\n", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        implement_issue, "implement", lambda issue, previous_errors=None: _claude_result()
+    )
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-feat")
+    monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: 99)
+    monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
+    monkeypatch.setattr(implement_issue, "review_implementation", lambda issue, branch: (True, ""))
+    monkeypatch.setattr(
+        implement_issue,
+        "check_test_integrity",
+        lambda branch: ["Deleted test function: def test_old():"],
+    )
+
+    try_merge_called = []
+    original_try_auto_merge = try_auto_merge
+    monkeypatch.setattr(
+        implement_issue,
+        "try_auto_merge",
+        lambda *a, **kw: try_merge_called.append(True) or original_try_auto_merge(*a, **kw),
+    )
+
+    result = implement_single_issue(_FAKE_ISSUE)
+    assert result is True
+    assert len(try_merge_called) == 0
+
+    log_path = tmp_path / "autoloop" / "run_history.jsonl"
+    entry = json.loads(log_path.read_text().strip())
+    assert entry["auto_merge"]["decision"] == "skipped-integrity"
 
 
 # --- log_run auto_merge field ---
