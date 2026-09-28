@@ -55,7 +55,9 @@ from autoloop.implement_issue import (
     select_top_issue,
     strip_type_prefix,
     truncate_spec,
+    try_auto_merge,
     unblock_ready_issues,
+    wait_for_ci,
 )
 
 
@@ -4347,3 +4349,337 @@ def test_implement_single_issue_integrity_guard_no_violation_no_label(monkeypatc
         c for c in gh_calls if "needs-human" in c and "--add-label" in c and "issue" in c[1]
     ]
     assert len(needs_human_after_pr) == 0
+
+
+# --- wait_for_ci tests ---
+
+
+def test_wait_for_ci_all_pass(monkeypatch):
+    """Returns True when all CI checks pass."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(repo="acme-corp/widget"))
+
+    def fake_run(cmd, **kwargs):
+        return type(
+            "R",
+            (),
+            {
+                "returncode": 0,
+                "stdout": json.dumps([{"bucket": "pass"}, {"bucket": "pass"}]),
+                "stderr": "",
+            },
+        )()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    assert wait_for_ci(99, timeout=5, poll_interval=1) is True
+
+
+def test_wait_for_ci_has_failure(monkeypatch):
+    """Returns False when any CI check fails."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(repo="acme-corp/widget"))
+
+    def fake_run(cmd, **kwargs):
+        return type(
+            "R",
+            (),
+            {
+                "returncode": 0,
+                "stdout": json.dumps([{"bucket": "pass"}, {"bucket": "fail"}]),
+                "stderr": "",
+            },
+        )()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    assert wait_for_ci(99, timeout=5, poll_interval=1) is False
+
+
+def test_wait_for_ci_no_checks(monkeypatch):
+    """Returns True when no CI checks are configured."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(repo="acme-corp/widget"))
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 0, "stdout": "[]", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    assert wait_for_ci(99, timeout=5, poll_interval=1) is True
+
+
+# --- try_auto_merge tests ---
+
+
+def test_try_auto_merge_disabled(monkeypatch):
+    """When cfg.auto_merge is False, is_auto_merge_ready is not called."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(auto_merge=False))
+
+    is_ready_called = []
+    monkeypatch.setattr(
+        "autoloop.eval.is_auto_merge_ready",
+        lambda *a, **kw: is_ready_called.append(True) or "Yes",
+    )
+
+    decision, gates = try_auto_merge({"number": 42, "title": "Test", "body": ""}, "branch", 99)
+    assert decision == "skipped-disabled"
+    assert gates == {}
+    assert len(is_ready_called) == 0
+
+
+def test_try_auto_merge_unqualified(monkeypatch):
+    """When is_auto_merge_ready returns 'No', gh pr merge is not called."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(auto_merge=True))
+
+    monkeypatch.setattr("autoloop.eval.load_run_history", lambda **kw: [])
+    monkeypatch.setattr("autoloop.eval.fetch_pr_data", lambda repo: [])
+    monkeypatch.setattr("autoloop.eval.enrich_pr_data_with_runs", lambda pd, r: pd)
+    monkeypatch.setattr(
+        "autoloop.eval.compute_snapshot",
+        lambda r, pd, **kw: {
+            "first_attempt_rate": 0.5,
+            "human_edit_rate": 0.2,
+            "merged_pr_count": 5,
+            "human_edit_count": 1,
+        },
+    )
+    monkeypatch.setattr("autoloop.eval.is_auto_merge_ready", lambda *a, **kw: "No")
+
+    merge_calls = []
+
+    def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list) and len(cmd) >= 3 and cmd[:3] == ["gh", "pr", "merge"]:
+            merge_calls.append(cmd)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    decision, gates = try_auto_merge({"number": 42, "title": "Test", "body": ""}, "branch", 99)
+    assert decision == "skipped-unqualified"
+    assert gates["success_rate"] == 0.5
+    assert len(merge_calls) == 0
+
+
+def test_try_auto_merge_protected(monkeypatch):
+    """When touches_protected_path returns True, gh pr merge is not called."""
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(auto_merge=True, protected_paths=["autoloop/"]),
+    )
+
+    monkeypatch.setattr("autoloop.eval.load_run_history", lambda **kw: [])
+    monkeypatch.setattr("autoloop.eval.fetch_pr_data", lambda repo: [])
+    monkeypatch.setattr("autoloop.eval.enrich_pr_data_with_runs", lambda pd, r: pd)
+    monkeypatch.setattr(
+        "autoloop.eval.compute_snapshot",
+        lambda r, pd, **kw: {
+            "first_attempt_rate": 0.95,
+            "human_edit_rate": 0.02,
+            "merged_pr_count": 15,
+            "human_edit_count": 0,
+        },
+    )
+    monkeypatch.setattr("autoloop.eval.is_auto_merge_ready", lambda *a, **kw: "Yes")
+
+    merge_calls = []
+
+    def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list) and len(cmd) >= 3 and cmd[:3] == ["gh", "pr", "merge"]:
+            merge_calls.append(cmd)
+        if isinstance(cmd, list) and cmd[:3] == ["git", "diff", "--name-only"]:
+            return type(
+                "R",
+                (),
+                {"returncode": 0, "stdout": "autoloop/config.py\n", "stderr": ""},
+            )()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    decision, gates = try_auto_merge({"number": 42, "title": "Test", "body": ""}, "branch", 99)
+    assert decision == "skipped-protected"
+    assert len(merge_calls) == 0
+
+
+def test_try_auto_merge_merged(monkeypatch):
+    """When all gates pass and CI passes, gh pr merge --squash is called."""
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(auto_merge=True, protected_paths=["autoloop/"], repo="acme-corp/widget"),
+    )
+
+    monkeypatch.setattr("autoloop.eval.load_run_history", lambda **kw: [])
+    monkeypatch.setattr("autoloop.eval.fetch_pr_data", lambda repo: [])
+    monkeypatch.setattr("autoloop.eval.enrich_pr_data_with_runs", lambda pd, r: pd)
+    monkeypatch.setattr(
+        "autoloop.eval.compute_snapshot",
+        lambda r, pd, **kw: {
+            "first_attempt_rate": 0.95,
+            "human_edit_rate": 0.02,
+            "merged_pr_count": 15,
+            "human_edit_count": 0,
+        },
+    )
+    monkeypatch.setattr("autoloop.eval.is_auto_merge_ready", lambda *a, **kw: "Yes")
+
+    merge_calls = []
+
+    def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list) and len(cmd) >= 3 and cmd[:3] == ["gh", "pr", "merge"]:
+            merge_calls.append(cmd)
+            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        if isinstance(cmd, list) and cmd[:3] == ["git", "diff", "--name-only"]:
+            return type(
+                "R",
+                (),
+                {"returncode": 0, "stdout": "src/app.py\ntests/test_app.py\n", "stderr": ""},
+            )()
+        if isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "checks"]:
+            return type(
+                "R",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": json.dumps([{"bucket": "pass"}]),
+                    "stderr": "",
+                },
+            )()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    decision, gates = try_auto_merge({"number": 42, "title": "Test", "body": ""}, "branch", 99)
+    assert decision == "merged"
+    assert gates["success_rate"] == 0.95
+    assert len(merge_calls) == 1
+    assert "--squash" in merge_calls[0]
+    assert "--repo" in merge_calls[0]
+
+
+def test_try_auto_merge_no_pr_number(monkeypatch):
+    """When pr_number is None, returns skipped-disabled."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(auto_merge=True))
+
+    decision, gates = try_auto_merge({"number": 42, "title": "Test", "body": ""}, "branch", None)
+    assert decision == "skipped-disabled"
+    assert gates == {}
+
+
+# --- Auto-merge integration in implement_single_issue ---
+
+
+def _auto_merge_integration_setup(monkeypatch, tmp_path, auto_merge_decision, auto_merge_gates):
+    """Common setup for auto-merge integration tests."""
+    monkeypatch.chdir(tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list) and cmd[:3] == ["git", "rev-list", "--count"]:
+            return type("R", (), {"returncode": 0, "stdout": "1\n", "stderr": ""})()
+        if isinstance(cmd, str):
+            return type("R", (), {"returncode": 0, "stdout": "passed", "stderr": ""})()
+        if isinstance(cmd, list) and cmd[:3] == ["git", "diff", "--name-only"]:
+            return type("R", (), {"returncode": 0, "stdout": "tests/test_x.py\n", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        implement_issue, "implement", lambda issue, previous_errors=None: _claude_result()
+    )
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-add-feature")
+    monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: 99)
+    monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
+    monkeypatch.setattr(implement_issue, "review_implementation", lambda issue, branch: (True, ""))
+    monkeypatch.setattr(
+        implement_issue,
+        "try_auto_merge",
+        lambda issue, branch, pr_number: (auto_merge_decision, auto_merge_gates),
+    )
+
+
+def test_implement_single_issue_auto_merge_disabled_logged(monkeypatch, tmp_path):
+    """When auto_merge is False, 'skipped-disabled' is recorded in run_history."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(auto_merge=False))
+    _auto_merge_integration_setup(monkeypatch, tmp_path, "skipped-disabled", {})
+
+    result = implement_single_issue(_FAKE_ISSUE)
+    assert result is True
+
+    log_path = tmp_path / "autoloop" / "run_history.jsonl"
+    entry = json.loads(log_path.read_text().strip())
+    assert entry["auto_merge"]["decision"] == "skipped-disabled"
+
+
+def test_implement_single_issue_auto_merge_unqualified_logged(monkeypatch, tmp_path):
+    """When is_auto_merge_ready returns 'No', 'skipped-unqualified' is in run_history."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(auto_merge=True))
+    gates = {"success_rate": 0.5, "edit_rate": 0.2, "merged_clean_count": 4}
+    _auto_merge_integration_setup(monkeypatch, tmp_path, "skipped-unqualified", gates)
+
+    result = implement_single_issue(_FAKE_ISSUE)
+    assert result is True
+
+    log_path = tmp_path / "autoloop" / "run_history.jsonl"
+    entry = json.loads(log_path.read_text().strip())
+    assert entry["auto_merge"]["decision"] == "skipped-unqualified"
+    assert entry["auto_merge"]["gates"]["success_rate"] == 0.5
+
+
+def test_implement_single_issue_auto_merge_protected_logged(monkeypatch, tmp_path):
+    """When touches_protected_path is True, 'skipped-protected' is in run_history."""
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(auto_merge=True, protected_paths=["autoloop/"]),
+    )
+    gates = {"success_rate": 0.95, "edit_rate": 0.02, "merged_clean_count": 15}
+    _auto_merge_integration_setup(monkeypatch, tmp_path, "skipped-protected", gates)
+
+    result = implement_single_issue(_FAKE_ISSUE)
+    assert result is True
+
+    log_path = tmp_path / "autoloop" / "run_history.jsonl"
+    entry = json.loads(log_path.read_text().strip())
+    assert entry["auto_merge"]["decision"] == "skipped-protected"
+
+
+def test_implement_single_issue_auto_merge_merged_logged(monkeypatch, tmp_path):
+    """When all gates pass and CI passes, 'merged' is in run_history."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(auto_merge=True))
+    gates = {"success_rate": 0.95, "edit_rate": 0.02, "merged_clean_count": 15}
+    _auto_merge_integration_setup(monkeypatch, tmp_path, "merged", gates)
+
+    result = implement_single_issue(_FAKE_ISSUE)
+    assert result is True
+
+    log_path = tmp_path / "autoloop" / "run_history.jsonl"
+    entry = json.loads(log_path.read_text().strip())
+    assert entry["auto_merge"]["decision"] == "merged"
+    assert entry["auto_merge"]["gates"]["merged_clean_count"] == 15
+
+
+# --- log_run auto_merge field ---
+
+
+def test_log_run_includes_auto_merge_field(tmp_path, monkeypatch):
+    """auto_merge dict is written to the run_history entry."""
+    monkeypatch.chdir(tmp_path)
+    log_path = tmp_path / "autoloop" / "run_history.jsonl"
+    log_run(
+        42,
+        True,
+        1,
+        60.0,
+        1.50,
+        auto_merge={"decision": "merged", "gates": {"success_rate": 0.95}},
+    )
+
+    entry = json.loads(log_path.read_text().strip())
+    assert entry["auto_merge"]["decision"] == "merged"
+    assert entry["auto_merge"]["gates"]["success_rate"] == 0.95
+
+
+def test_log_run_omits_auto_merge_when_none(tmp_path, monkeypatch):
+    """auto_merge field is absent when not provided."""
+    monkeypatch.chdir(tmp_path)
+    log_path = tmp_path / "autoloop" / "run_history.jsonl"
+    log_run(42, True, 1, 60.0, 1.50)
+
+    entry = json.loads(log_path.read_text().strip())
+    assert "auto_merge" not in entry

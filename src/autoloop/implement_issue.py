@@ -223,6 +223,7 @@ def log_run(
     run_type: str = "implement",
     pr_number: int | None = None,
     repo_dir: Path | None = None,
+    auto_merge: dict | None = None,
 ):
     """Append a JSON entry to the run history log."""
     entry = {
@@ -240,6 +241,8 @@ def log_run(
     }
     if pr_number is not None:
         entry["pr_number"] = pr_number
+    if auto_merge is not None:
+        entry["auto_merge"] = auto_merge
     log_file = (repo_dir or Path.cwd()) / "autoloop" / "run_history.jsonl"
     log_file.parent.mkdir(parents=True, exist_ok=True)
     with open(log_file, "a") as f:
@@ -1354,6 +1357,124 @@ def run_auto_fix_loop(pr_number: int, issue: dict, cfg: AutoLoopConfig) -> None:
     )
 
 
+# --- Auto-merge ---
+
+
+def wait_for_ci(pr_number: int, timeout: int = 600, poll_interval: int = 30) -> bool:
+    """Poll GitHub CI checks until they complete or timeout. Returns True if all pass."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        result = subprocess.run(
+            [
+                "gh",
+                "pr",
+                "checks",
+                str(pr_number),
+                "--repo",
+                cfg.repo,
+                "--json",
+                "bucket",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            time.sleep(poll_interval)
+            continue
+        try:
+            checks = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            time.sleep(poll_interval)
+            continue
+        if not checks:
+            return True
+        buckets = {c.get("bucket", "") for c in checks}
+        if "pending" in buckets:
+            time.sleep(poll_interval)
+            continue
+        return "fail" not in buckets
+    return False
+
+
+def try_auto_merge(issue: dict, branch: str, pr_number: int | None) -> tuple[str, dict]:
+    """Attempt auto-merge after review passes. Returns (decision, gate_metrics)."""
+    if not cfg.auto_merge:
+        return "skipped-disabled", {}
+
+    if pr_number is None:
+        return "skipped-disabled", {}
+
+    from autoloop.eval import (
+        compute_snapshot,
+        enrich_pr_data_with_runs,
+        fetch_pr_data,
+        is_auto_merge_ready,
+        load_run_history,
+    )
+
+    runs = load_run_history()
+    pr_data = fetch_pr_data(cfg.repo)
+    pr_data = enrich_pr_data_with_runs(pr_data, runs)
+    snapshot = compute_snapshot(runs, pr_data)
+
+    success_rate = snapshot.get("first_attempt_rate", 0)
+    edit_rate = snapshot.get("human_edit_rate", 0)
+    merged_clean = snapshot.get("merged_pr_count", 0) - snapshot.get("human_edit_count", 0)
+
+    gates = {
+        "success_rate": success_rate,
+        "edit_rate": edit_rate,
+        "merged_clean_count": merged_clean,
+    }
+
+    ready = is_auto_merge_ready(
+        success_rate,
+        edit_rate,
+        merged_clean,
+        edit_rate_threshold=cfg.auto_merge_edit_rate_threshold,
+        success_threshold=cfg.auto_merge_success_threshold,
+        volume_floor=cfg.auto_merge_volume_floor,
+    )
+
+    if ready != "Yes":
+        return "skipped-unqualified", gates
+
+    from autoloop.config import touches_protected_path
+
+    diff = subprocess.run(
+        ["git", "diff", "--name-only", f"main..{branch}"],
+        capture_output=True,
+        text=True,
+        cwd=Path.cwd(),
+    )
+    changed_files = [f for f in diff.stdout.strip().split("\n") if f]
+    if touches_protected_path(changed_files, cfg.protected_paths):
+        return "skipped-protected", gates
+
+    print(f"  Auto-merge: waiting for CI on PR #{pr_number}...")
+    if not wait_for_ci(pr_number):
+        return "skipped-ci-failed", gates
+
+    result = subprocess.run(
+        [
+            "gh",
+            "pr",
+            "merge",
+            str(pr_number),
+            "--repo",
+            cfg.repo,
+            "--squash",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        print(f"  Auto-merge: PR #{pr_number} merged.")
+        return "merged", gates
+
+    return "skipped-merge-failed", gates
+
+
 # --- Orchestration ---
 
 
@@ -1565,6 +1686,10 @@ def implement_single_issue(
         if auto_fix and pr_number is not None:
             run_auto_fix_loop(pr_number, issue, cfg)
 
+        auto_merge_decision, auto_merge_gates = try_auto_merge(issue, branch, pr_number)
+        if cfg.auto_merge:
+            print(f"  Auto-merge: {auto_merge_decision}")
+
         subprocess.run(["git", "checkout", "main"], cwd=Path.cwd())
 
         print(f"\n--- AutoLoop Run Stats (#{issue['number']}) ---")
@@ -1586,6 +1711,10 @@ def implement_single_issue(
             total_output,
             total_cache_read,
             total_cache_creation,
+            auto_merge={
+                "decision": auto_merge_decision,
+                "gates": auto_merge_gates,
+            },
         )
 
         return True
