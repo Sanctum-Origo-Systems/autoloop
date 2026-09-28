@@ -1,3 +1,4 @@
 __pycache__/
 autoloop/run_history.jsonl
 .claude/CLAUDE.local.md
+autoloop/jev_decisions.jsonl
