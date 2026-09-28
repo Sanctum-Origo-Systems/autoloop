@@ -75,6 +75,12 @@ triage_labels = [
     "in-review",
     "needs-human",
 ]
+
+# Jev evaluation — lightweight quality gate for triage and merge decisions.
+# Set mode = "shadow" to log Jev scores without gating, or "gate" to block on them.
+# Override at runtime with the JEV_MODE env var: JEV_MODE=shadow autoloop triage
+[jev]
+mode = "off"
 """
 
 WORKFLOW_TEMPLATE = """\

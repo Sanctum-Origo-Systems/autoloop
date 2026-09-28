@@ -278,6 +278,33 @@ class TestWriteTomlTestPattern:
         assert cfg.test_pattern == "src/**/*.test.*"
 
 
+class TestWriteTomlJevBlock:
+    @patch("autoloop.init.create_labels")
+    def test_jev_block_present(self, mock_labels, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        run_init("acme/widgets", verify_cmd="uv run pytest", skip_labels=True)
+        content = (tmp_path / "autoloop.toml").read_text()
+        assert "[jev]" in content
+        assert 'mode = "off"' in content
+
+    @patch("autoloop.init.create_labels")
+    def test_jev_block_has_shadow_comment(self, mock_labels, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        run_init("acme/widgets", verify_cmd="uv run pytest", skip_labels=True)
+        content = (tmp_path / "autoloop.toml").read_text()
+        assert "JEV_MODE=shadow" in content
+
+    @patch("autoloop.init.create_labels")
+    def test_jev_block_loadable_by_config(self, mock_labels, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("JEV_MODE", raising=False)
+        run_init("acme/widgets", verify_cmd="uv run pytest", skip_labels=True)
+        from autoloop.config import load_config
+
+        cfg = load_config(tmp_path / "autoloop.toml")
+        assert cfg.jev_mode == "off"
+
+
 class TestWorkflowTemplate:
     def test_template_has_checkout_step(self):
         assert "actions/checkout@v4" in WORKFLOW_TEMPLATE
