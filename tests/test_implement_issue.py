@@ -1240,7 +1240,7 @@ def test_build_implementation_prompt_no_real_names_rule_absent(monkeypatch, tmp_
     issue = {"number": 1, "title": "Test", "body": "details"}
     prompt = implement_issue.build_implementation_prompt(issue)
 
-    assert "No real person or company names in test data" not in prompt
+    assert "real person or company names in test data" not in prompt
 
 
 # --- build_implementation_prompt: fix-the-implementation rule ---
