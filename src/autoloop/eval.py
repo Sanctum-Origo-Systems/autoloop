@@ -449,6 +449,48 @@ def _period_impl(snapshot: dict, prev: dict | None) -> int:
     return max(0, snapshot.get("total_implementations", 0) - prev.get("total_implementations", 0))
 
 
+def _compute_period_stats(snapshot: dict, prev: dict | None) -> dict:
+    if prev is None:
+        return {
+            "period_first_attempt_rate": snapshot.get("first_attempt_rate"),
+            "period_avg_cost_usd": snapshot.get("avg_cost_usd"),
+            "period_human_edit_rate": snapshot.get("human_edit_rate"),
+        }
+
+    curr_dist = snapshot.get("attempt_distribution")
+    prev_dist = prev.get("attempt_distribution")
+    if not curr_dist or not prev_dist:
+        return {}
+
+    curr_runs = sum(curr_dist.get(k, 0) for k in ("1", "2", "3+"))
+    prev_runs = sum(prev_dist.get(k, 0) for k in ("1", "2", "3+"))
+    period_runs = curr_runs - prev_runs
+
+    if period_runs <= 0:
+        return {
+            "period_first_attempt_rate": None,
+            "period_avg_cost_usd": None,
+            "period_human_edit_rate": None,
+        }
+
+    period_first = curr_dist.get("1", 0) - prev_dist.get("1", 0)
+    period_first_attempt_rate = round(max(0, period_first) / period_runs, 2)
+
+    curr_total_cost = snapshot.get("avg_cost_usd", 0) * curr_runs
+    prev_total_cost = prev.get("avg_cost_usd", 0) * prev_runs
+    period_avg_cost = round((curr_total_cost - prev_total_cost) / period_runs, 2)
+
+    period_edits = snapshot.get("human_edit_count", 0) - prev.get("human_edit_count", 0)
+    period_merged = snapshot.get("merged_pr_count", 0) - prev.get("merged_pr_count", 0)
+    period_human_edit_rate = round(period_edits / period_merged, 2) if period_merged > 0 else None
+
+    return {
+        "period_first_attempt_rate": period_first_attempt_rate,
+        "period_avg_cost_usd": period_avg_cost,
+        "period_human_edit_rate": period_human_edit_rate,
+    }
+
+
 def format_trend(snapshots: list[dict]) -> str:
     if not snapshots:
         return "No snapshots found."
@@ -462,12 +504,26 @@ def format_trend(snapshots: list[dict]) -> str:
     lines.append("  " + "-" * 58)
     for i, s in enumerate(snapshots):
         impl = _period_impl(s, snapshots[i - 1] if i > 0 else None)
-        lines.append(
-            f"  {s['date']:<14s} {impl:>6d} "
-            f"{s.get('first_attempt_rate', 0):>11.0%} "
-            f"${s.get('avg_cost_usd', 0):>8.2f} "
-            f"{s.get('human_edit_rate', 0):>11.0%}"
-        )
+
+        if "period_first_attempt_rate" in s:
+            prate = s["period_first_attempt_rate"]
+            rate_str = f"{'—':>11s}" if prate is None else f"{prate:>11.0%}"
+        else:
+            rate_str = f"{s.get('first_attempt_rate', 0):>11.0%}"
+
+        if "period_avg_cost_usd" in s:
+            pcost = s["period_avg_cost_usd"]
+            cost_str = f"{'—':>9s}" if pcost is None else f"${pcost:>8.2f}"
+        else:
+            cost_str = f"${s.get('avg_cost_usd', 0):>8.2f}"
+
+        if "period_human_edit_rate" in s:
+            phr = s["period_human_edit_rate"]
+            hr_str = f"{'—':>11s}" if phr is None else f"{phr:>11.0%}"
+        else:
+            hr_str = f"{s.get('human_edit_rate', 0):>11.0%}"
+
+        lines.append(f"  {s['date']:<14s} {impl:>6d} {rate_str} {cost_str} {hr_str}")
 
     if len(snapshots) >= 2:
         first = snapshots[0]
@@ -627,12 +683,26 @@ def generate_eval_md(
         lines.append("|------|----------------|---------------|----------|-------------|")
         for i, s in enumerate(recent):
             impl = _period_impl(s, recent[i - 1] if i > 0 else None)
-            lines.append(
-                f"| {s['date']} | {impl} "
-                f"| {s.get('first_attempt_rate', 0):.0%} "
-                f"| ${s.get('avg_cost_usd', 0):.2f} "
-                f"| {s.get('human_edit_rate', 0):.0%} |"
-            )
+
+            if "period_first_attempt_rate" in s:
+                prate = s["period_first_attempt_rate"]
+                rate_str = "—" if prate is None else f"{prate:.0%}"
+            else:
+                rate_str = f"{s.get('first_attempt_rate', 0):.0%}"
+
+            if "period_avg_cost_usd" in s:
+                pcost = s["period_avg_cost_usd"]
+                cost_str = "—" if pcost is None else f"${pcost:.2f}"
+            else:
+                cost_str = f"${s.get('avg_cost_usd', 0):.2f}"
+
+            if "period_human_edit_rate" in s:
+                phr = s["period_human_edit_rate"]
+                hr_str = "—" if phr is None else f"{phr:.0%}"
+            else:
+                hr_str = f"{s.get('human_edit_rate', 0):.0%}"
+
+            lines.append(f"| {s['date']} | {impl} | {rate_str} | {cost_str} | {hr_str} |")
         lines.append("")
 
     if recent:
@@ -811,6 +881,7 @@ def main(
         snapshot = compute_snapshot(runs, pr_data)
 
         previous = load_latest_snapshot(effective_base)
+        snapshot.update(_compute_period_stats(snapshot, previous))
 
         path = save_snapshot(snapshot, effective_base)
         print(f"Snapshot saved to {path}")
@@ -900,6 +971,7 @@ def main(
         pr_data = enrich_pr_data_with_runs(pr_data, runs)
         current = compute_snapshot(runs, pr_data)
         previous = load_latest_snapshot(effective_base)
+        current.update(_compute_period_stats(current, previous))
         if previous is None:
             if output == "json":
                 print(json.dumps(current))
@@ -926,6 +998,8 @@ def main(
     pr_data = fetch_pr_data(repo) if repo else []
     pr_data = enrich_pr_data_with_runs(pr_data, runs)
     snapshot = compute_snapshot(runs, pr_data)
+    previous = load_latest_snapshot(effective_base)
+    snapshot.update(_compute_period_stats(snapshot, previous))
 
     if output == "json":
         print(json.dumps(snapshot))

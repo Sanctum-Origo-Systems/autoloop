@@ -6,6 +6,7 @@ import json
 import subprocess
 
 from autoloop.eval import (
+    _compute_period_stats,
     _detect_module_prefixes,
     _detect_post_merge_fixups,
     _extract_issue_from_branch,
@@ -2908,3 +2909,317 @@ def test_compute_snapshot_module_total_matches_pr_total():
     assert snap["total_implementations"] == 4
     total_module = sum(m["implementations"] for m in snap["modules"].values())
     assert total_module == snap["total_implementations"]
+
+
+# --- _compute_period_stats (#232) ---
+
+
+def _make_full_snapshot(
+    date="2026-09-14",
+    rate=0.89,
+    cost=1.12,
+    hr=0.08,
+    total=35,
+    attempt_dist=None,
+    human_edit_count=3,
+    merged_pr_count=38,
+):
+    return {
+        "date": date,
+        "total_implementations": total,
+        "first_attempt_rate": rate,
+        "avg_cost_usd": cost,
+        "human_edit_rate": hr,
+        "attempt_distribution": attempt_dist or {"1": 31, "2": 3, "3+": 1},
+        "human_edit_count": human_edit_count,
+        "merged_pr_count": merged_pr_count,
+        "modules": {},
+    }
+
+
+def test_compute_period_stats_no_previous():
+    snap = _make_full_snapshot(rate=0.80, cost=1.50, hr=0.10)
+    result = _compute_period_stats(snap, None)
+    assert result["period_first_attempt_rate"] == 0.80
+    assert result["period_avg_cost_usd"] == 1.50
+    assert result["period_human_edit_rate"] == 0.10
+
+
+def test_compute_period_stats_basic():
+    prev = _make_full_snapshot(
+        date="2026-09-07",
+        rate=0.80,
+        cost=1.50,
+        total=30,
+        attempt_dist={"1": 20, "2": 5, "3+": 5},
+        human_edit_count=3,
+        merged_pr_count=25,
+    )
+    curr = _make_full_snapshot(
+        date="2026-09-14",
+        rate=0.83,
+        cost=1.40,
+        total=35,
+        attempt_dist={"1": 25, "2": 7, "3+": 5},
+        human_edit_count=4,
+        merged_pr_count=30,
+    )
+    result = _compute_period_stats(curr, prev)
+    # period: 7 new runs (37 - 30), 5 first-attempt (25 - 20)
+    assert result["period_first_attempt_rate"] == round(5 / 7, 2)
+    # period cost: (1.40*37 - 1.50*30) / 7
+    expected_cost = round((1.40 * 37 - 1.50 * 30) / 7, 2)
+    assert result["period_avg_cost_usd"] == expected_cost
+    # period edits: (4 - 3) / (30 - 25) = 1/5 = 0.2
+    assert result["period_human_edit_rate"] == 0.2
+
+
+def test_compute_period_stats_zero_impl_period():
+    prev = _make_full_snapshot(
+        attempt_dist={"1": 20, "2": 5, "3+": 5},
+        human_edit_count=3,
+        merged_pr_count=25,
+    )
+    curr = _make_full_snapshot(
+        attempt_dist={"1": 20, "2": 5, "3+": 5},
+        human_edit_count=3,
+        merged_pr_count=25,
+    )
+    result = _compute_period_stats(curr, prev)
+    assert result["period_first_attempt_rate"] is None
+    assert result["period_avg_cost_usd"] is None
+    assert result["period_human_edit_rate"] is None
+
+
+def test_compute_period_stats_missing_attempt_distribution():
+    prev = {"date": "2026-09-07", "first_attempt_rate": 0.80, "avg_cost_usd": 1.50}
+    curr = _make_full_snapshot()
+    result = _compute_period_stats(curr, prev)
+    assert result == {}
+
+
+def test_compute_period_stats_no_merged_prs_in_period():
+    prev = _make_full_snapshot(
+        attempt_dist={"1": 20, "2": 5, "3+": 5},
+        human_edit_count=3,
+        merged_pr_count=25,
+    )
+    curr = _make_full_snapshot(
+        attempt_dist={"1": 22, "2": 6, "3+": 5},
+        human_edit_count=3,
+        merged_pr_count=25,
+    )
+    result = _compute_period_stats(curr, prev)
+    assert result["period_first_attempt_rate"] == round(2 / 3, 2)
+    assert result["period_human_edit_rate"] is None
+
+
+# --- format_trend with period values (#232) ---
+
+
+def test_format_trend_uses_period_values():
+    snaps = [
+        {
+            "date": "2026-09-07",
+            "total_implementations": 30,
+            "first_attempt_rate": 0.80,
+            "avg_cost_usd": 1.50,
+            "human_edit_rate": 0.12,
+            "period_first_attempt_rate": 0.80,
+            "period_avg_cost_usd": 1.50,
+            "period_human_edit_rate": 0.12,
+        },
+        {
+            "date": "2026-09-14",
+            "total_implementations": 35,
+            "first_attempt_rate": 0.83,
+            "avg_cost_usd": 1.40,
+            "human_edit_rate": 0.10,
+            "period_first_attempt_rate": 1.00,
+            "period_avg_cost_usd": 0.80,
+            "period_human_edit_rate": 0.0,
+        },
+    ]
+    output = format_trend(snaps)
+    lines = output.split("\n")
+    row_14 = [ln for ln in lines if "2026-09-14" in ln][0]
+    assert "100%" in row_14
+    assert "0.80" in row_14
+    assert "0%" in row_14
+
+
+def test_format_trend_falls_back_to_cumulative_for_old_snapshots():
+    snaps = [
+        {
+            "date": "2026-09-07",
+            "total_implementations": 30,
+            "first_attempt_rate": 0.80,
+            "avg_cost_usd": 1.50,
+            "human_edit_rate": 0.12,
+        },
+        {
+            "date": "2026-09-14",
+            "total_implementations": 35,
+            "first_attempt_rate": 0.83,
+            "avg_cost_usd": 1.40,
+            "human_edit_rate": 0.10,
+        },
+    ]
+    output = format_trend(snaps)
+    lines = output.split("\n")
+    row_07 = [ln for ln in lines if "2026-09-07" in ln][0]
+    assert "80%" in row_07
+    assert "1.50" in row_07
+    assert "12%" in row_07
+
+
+def test_format_trend_shows_dash_for_zero_impl_period():
+    snaps = [
+        {
+            "date": "2026-09-07",
+            "total_implementations": 30,
+            "first_attempt_rate": 0.80,
+            "avg_cost_usd": 1.50,
+            "human_edit_rate": 0.12,
+            "period_first_attempt_rate": 0.80,
+            "period_avg_cost_usd": 1.50,
+            "period_human_edit_rate": 0.12,
+        },
+        {
+            "date": "2026-09-14",
+            "total_implementations": 30,
+            "first_attempt_rate": 0.80,
+            "avg_cost_usd": 1.50,
+            "human_edit_rate": 0.12,
+            "period_first_attempt_rate": None,
+            "period_avg_cost_usd": None,
+            "period_human_edit_rate": None,
+        },
+    ]
+    output = format_trend(snaps)
+    lines = output.split("\n")
+    row_14 = [ln for ln in lines if "2026-09-14" in ln][0]
+    assert "—" in row_14
+    assert "80%" not in row_14
+
+
+# --- generate_eval_md with period values (#232) ---
+
+
+def test_generate_eval_md_trend_uses_period_values():
+    snaps = [
+        _make_snapshot(date="2026-09-07", rate=0.80, cost=1.50, hr=0.12, total=30),
+        {
+            **_make_snapshot(date="2026-09-14", rate=0.83, cost=1.40, hr=0.10, total=35),
+            "period_first_attempt_rate": 1.00,
+            "period_avg_cost_usd": 0.80,
+            "period_human_edit_rate": 0.0,
+        },
+    ]
+    content = generate_eval_md(snaps[-1], snaps)
+    lines = content.split("\n")
+    row_14 = [ln for ln in lines if "2026-09-14" in ln][0]
+    assert "100%" in row_14
+    assert "$0.80" in row_14
+    assert "0%" in row_14
+
+
+def test_generate_eval_md_trend_dash_for_zero_impl():
+    snaps = [
+        _make_snapshot(date="2026-09-07", rate=0.80, cost=1.50, hr=0.12, total=30),
+        {
+            **_make_snapshot(date="2026-09-14", rate=0.80, cost=1.50, hr=0.12, total=30),
+            "period_first_attempt_rate": None,
+            "period_avg_cost_usd": None,
+            "period_human_edit_rate": None,
+        },
+    ]
+    content = generate_eval_md(snaps[-1], snaps)
+    lines = content.split("\n")
+    row_14 = [ln for ln in lines if "2026-09-14" in ln][0]
+    assert "—" in row_14
+
+
+def test_generate_eval_md_overall_stays_cumulative_with_period_values():
+    snap = {
+        **_make_snapshot(date="2026-09-14", rate=0.58, cost=1.46, hr=0.15, total=130),
+        "period_first_attempt_rate": 1.00,
+        "period_avg_cost_usd": 0.50,
+        "period_human_edit_rate": 0.0,
+    }
+    content = generate_eval_md(snap, [snap])
+    lines = content.split("\n")
+    overall_idx = next(i for i, ln in enumerate(lines) if "## Overall" in ln)
+    overall_section = "\n".join(lines[overall_idx : overall_idx + 10])
+    assert "58%" in overall_section
+    assert "$1.46" in overall_section
+    assert "15%" in overall_section
+
+
+def test_main_stores_period_stats(tmp_path, capsys):
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    log_file = log_dir / "run_history.jsonl"
+    log_file.write_text(
+        json.dumps(
+            {
+                "type": "implement",
+                "issue": 1,
+                "success": True,
+                "attempts": 1,
+                "cost_usd": 1.0,
+                "duration_seconds": 120,
+            }
+        )
+        + "\n"
+    )
+
+    main(base=tmp_path)
+
+    snap_dir = tmp_path / "autoloop" / "eval_snapshots"
+    snap_file = list(snap_dir.glob("*.json"))[0]
+    snap = json.loads(snap_file.read_text())
+    assert "period_first_attempt_rate" in snap
+    assert "period_avg_cost_usd" in snap
+    assert "period_human_edit_rate" in snap
+
+
+def test_main_period_stats_with_previous(tmp_path, capsys):
+    snap_dir = tmp_path / "autoloop" / "eval_snapshots"
+    snap_dir.mkdir(parents=True)
+    previous = {
+        "date": "2026-09-13",
+        "total_implementations": 5,
+        "first_attempt_rate": 0.80,
+        "avg_cost_usd": 1.50,
+        "avg_duration_seconds": 120,
+        "attempt_distribution": {"1": 4, "2": 1, "3+": 0},
+        "human_edit_rate": 0.0,
+        "human_edit_count": 0,
+        "merged_pr_count": 0,
+        "closed_without_merge": 0,
+        "modules": {},
+    }
+    (snap_dir / "2026-09-13.json").write_text(json.dumps(previous))
+
+    log_dir = tmp_path / "autoloop"
+    log_file = log_dir / "run_history.jsonl"
+    entries = [
+        {
+            "type": "implement",
+            "issue": i,
+            "success": True,
+            "attempts": 1,
+            "cost_usd": 1.0,
+            "duration_seconds": 60,
+        }
+        for i in range(1, 8)
+    ]
+    log_file.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+
+    main(base=tmp_path)
+
+    snap_files = sorted(snap_dir.glob("*.json"))
+    new_snap = json.loads(snap_files[-1].read_text())
+    assert new_snap["period_first_attempt_rate"] is not None
+    assert new_snap["period_avg_cost_usd"] is not None
