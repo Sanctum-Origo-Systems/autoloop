@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.8.0
+
+- feat: improve builder implementation prompt — test alignment with gate, ambiguity rule, commit types (#234)
+- feat: per-period first-attempt rate and cost in trend table (#232)
+- feat: test-integrity guard — flag diffs that weaken tests (#235)
+- feat: auto_merge config field (#244)
+- feat: wire Jev auto-merge shadow into standalone review-pr path (#259)
+- feat: Jev migration from Vercel to OpenRouter Decisions API (#257)
+- feat: bounded retry with backoff for Jev 429/5xx (#237)
+- fix: MCP review-pr runs as subprocess with cwd instead of os.chdir (#267, #271)
+- fix: parse JSON from review-pr multi-line stdout (#273)
+- fix: stale local branch cleanup before review-pr checkout (#261)
+- fix: detect issue type from PR title when body has no ## Type (#264)
+- fix: Jev shadow mode logs raw probabilities, unified schema (#236)
+- fix: gitignore jev_decisions.jsonl — operational data, not source code
+- feat: macOS CI runner in test matrix (#242)
+- fix: macOS _get_own_pid_chain fallback to ps (#241)
+- fix: decomposition carries forward parent blocked label and dependencies (#239)
+- fix: TOML [jev] section ordering (#238)
+- fix: duplicate type prefix in PR titles (#228)
+- fix: remove dead jev_endpoint and readiness_score code (#227, #240)
+
 ## v0.7.1
 
 - feat: shadow-mode Jev wiring into auto-merge decision (#220)
