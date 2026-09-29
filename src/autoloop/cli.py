@@ -519,6 +519,7 @@ def review_pr(pr_number, cfg, repo_dir: Path | None = None):
                     "--body",
                     comment,
                 ],
+                capture_output=True,
             )
             subprocess.run(
                 [
@@ -531,6 +532,7 @@ def review_pr(pr_number, cfg, repo_dir: Path | None = None):
                     "--add-label",
                     "needs-human",
                 ],
+                capture_output=True,
             )
         else:
             comment = (
@@ -547,6 +549,7 @@ def review_pr(pr_number, cfg, repo_dir: Path | None = None):
                     "--body",
                     comment,
                 ],
+                capture_output=True,
             )
 
         impl.log_run(
