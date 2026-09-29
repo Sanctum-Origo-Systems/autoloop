@@ -94,7 +94,9 @@ class TestQuickStartLocalMode:
         assert "`.claude/settings.json`" in README
 
     def test_concurrent_session_warning(self):
-        assert "Do not run `autoloop implement`, `triage`, `review-pr`, `fix-pr`, or `plan`" in README
+        assert (
+            "Do not run `autoloop implement`, `triage`, `review-pr`, `fix-pr`, or `plan`" in README
+        )
 
 
 class TestRunningUnattended:
