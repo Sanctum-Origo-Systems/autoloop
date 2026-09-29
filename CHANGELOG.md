@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.9.0
+
+- feat: wire auto-merge step into implement pipeline (#245)
+- feat: scaffold [jev] config block in autoloop init (#279)
+- feat: validate Jev config in autoloop doctor (#280)
+- fix: address auto-merge review issues — integrity guard, dead param, missing tests (#245)
+- fix: capture gh pr comment/edit output to prevent --json stdout contamination (#287)
+- fix: check_jev returns False when API key is missing in enabled mode
+- fix: remove .claude/settings.json from default protected_paths (#285)
+- fix: list all claude -p commands in session conflict warning
+- docs: TLDR installs from tagged version and warns about session conflict (#286)
+
 ## v0.8.0
 
 - feat: improve builder implementation prompt — test alignment with gate, ambiguity rule, commit types (#234)
