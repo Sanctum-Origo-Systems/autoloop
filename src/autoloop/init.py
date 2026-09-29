@@ -58,7 +58,7 @@ error_truncation = 2000
 spec_truncation = 4000
 
 # Paths the builder must never modify — issues targeting these get needs-human
-protected_paths = ["autoloop.toml", ".claude/settings.json"]
+protected_paths = ["autoloop.toml"]
 
 # Scheduling: autoloop uses systemd user timers for scheduled runs.
 # The timer_prefix controls which timers `autoloop status` looks for.

@@ -177,11 +177,12 @@ class TestRunInitSettings:
         assert "Bash(ruff check*)" in data["permissions"]["allow"]
 
     @patch("autoloop.init.create_labels")
-    def test_init_protected_paths_includes_settings(self, mock_labels, tmp_path, monkeypatch):
+    def test_init_protected_paths_excludes_settings(self, mock_labels, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         run_init("acme/widgets", verify_cmd="pytest", skip_labels=True)
         toml_content = (tmp_path / "autoloop.toml").read_text()
-        assert ".claude/settings.json" in toml_content
+        assert ".claude/settings.json" not in toml_content
+        assert "autoloop.toml" in toml_content
 
     @patch("autoloop.init.create_labels")
     def test_init_next_steps_mentions_settings(self, mock_labels, tmp_path, monkeypatch, capsys):
