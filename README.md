@@ -25,8 +25,9 @@ autoloop implement --auto-fix             # builds, reviews, fixes if needed
 ```
 
 > **Important:** Close any Claude Code sessions in your project directory before
-> running `autoloop implement`. Autoloop launches `claude -p` as a subprocess,
-> and two Claude sessions in the same directory will conflict.
+> running `autoloop implement`, `triage`, `review-pr`, `fix-pr`, or `plan`.
+> These commands launch `claude -p` as a subprocess, and two Claude sessions
+> in the same directory will conflict.
 >
 > **Recommended workaround:** Launch your interactive Claude Code session from
 > the parent folder (one level above your project). Copy `.claude/settings.json`
@@ -175,8 +176,10 @@ git push
 
 - `autoloop init` scaffolds the required `.claude/settings.json` permissions.
   If you skipped init, create one manually (see template).
-- Do not run `autoloop implement` while a Claude Code session is open in the
-  same project directory. Close it or move the session to a parent folder.
+- Do not run `autoloop implement`, `triage`, `review-pr`, `fix-pr`, or `plan`
+  while a Claude Code session is open in the same project directory. These
+  commands launch `claude -p` and will conflict. Close the session or launch
+  it from the parent folder.
 
 ### 2. Verify your environment
 
