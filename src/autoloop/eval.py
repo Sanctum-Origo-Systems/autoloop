@@ -506,7 +506,8 @@ def format_trend(snapshots: list[dict]) -> str:
         prev = snapshots[i - 1] if i > 0 else None
         impl = _period_impl(s, prev)
         pstats = _compute_period_stats(s, prev) or {
-            k: s.get(k) for k in ("period_first_attempt_rate", "period_avg_cost_usd", "period_human_edit_rate")
+            k: s.get(k)
+            for k in ("period_first_attempt_rate", "period_avg_cost_usd", "period_human_edit_rate")
         }
 
         prate = pstats.get("period_first_attempt_rate")
@@ -680,7 +681,12 @@ def generate_eval_md(
             prev = recent[i - 1] if i > 0 else None
             impl = _period_impl(s, prev)
             pstats = _compute_period_stats(s, prev) or {
-                k: s.get(k) for k in ("period_first_attempt_rate", "period_avg_cost_usd", "period_human_edit_rate")
+                k: s.get(k)
+                for k in (
+                    "period_first_attempt_rate",
+                    "period_avg_cost_usd",
+                    "period_human_edit_rate",
+                )
             }
 
             prate = pstats.get("period_first_attempt_rate")
