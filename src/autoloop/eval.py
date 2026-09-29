@@ -503,25 +503,20 @@ def format_trend(snapshots: list[dict]) -> str:
     )
     lines.append("  " + "-" * 58)
     for i, s in enumerate(snapshots):
-        impl = _period_impl(s, snapshots[i - 1] if i > 0 else None)
+        prev = snapshots[i - 1] if i > 0 else None
+        impl = _period_impl(s, prev)
+        pstats = _compute_period_stats(s, prev) or {
+            k: s.get(k) for k in ("period_first_attempt_rate", "period_avg_cost_usd", "period_human_edit_rate")
+        }
 
-        if "period_first_attempt_rate" in s:
-            prate = s["period_first_attempt_rate"]
-            rate_str = f"{'—':>11s}" if prate is None else f"{prate:>11.0%}"
-        else:
-            rate_str = f"{s.get('first_attempt_rate', 0):>11.0%}"
+        prate = pstats.get("period_first_attempt_rate")
+        rate_str = f"{'—':>11s}" if prate is None else f"{prate:>11.0%}"
 
-        if "period_avg_cost_usd" in s:
-            pcost = s["period_avg_cost_usd"]
-            cost_str = f"{'—':>9s}" if pcost is None else f"${pcost:>8.2f}"
-        else:
-            cost_str = f"${s.get('avg_cost_usd', 0):>8.2f}"
+        pcost = pstats.get("period_avg_cost_usd")
+        cost_str = f"{'—':>9s}" if pcost is None else f"${pcost:>8.2f}"
 
-        if "period_human_edit_rate" in s:
-            phr = s["period_human_edit_rate"]
-            hr_str = f"{'—':>11s}" if phr is None else f"{phr:>11.0%}"
-        else:
-            hr_str = f"{s.get('human_edit_rate', 0):>11.0%}"
+        phr = pstats.get("period_human_edit_rate")
+        hr_str = f"{'—':>11s}" if phr is None else f"{phr:>11.0%}"
 
         lines.append(f"  {s['date']:<14s} {impl:>6d} {rate_str} {cost_str} {hr_str}")
 
@@ -682,25 +677,20 @@ def generate_eval_md(
         lines.append("| Date (UTC) | Implementations | First-attempt | Avg Cost | Human Edits |")
         lines.append("|------|----------------|---------------|----------|-------------|")
         for i, s in enumerate(recent):
-            impl = _period_impl(s, recent[i - 1] if i > 0 else None)
+            prev = recent[i - 1] if i > 0 else None
+            impl = _period_impl(s, prev)
+            pstats = _compute_period_stats(s, prev) or {
+                k: s.get(k) for k in ("period_first_attempt_rate", "period_avg_cost_usd", "period_human_edit_rate")
+            }
 
-            if "period_first_attempt_rate" in s:
-                prate = s["period_first_attempt_rate"]
-                rate_str = "—" if prate is None else f"{prate:.0%}"
-            else:
-                rate_str = f"{s.get('first_attempt_rate', 0):.0%}"
+            prate = pstats.get("period_first_attempt_rate")
+            rate_str = "—" if prate is None else f"{prate:.0%}"
 
-            if "period_avg_cost_usd" in s:
-                pcost = s["period_avg_cost_usd"]
-                cost_str = "—" if pcost is None else f"${pcost:.2f}"
-            else:
-                cost_str = f"${s.get('avg_cost_usd', 0):.2f}"
+            pcost = pstats.get("period_avg_cost_usd")
+            cost_str = "—" if pcost is None else f"${pcost:.2f}"
 
-            if "period_human_edit_rate" in s:
-                phr = s["period_human_edit_rate"]
-                hr_str = "—" if phr is None else f"{phr:.0%}"
-            else:
-                hr_str = f"{s.get('human_edit_rate', 0):.0%}"
+            phr = pstats.get("period_human_edit_rate")
+            hr_str = "—" if phr is None else f"{phr:.0%}"
 
             lines.append(f"| {s['date']} | {impl} | {rate_str} | {cost_str} | {hr_str} |")
         lines.append("")
