@@ -14,7 +14,7 @@ Config-driven AI pipeline that triages GitHub issues, implements them via Claude
 ## TLDR: First PR in 5 Minutes
 
 ```bash
-uv tool install git+https://github.com/Sanctum-Origo-Systems/autoloop@v0.8.0
+uv tool install git+https://github.com/Sanctum-Origo-Systems/autoloop@v0.9.0
 cd your-repo
 autoloop init --repo your-org/your-repo --verify-cmd "npm test"
 autoloop doctor                           # verify environment
