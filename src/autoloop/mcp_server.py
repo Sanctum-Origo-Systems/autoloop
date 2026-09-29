@@ -208,17 +208,9 @@ def main():
         except subprocess.TimeoutExpired:
             return f"Review of PR #{pr_number} timed out after {cfg.impl_timeout}s."
 
-        # The CLI may print non-JSON lines (e.g. comment URLs) before the JSON.
-        # Parse only the last line.
-        json_line = ""
-        for line in reversed(result.stdout.strip().splitlines()):
-            if line.startswith("{"):
-                json_line = line
-                break
-
         if result.returncode != 0:
             try:
-                data = json.loads(json_line)
+                data = json.loads(result.stdout)
                 cost = data.get("cost_usd", 0)
                 inp = data.get("input_tokens", 0)
                 out = data.get("output_tokens", 0)
@@ -227,13 +219,15 @@ def main():
                     f"Cost: ${cost:.2f}, tokens: {inp:,} input / {out:,} output."
                 )
             except (json.JSONDecodeError, ValueError):
-                error = result.stderr.strip() or "Review failed (no details available)"
+                snippet = (result.stdout or result.stderr or "")[:300].strip()
+                error = snippet or "Review failed (no details available)"
                 return f"Review failed for PR #{pr_number}: {error}"
 
         try:
-            data = json.loads(json_line)
+            data = json.loads(result.stdout)
         except (json.JSONDecodeError, ValueError):
-            return f"Review of PR #{pr_number} completed but returned invalid output."
+            snippet = (result.stdout or result.stderr or "")[:300].strip()
+            return f"Review of PR #{pr_number} completed but returned invalid output: {snippet}"
 
         status = "passed" if data.get("success") else "failed"
         cost = data.get("cost_usd", 0)

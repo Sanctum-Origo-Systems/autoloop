@@ -1235,6 +1235,43 @@ class TestReviewPrJsonFlag:
         captured = capsys.readouterr()
         assert captured.out == "" or "cost_usd" not in captured.out
 
+    def test_json_not_contaminated_by_gh_stdout(self, capsys, tmp_path, monkeypatch):
+        """gh pr comment/edit print URLs to stdout; --json must still be valid JSON."""
+        import sys
+
+        monkeypatch.chdir(tmp_path)
+        cfg = _cfg()
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
+        review_json = json.dumps({"approved": True, "summary": "ok"})
+
+        gh_url = "https://github.com/acme-corp/widget/pull/42#issuecomment-123"
+
+        def dispatch(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args", [])
+            is_gh_comment = isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "comment"]
+            is_gh_edit = isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "edit"]
+            if is_gh_comment or is_gh_edit:
+                if not kwargs.get("capture_output"):
+                    sys.stdout.write(gh_url + "\n")
+                return SimpleNamespace(returncode=0, stdout=gh_url, stderr="")
+            return _make_dispatcher(pr_data)(*args, **kwargs)
+
+        with (
+            patch("subprocess.run", side_effect=dispatch),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(text=review_json, cost_usd=0.10),
+            ),
+            patch("sys.argv", ["autoloop", "review-pr", "42", "--json"]),
+            patch("autoloop.config.load_config", return_value=cfg),
+        ):
+            main()
+
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert data["success"] is True
+        assert gh_url not in captured.out
+
 
 class TestReviewPrCwdStability:
     """Verify review_pr never changes the server's working directory."""
