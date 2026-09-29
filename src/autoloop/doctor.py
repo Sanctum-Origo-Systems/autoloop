@@ -95,6 +95,30 @@ def check_claude_session(repo_dir: Path | None = None) -> tuple[bool, str]:
     return True, "No active Claude Code session conflict"
 
 
+def check_jev(repo_dir: Path | None = None) -> tuple[bool, str]:
+    """Validate Jev configuration when enabled."""
+    import os
+
+    from autoloop.config import load_config
+
+    config_path = (repo_dir or Path.cwd()) / "autoloop.toml"
+    try:
+        cfg = load_config(config_path)
+    except Exception:
+        return False, "could not load autoloop.toml to read jev config"
+
+    if cfg.jev_mode == "off":
+        return True, "Jev: disabled"
+
+    if os.environ.get(cfg.jev_api_key_env):
+        return True, f"Jev: {cfg.jev_mode} mode, API key set"
+
+    return (
+        False,
+        f"Jev: {cfg.jev_mode} mode, API key MISSING (set env var {cfg.jev_api_key_env}, or set jev.mode = 'off')",
+    )
+
+
 def check_verify_cmd(repo_dir: Path | None = None) -> tuple[bool, str]:
     """Run the repo's configured verify_cmd and report pass/fail."""
     from autoloop.config import load_config
@@ -170,6 +194,11 @@ def get_checks(repo_dir: Path | None = None) -> list[Check]:
             name="verify_cmd",
             fn=lambda: check_verify_cmd(repo_dir),
             fix_hint='resolve the error above, then re-run "autoloop doctor"',
+        ),
+        Check(
+            name="Jev config",
+            fn=lambda: check_jev(repo_dir),
+            fix_hint="set the API key env var, or set jev.mode = 'off' in autoloop.toml",
         ),
     ]
 
