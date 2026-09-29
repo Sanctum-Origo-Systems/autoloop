@@ -35,11 +35,21 @@ class TestTldrQuickstart:
         tldr_section = README[README.index("## TLDR") : README.index("## Platform Support")]
         assert "#configuration" in tldr_section.lower() or "configuration" in tldr_section
 
-    def test_under_20_lines(self):
+    def test_under_30_lines(self):
         tldr_start = README.index("## TLDR")
         tldr_end = README.index("---", tldr_start)
         tldr_lines = README[tldr_start:tldr_end].strip().splitlines()
-        assert len(tldr_lines) <= 20
+        assert len(tldr_lines) <= 30
+
+    def test_install_uses_tagged_version(self):
+        tldr_section = README[README.index("## TLDR") : README.index("---")]
+        assert "@main" not in tldr_section
+        assert "@v" in tldr_section
+
+    def test_session_conflict_warning(self):
+        tldr_section = README[README.index("## TLDR") : README.index("---")]
+        assert "Close any Claude Code sessions" in tldr_section
+        assert "parent folder" in tldr_section
 
 
 class TestPlatformSupport:
@@ -84,7 +94,9 @@ class TestQuickStartLocalMode:
         assert "`.claude/settings.json`" in README
 
     def test_concurrent_session_warning(self):
-        assert "Do not run `autoloop implement` while a Claude Code session is open" in README
+        assert (
+            "Do not run `autoloop implement`, `triage`, `review-pr`, `fix-pr`, or `plan`" in README
+        )
 
 
 class TestRunningUnattended:
