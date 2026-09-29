@@ -14,6 +14,7 @@ from autoloop.doctor import (
     check_claude_session,
     check_claude_settings,
     check_gh_cli_installed,
+    check_jev,
     check_verify_cmd,
     get_checks,
     run_checks,
@@ -136,7 +137,7 @@ def test_check_claude_settings_missing(tmp_path):
 
 def test_get_checks_returns_registered_checks():
     checks = get_checks()
-    assert len(checks) == 7
+    assert len(checks) == 8
     assert checks[0].name == "autoloop.toml"
     assert checks[1].name == ".claude/settings.json"
     assert checks[2].name == "claude CLI installed"
@@ -144,6 +145,7 @@ def test_get_checks_returns_registered_checks():
     assert checks[4].name == "gh CLI installed and authenticated"
     assert checks[5].name == "Claude Code session conflict"
     assert checks[6].name == "verify_cmd"
+    assert checks[7].name == "Jev config"
     assert "autoloop init" in checks[0].fix_hint
     assert "autoloop init" in checks[1].fix_hint
     assert "autoloop doctor" in checks[6].fix_hint
@@ -159,7 +161,7 @@ def test_get_checks_all_pass(tmp_path, capsys):
     checks = get_checks(tmp_path)
     results = run_checks(checks)
 
-    assert len(results) == 7
+    assert len(results) == 8
     file_results = [r for r in results if r.name in ("autoloop.toml", ".claude/settings.json")]
     assert all(r.passed for r in file_results)
     out = capsys.readouterr().out
@@ -170,7 +172,7 @@ def test_get_checks_all_fail(tmp_path, capsys):
     checks = get_checks(tmp_path)
     results = run_checks(checks)
 
-    assert len(results) == 7
+    assert len(results) == 8
     out = capsys.readouterr().out
     assert "✗" in out
 
@@ -352,5 +354,70 @@ def test_check_verify_cmd_not_set(tmp_path):
 
 def test_check_verify_cmd_no_config(tmp_path):
     passed, msg = check_verify_cmd(tmp_path)
+    assert passed is False
+    assert "could not load" in msg
+
+
+# --- Jev config check ---
+
+
+def test_check_jev_disabled(tmp_path, monkeypatch):
+    toml_file = tmp_path / "autoloop.toml"
+    toml_file.write_text('repo = "acme/widgets"\n')
+    monkeypatch.delenv("JEV_MODE", raising=False)
+    passed, msg = check_jev(tmp_path)
+    assert passed is True
+    assert "disabled" in msg
+
+
+def test_check_jev_shadow_mode_api_key_set(tmp_path, monkeypatch):
+    toml_file = tmp_path / "autoloop.toml"
+    toml_file.write_text('repo = "acme/widgets"\n\n[jev]\nmode = "shadow"\n')
+    monkeypatch.delenv("JEV_MODE", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key-123")
+    passed, msg = check_jev(tmp_path)
+    assert passed is True
+    assert "shadow mode" in msg
+    assert "API key set" in msg
+    assert "MISSING" not in msg
+
+
+def test_check_jev_shadow_mode_api_key_missing(tmp_path, monkeypatch):
+    toml_file = tmp_path / "autoloop.toml"
+    toml_file.write_text('repo = "acme/widgets"\n\n[jev]\nmode = "shadow"\n')
+    monkeypatch.delenv("JEV_MODE", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    passed, msg = check_jev(tmp_path)
+    assert passed is True
+    assert "shadow mode" in msg
+    assert "API key MISSING" in msg
+    assert "OPENROUTER_API_KEY" in msg
+
+
+def test_check_jev_gate_mode_api_key_set(tmp_path, monkeypatch):
+    toml_file = tmp_path / "autoloop.toml"
+    toml_file.write_text('repo = "acme/widgets"\n\n[jev]\nmode = "gate"\n')
+    monkeypatch.delenv("JEV_MODE", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key-123")
+    passed, msg = check_jev(tmp_path)
+    assert passed is True
+    assert "gate mode" in msg
+    assert "API key set" in msg
+
+
+def test_check_jev_custom_api_key_env(tmp_path, monkeypatch):
+    toml_file = tmp_path / "autoloop.toml"
+    toml_file.write_text(
+        'repo = "acme/widgets"\n\n[jev]\nmode = "shadow"\napi_key_env = "MY_CUSTOM_KEY"\n'
+    )
+    monkeypatch.delenv("JEV_MODE", raising=False)
+    monkeypatch.delenv("MY_CUSTOM_KEY", raising=False)
+    passed, msg = check_jev(tmp_path)
+    assert passed is True
+    assert "MY_CUSTOM_KEY" in msg
+
+
+def test_check_jev_no_config(tmp_path):
+    passed, msg = check_jev(tmp_path)
     assert passed is False
     assert "could not load" in msg
