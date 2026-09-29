@@ -14,7 +14,7 @@ Config-driven AI pipeline that triages GitHub issues, implements them via Claude
 ## TLDR: First PR in 5 Minutes
 
 ```bash
-uv tool install git+https://github.com/Sanctum-Origo-Systems/autoloop@main
+uv tool install git+https://github.com/Sanctum-Origo-Systems/autoloop@v0.8.0
 cd your-repo
 autoloop init --repo your-org/your-repo --verify-cmd "npm test"
 autoloop doctor                           # verify environment
@@ -23,6 +23,15 @@ autoloop triage --drain                   # evaluates and labels issues
 autoloop implement --auto-fix             # builds, reviews, fixes if needed
 # Review and merge the PR
 ```
+
+> **Important:** Close any Claude Code sessions in your project directory before
+> running `autoloop implement`. Autoloop launches `claude -p` as a subprocess,
+> and two Claude sessions in the same directory will conflict.
+>
+> **Recommended workaround:** Launch your interactive Claude Code session from
+> the parent folder (one level above your project). Copy `.claude/settings.json`
+> and `.mcp.json` to the parent folder so permissions and MCP tools are available.
+> Autoloop runs in the project folder; your chat session runs one level up.
 
 That's it. Read on for [common workflows](#common-workflows), [configuration](#configuration-reference), [scheduling](#running-unattended), and [issue writing tips](#4-create-an-issue).
 
