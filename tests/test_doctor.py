@@ -388,7 +388,7 @@ def test_check_jev_shadow_mode_api_key_missing(tmp_path, monkeypatch):
     monkeypatch.delenv("JEV_MODE", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     passed, msg = check_jev(tmp_path)
-    assert passed is True
+    assert passed is False
     assert "shadow mode" in msg
     assert "API key MISSING" in msg
     assert "OPENROUTER_API_KEY" in msg
@@ -413,7 +413,7 @@ def test_check_jev_custom_api_key_env(tmp_path, monkeypatch):
     monkeypatch.delenv("JEV_MODE", raising=False)
     monkeypatch.delenv("MY_CUSTOM_KEY", raising=False)
     passed, msg = check_jev(tmp_path)
-    assert passed is True
+    assert passed is False
     assert "MY_CUSTOM_KEY" in msg
 
 

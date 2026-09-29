@@ -113,7 +113,10 @@ def check_jev(repo_dir: Path | None = None) -> tuple[bool, str]:
     if os.environ.get(cfg.jev_api_key_env):
         return True, f"Jev: {cfg.jev_mode} mode, API key set"
 
-    return True, f"Jev: {cfg.jev_mode} mode, API key MISSING (env var {cfg.jev_api_key_env})"
+    return (
+        False,
+        f"Jev: {cfg.jev_mode} mode, API key MISSING (set env var {cfg.jev_api_key_env}, or set jev.mode = 'off')",
+    )
 
 
 def check_verify_cmd(repo_dir: Path | None = None) -> tuple[bool, str]:
