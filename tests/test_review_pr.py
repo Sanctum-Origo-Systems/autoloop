@@ -1237,6 +1237,8 @@ class TestReviewPrJsonFlag:
 
     def test_json_not_contaminated_by_gh_stdout(self, capsys, tmp_path, monkeypatch):
         """gh pr comment/edit print URLs to stdout; --json must still be valid JSON."""
+        import sys
+
         monkeypatch.chdir(tmp_path)
         cfg = _cfg()
         pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
@@ -1246,9 +1248,11 @@ class TestReviewPrJsonFlag:
 
         def dispatch(*args, **kwargs):
             cmd = args[0] if args else kwargs.get("args", [])
-            if isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "comment"]:
-                return SimpleNamespace(returncode=0, stdout=gh_url, stderr="")
-            if isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "edit"]:
+            is_gh_comment = isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "comment"]
+            is_gh_edit = isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "edit"]
+            if is_gh_comment or is_gh_edit:
+                if not kwargs.get("capture_output"):
+                    sys.stdout.write(gh_url + "\n")
                 return SimpleNamespace(returncode=0, stdout=gh_url, stderr="")
             return _make_dispatcher(pr_data)(*args, **kwargs)
 
