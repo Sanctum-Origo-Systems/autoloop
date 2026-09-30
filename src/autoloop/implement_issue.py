@@ -1060,6 +1060,7 @@ def review_implementation(
         approved, feedback = parse_review_response(result.text)
 
     if cfg.jev_mode == "shadow":
+        from autoloop.config import RepoContext
         from autoloop.jev import should_auto_merge
         from autoloop.jev_log import log_decision
 
@@ -1095,7 +1096,8 @@ def review_implementation(
         if pr_number is not None:
             record["pr"] = pr_number
         try:
-            log_decision(record)
+            ctx = RepoContext.for_data_dir(Path.cwd() / "autoloop")
+            log_decision(record, ctx)
         except Exception:
             logging.exception("Failed to log Jev auto-merge decision")
 

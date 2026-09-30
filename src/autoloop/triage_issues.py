@@ -1080,7 +1080,7 @@ def triage_issue(
             "timestamp": datetime.now(UTC).isoformat(),
         }
         try:
-            log_decision(record)
+            log_decision(record, ctx)
         except Exception:
             logging.exception("Failed to log Jev triage decision")
 

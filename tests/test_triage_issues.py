@@ -3162,7 +3162,7 @@ def test_triage_issue_jev_shadow_logs_decision(monkeypatch, tmp_path):
 
         triage_issue(ctx, {"number": 5, "title": "Test", "body": "body"}, cfg)
 
-    log_file = tmp_path / "autoloop" / "jev_decisions.jsonl"
+    log_file = ctx.data_dir / "jev_decisions.jsonl"
     assert log_file.exists()
     entry = json.loads(log_file.read_text().strip())
     assert entry["point"] == "triage"
@@ -3274,7 +3274,7 @@ def test_triage_issue_jev_shadow_failure_continues(monkeypatch, tmp_path):
 
     assert len(results) > 0
 
-    log_file = tmp_path / "autoloop" / "jev_decisions.jsonl"
+    log_file = ctx.data_dir / "jev_decisions.jsonl"
     assert log_file.exists()
     entry = json.loads(log_file.read_text().strip())
     assert entry["point"] == "triage"
