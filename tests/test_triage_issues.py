@@ -3580,7 +3580,9 @@ def test_triage_main_aborts_when_active_session_detected(capsys):
     ):
         from autoloop.triage_issues import main as triage_main
 
-        triage_main()
+        with pytest.raises(SystemExit) as exc_info:
+            triage_main()
+        assert exc_info.value.code == 1
 
     out = capsys.readouterr().out
     assert "Active Claude Code session detected" in out

@@ -7,6 +7,7 @@ import logging
 import re
 import shutil
 import subprocess
+import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1210,7 +1211,7 @@ def main(issue=None, drain=False, max_rounds=None):
             "Active Claude Code session detected in this directory.\n"
             "Close it, or move the Claude Code session to a parent folder."
         )
-        return
+        sys.exit(1)
 
     start_time = time.time()
     results: list[ClaudeResult] = []
