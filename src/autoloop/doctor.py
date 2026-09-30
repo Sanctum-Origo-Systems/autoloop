@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Callable
+
+from autoloop.config import RepoContext
 
 
 @dataclass
@@ -23,11 +24,11 @@ class Result:
     fix_hint: str
 
 
-def check_autoloop_toml(repo_dir: Path | None = None) -> tuple[bool, str]:
+def check_autoloop_toml(ctx: RepoContext) -> tuple[bool, str]:
     """Validate that autoloop.toml exists and parses without error."""
     from autoloop.config import load_config
 
-    config_path = (repo_dir or Path.cwd()) / "autoloop.toml"
+    config_path = ctx.repo_dir / "autoloop.toml"
     try:
         load_config(config_path)
     except FileNotFoundError:
@@ -37,9 +38,9 @@ def check_autoloop_toml(repo_dir: Path | None = None) -> tuple[bool, str]:
     return True, "autoloop.toml found and valid"
 
 
-def check_claude_settings(repo_dir: Path | None = None) -> tuple[bool, str]:
+def check_claude_settings(ctx: RepoContext) -> tuple[bool, str]:
     """Validate that .claude/settings.json exists in the repo root."""
-    settings_path = (repo_dir or Path.cwd()) / ".claude" / "settings.json"
+    settings_path = ctx.repo_dir / ".claude" / "settings.json"
     if not settings_path.exists():
         return False, ".claude/settings.json not found"
     return True, ".claude/settings.json found"
@@ -83,11 +84,11 @@ def check_gh_cli_installed() -> tuple[bool, str]:
     return True, "gh CLI installed and authenticated"
 
 
-def check_claude_session(repo_dir: Path | None = None) -> tuple[bool, str]:
+def check_claude_session(ctx: RepoContext) -> tuple[bool, str]:
     """Check if an active Claude Code session is running in the working directory."""
     from autoloop.implement_issue import detect_active_claude_session
 
-    result = detect_active_claude_session(str(repo_dir) if repo_dir else None)
+    result = detect_active_claude_session(str(ctx.repo_dir))
     if result is True:
         return False, "Active Claude Code session detected in this directory"
     if result is None:
@@ -95,13 +96,13 @@ def check_claude_session(repo_dir: Path | None = None) -> tuple[bool, str]:
     return True, "No active Claude Code session conflict"
 
 
-def check_jev(repo_dir: Path | None = None) -> tuple[bool, str]:
+def check_jev(ctx: RepoContext) -> tuple[bool, str]:
     """Validate Jev configuration when enabled."""
     import os
 
     from autoloop.config import load_config
 
-    config_path = (repo_dir or Path.cwd()) / "autoloop.toml"
+    config_path = ctx.repo_dir / "autoloop.toml"
     try:
         cfg = load_config(config_path)
     except Exception:
@@ -119,11 +120,11 @@ def check_jev(repo_dir: Path | None = None) -> tuple[bool, str]:
     )
 
 
-def check_verify_cmd(repo_dir: Path | None = None) -> tuple[bool, str]:
+def check_verify_cmd(ctx: RepoContext) -> tuple[bool, str]:
     """Run the repo's configured verify_cmd and report pass/fail."""
     from autoloop.config import load_config
 
-    config_path = (repo_dir or Path.cwd()) / "autoloop.toml"
+    config_path = ctx.repo_dir / "autoloop.toml"
     try:
         cfg = load_config(config_path)
     except Exception:
@@ -139,7 +140,7 @@ def check_verify_cmd(repo_dir: Path | None = None) -> tuple[bool, str]:
             capture_output=True,
             text=True,
             timeout=cfg.test_timeout,
-            cwd=repo_dir or Path.cwd(),
+            cwd=ctx.repo_dir,
         )
     except FileNotFoundError:
         return False, f'verify_cmd command not found: "{cfg.verify_cmd}"'
@@ -157,17 +158,17 @@ def check_verify_cmd(repo_dir: Path | None = None) -> tuple[bool, str]:
     return False, msg
 
 
-def get_checks(repo_dir: Path | None = None) -> list[Check]:
+def get_checks(ctx: RepoContext) -> list[Check]:
     """Return the default set of doctor checks."""
     return [
         Check(
             name="autoloop.toml",
-            fn=lambda: check_autoloop_toml(repo_dir),
+            fn=lambda: check_autoloop_toml(ctx),
             fix_hint='run "autoloop init" to generate it',
         ),
         Check(
             name=".claude/settings.json",
-            fn=lambda: check_claude_settings(repo_dir),
+            fn=lambda: check_claude_settings(ctx),
             fix_hint='run "autoloop init" to scaffold it, or create manually',
         ),
         Check(
@@ -187,17 +188,17 @@ def get_checks(repo_dir: Path | None = None) -> list[Check]:
         ),
         Check(
             name="Claude Code session conflict",
-            fn=lambda: check_claude_session(repo_dir),
+            fn=lambda: check_claude_session(ctx),
             fix_hint="close the Claude Code session, or run it from a different directory",
         ),
         Check(
             name="verify_cmd",
-            fn=lambda: check_verify_cmd(repo_dir),
+            fn=lambda: check_verify_cmd(ctx),
             fix_hint='resolve the error above, then re-run "autoloop doctor"',
         ),
         Check(
             name="Jev config",
-            fn=lambda: check_jev(repo_dir),
+            fn=lambda: check_jev(ctx),
             fix_hint="set the API key env var, or set jev.mode = 'off' in autoloop.toml",
         ),
     ]

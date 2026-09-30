@@ -270,18 +270,21 @@ def main():
         )
 
     elif args.command == "doctor":
+        from autoloop.config import RepoContext
         from autoloop.doctor import get_checks, run_checks
 
-        results = run_checks(get_checks())
+        ctx = RepoContext(repo_dir=Path.cwd())
+        results = run_checks(get_checks(ctx))
         if any(not r.passed for r in results):
             sys.exit(1)
 
     elif args.command == "preflight":
-        from autoloop.config import load_config
+        from autoloop.config import RepoContext, load_config
         from autoloop.preflight import run_preflight
 
+        ctx = RepoContext(repo_dir=Path.cwd())
         cfg = load_config()
-        results = run_preflight(cfg)
+        results = run_preflight(cfg, ctx)
         any_failed = False
         for name, result in results.items():
             if result["skipped"]:

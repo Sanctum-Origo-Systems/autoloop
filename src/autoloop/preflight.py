@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import subprocess
 import time
+from pathlib import Path
 
-from autoloop.config import AutoLoopConfig
+from autoloop.config import AutoLoopConfig, RepoContext
 
 
-def _run_command(cmd: str) -> dict:
+def _run_command(cmd: str, cwd: Path | None = None) -> dict:
     """Run a shell command and return result dict with passed, elapsed, output."""
     start = time.monotonic()
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    result = subprocess.run(cmd, shell=True, capture_output=True, text=True, cwd=cwd)
     elapsed = time.monotonic() - start
     output = result.stdout + result.stderr
     return {
@@ -22,14 +23,15 @@ def _run_command(cmd: str) -> dict:
     }
 
 
-def run_preflight(cfg: AutoLoopConfig) -> dict:
+def run_preflight(cfg: AutoLoopConfig, ctx: RepoContext | None = None) -> dict:
     """Run preflight checks and return results for each command."""
+    cwd = ctx.repo_dir if ctx else None
     results = {}
 
-    results["verify_cmd"] = _run_command(cfg.verify_cmd)
+    results["verify_cmd"] = _run_command(cfg.verify_cmd, cwd=cwd)
 
     if cfg.lint_command:
-        results["lint_command"] = _run_command(cfg.lint_command)
+        results["lint_command"] = _run_command(cfg.lint_command, cwd=cwd)
     else:
         results["lint_command"] = {
             "skipped": True,
