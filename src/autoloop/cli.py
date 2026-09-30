@@ -645,7 +645,7 @@ def _show_status():
 
     cfg = load_config()
 
-    last_impl, last_review = _read_last_runs()
+    last_impl, last_review = _read_last_runs(Path.cwd())
     if last_impl:
         print(
             f"Last implement: issue #{last_impl['issue']} — "

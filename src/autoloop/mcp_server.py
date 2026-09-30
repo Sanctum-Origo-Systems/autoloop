@@ -13,10 +13,17 @@ import json
 import subprocess
 from pathlib import Path
 
+from autoloop.config import RepoContext
 
-def _read_last_runs(base: Path | None = None) -> tuple[dict | None, dict | None]:
+
+def _make_context(repo_dir: str | None) -> RepoContext:
+    """Construct a RepoContext from a caller-supplied repo_dir, defaulting to '.'."""
+    return RepoContext(repo_dir or ".")
+
+
+def _read_last_runs(base: Path) -> tuple[dict | None, dict | None]:
     """Read the last implement and last review entries from run_history.jsonl."""
-    log_file = (base or Path.cwd()) / "autoloop" / "run_history.jsonl"
+    log_file = base / "autoloop" / "run_history.jsonl"
     if not log_file.exists():
         return None, None
     lines = log_file.read_text().strip().splitlines()
@@ -190,8 +197,8 @@ def main():
 
         from autoloop.config import load_config
 
-        base = Path(repo_dir) if repo_dir else Path.cwd()
-        cfg = load_config(path=base / "autoloop.toml")
+        ctx = _make_context(repo_dir)
+        cfg = load_config(path=ctx.repo_dir / "autoloop.toml")
 
         loop = asyncio.get_event_loop()
         try:
@@ -199,7 +206,7 @@ def main():
                 None,
                 lambda: subprocess.run(
                     ["autoloop", "review-pr", str(pr_number), "--json"],
-                    cwd=base,
+                    cwd=ctx.repo_dir,
                     capture_output=True,
                     text=True,
                     timeout=cfg.impl_timeout,
@@ -257,11 +264,11 @@ def main():
         """
         from autoloop.config import load_config
 
-        base = Path(repo_dir) if repo_dir else Path.cwd()
+        ctx = _make_context(repo_dir)
         parts = []
-        cfg = load_config(path=base / "autoloop.toml")
+        cfg = load_config(path=ctx.repo_dir / "autoloop.toml")
 
-        last_impl, last_review = _read_last_runs(base)
+        last_impl, last_review = _read_last_runs(ctx.repo_dir)
         if last_impl:
             status = "success" if last_impl["success"] else "failed"
             parts.append(
@@ -277,7 +284,7 @@ def main():
         if not last_impl and not last_review:
             parts.append("Last run: no history")
 
-        lockfile = base / ".autoloop.lock"
+        lockfile = ctx.repo_dir / ".autoloop.lock"
         active = []
         if lockfile.exists():
             active.append("implementation")
@@ -348,7 +355,7 @@ def main():
             save_snapshot,
         )
 
-        ctx = RepoContext(repo_dir=Path(repo_dir) if repo_dir else Path.cwd())
+        ctx = _make_context(repo_dir)
 
         if trend:
             snapshots = load_all_snapshots(ctx)
