@@ -1200,8 +1200,18 @@ def triage_issue(
 
 def main(issue=None, drain=False, max_rounds=None):
     from autoloop.config import load_config
+    from autoloop.implement_issue import detect_active_claude_session
 
     cfg = load_config()
+
+    session_detected = detect_active_claude_session(cfg.project_dir)
+    if session_detected is True:
+        print(
+            "Active Claude Code session detected in this directory.\n"
+            "Close it, or move the Claude Code session to a parent folder."
+        )
+        return
+
     start_time = time.time()
     results: list[ClaudeResult] = []
     num_triaged = 0

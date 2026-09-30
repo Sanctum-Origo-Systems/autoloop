@@ -57,6 +57,7 @@ def _cfg(**overrides):
         "jev_timeout_seconds": 10,
         "jev_gate_low": 0.15,
         "jev_gate_high": 0.85,
+        "project_dir": "",
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -2619,6 +2620,10 @@ def test_main_with_issue_triages_single_issue(monkeypatch):
     """main(issue=42) should fetch and triage only that issue."""
     cfg = _cfg()
     monkeypatch.setattr("autoloop.config.load_config", lambda: cfg)
+    monkeypatch.setattr(
+        "autoloop.implement_issue.detect_active_claude_session",
+        lambda project_dir=None: False,
+    )
 
     fetched_issue = {"number": 42, "title": "Test issue", "body": "body", "labels": []}
 
@@ -2652,6 +2657,10 @@ def test_main_with_issue_not_found(monkeypatch, capsys):
     """main(issue=99) should print not-found message when issue doesn't exist."""
     cfg = _cfg()
     monkeypatch.setattr("autoloop.config.load_config", lambda: cfg)
+    monkeypatch.setattr(
+        "autoloop.implement_issue.detect_active_claude_session",
+        lambda project_dir=None: False,
+    )
 
     def fake_fetch(issue_number, cfg):
         return None
@@ -2670,6 +2679,10 @@ def test_main_without_issue_uses_list_untriaged(monkeypatch):
     """main() without issue arg should call list_untriaged_issues as before."""
     cfg = _cfg()
     monkeypatch.setattr("autoloop.config.load_config", lambda: cfg)
+    monkeypatch.setattr(
+        "autoloop.implement_issue.detect_active_claude_session",
+        lambda project_dir=None: False,
+    )
 
     list_called = []
 
@@ -2693,6 +2706,10 @@ def test_main_drain_converges_in_two_passes(monkeypatch, capsys):
     """Drain loops until no untriaged issues remain, printing per-pass stats."""
     cfg = _cfg()
     monkeypatch.setattr("autoloop.config.load_config", lambda: cfg)
+    monkeypatch.setattr(
+        "autoloop.implement_issue.detect_active_claude_session",
+        lambda project_dir=None: False,
+    )
 
     call_count = {"n": 0}
 
@@ -2733,6 +2750,10 @@ def test_main_drain_hits_max_rounds(monkeypatch, capsys):
     """Drain exits with a warning when max rounds is reached."""
     cfg = _cfg()
     monkeypatch.setattr("autoloop.config.load_config", lambda: cfg)
+    monkeypatch.setattr(
+        "autoloop.implement_issue.detect_active_claude_session",
+        lambda project_dir=None: False,
+    )
 
     call_count = {"n": 0}
 
@@ -2770,6 +2791,10 @@ def test_main_drain_no_issues_initially(monkeypatch, capsys):
     """Drain with no untriaged issues prints the standard message and exits."""
     cfg = _cfg()
     monkeypatch.setattr("autoloop.config.load_config", lambda: cfg)
+    monkeypatch.setattr(
+        "autoloop.implement_issue.detect_active_claude_session",
+        lambda project_dir=None: False,
+    )
 
     monkeypatch.setattr("autoloop.triage_issues.list_untriaged_issues", lambda cfg: [])
 
@@ -2785,6 +2810,10 @@ def test_main_drain_default_max_rounds_is_five(monkeypatch, capsys):
     """Without --max-rounds, drain defaults to 5 rounds."""
     cfg = _cfg()
     monkeypatch.setattr("autoloop.config.load_config", lambda: cfg)
+    monkeypatch.setattr(
+        "autoloop.implement_issue.detect_active_claude_session",
+        lambda project_dir=None: False,
+    )
 
     call_count = {"n": 0}
 
@@ -2820,6 +2849,10 @@ def test_main_without_drain_unchanged(monkeypatch, capsys):
     """Without --drain, main() runs a single pass as before."""
     cfg = _cfg()
     monkeypatch.setattr("autoloop.config.load_config", lambda: cfg)
+    monkeypatch.setattr(
+        "autoloop.implement_issue.detect_active_claude_session",
+        lambda project_dir=None: False,
+    )
 
     list_calls = {"n": 0}
 
@@ -2851,6 +2884,10 @@ def test_main_drain_skips_already_triaged_issue(monkeypatch, capsys):
     """Drain loop skips issues already triaged in an earlier round of the same run."""
     cfg = _cfg()
     monkeypatch.setattr("autoloop.config.load_config", lambda: cfg)
+    monkeypatch.setattr(
+        "autoloop.implement_issue.detect_active_claude_session",
+        lambda project_dir=None: False,
+    )
 
     call_count = {"n": 0}
     issue_50 = {"number": 50, "title": "Sticky issue", "body": "body", "labels": []}
@@ -2883,6 +2920,10 @@ def test_main_drain_picks_up_new_sub_issues(monkeypatch, capsys):
     """Sub-issues created by decomposition ARE picked up in subsequent rounds."""
     cfg = _cfg()
     monkeypatch.setattr("autoloop.config.load_config", lambda: cfg)
+    monkeypatch.setattr(
+        "autoloop.implement_issue.detect_active_claude_session",
+        lambda project_dir=None: False,
+    )
 
     call_count = {"n": 0}
 
@@ -2923,6 +2964,10 @@ def test_main_drain_aggregates_stats(monkeypatch, capsys):
     """Drain mode aggregates stats across all passes."""
     cfg = _cfg()
     monkeypatch.setattr("autoloop.config.load_config", lambda: cfg)
+    monkeypatch.setattr(
+        "autoloop.implement_issue.detect_active_claude_session",
+        lambda project_dir=None: False,
+    )
 
     call_count = {"n": 0}
 
@@ -3519,3 +3564,41 @@ def test_create_sub_issues_no_parent_deps_no_change(monkeypatch):
 
     assert len(created) == 1
     assert "## Dependencies" not in bodies[0]
+
+
+# --- Session detection in triage main ---
+
+
+def test_triage_main_aborts_when_active_session_detected(capsys):
+    """triage main() aborts immediately when an active Claude session is detected."""
+    with (
+        patch("autoloop.config.load_config", return_value=_cfg(project_dir="")),
+        patch(
+            "autoloop.implement_issue.detect_active_claude_session",
+            return_value=True,
+        ),
+    ):
+        from autoloop.triage_issues import main as triage_main
+
+        triage_main()
+
+    out = capsys.readouterr().out
+    assert "Active Claude Code session detected" in out
+
+
+def test_triage_main_proceeds_when_session_not_detected(capsys):
+    """triage main() proceeds normally when no active session is detected."""
+    with (
+        patch("autoloop.config.load_config", return_value=_cfg(project_dir="")),
+        patch(
+            "autoloop.implement_issue.detect_active_claude_session",
+            return_value=False,
+        ),
+        patch("autoloop.triage_issues.list_untriaged_issues", return_value=[]),
+    ):
+        from autoloop.triage_issues import main as triage_main
+
+        triage_main()
+
+    out = capsys.readouterr().out
+    assert "Active Claude Code session" not in out
