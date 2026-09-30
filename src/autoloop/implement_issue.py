@@ -1096,8 +1096,7 @@ def review_implementation(
         if pr_number is not None:
             record["pr"] = pr_number
         try:
-            ctx = object.__new__(RepoContext)
-            ctx.data_dir = Path.cwd() / "autoloop"
+            ctx = RepoContext.for_data_dir(Path.cwd() / "autoloop")
             log_decision(record, ctx)
         except Exception:
             logging.exception("Failed to log Jev auto-merge decision")

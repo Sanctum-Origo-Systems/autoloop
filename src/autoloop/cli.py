@@ -344,8 +344,7 @@ def _run_jev_shadow(
         "timestamp": datetime.now(UTC).isoformat(),
     }
     try:
-        ctx = object.__new__(RepoContext)
-        ctx.data_dir = (repo_dir or Path.cwd()) / "autoloop"
+        ctx = RepoContext.for_data_dir((repo_dir or Path.cwd()) / "autoloop")
         log_decision(record, ctx)
     except Exception:
         logging.exception("Failed to log Jev auto-merge decision")

@@ -48,6 +48,14 @@ class RepoContext:
             pass
         return None
 
+    @classmethod
+    def for_data_dir(cls, data_dir: Path) -> RepoContext:
+        ctx = object.__new__(cls)
+        ctx.repo_dir = Path(data_dir).resolve()
+        ctx.data_dir = Path(data_dir).resolve()
+        ctx.worktree_dir = ctx.data_dir / "worktrees"
+        return ctx
+
     def _migrate_files(self):
         for filename in ("run_history.l", "jev_decisions.l"):
             src = self.repo_dir / filename

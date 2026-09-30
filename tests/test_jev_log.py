@@ -7,11 +7,7 @@ from autoloop.jev_log import log_decision
 
 
 def _make_ctx(data_dir):
-    ctx = object.__new__(RepoContext)
-    ctx.repo_dir = data_dir
-    ctx.data_dir = data_dir
-    ctx.worktree_dir = data_dir / "worktrees"
-    return ctx
+    return RepoContext.for_data_dir(data_dir)
 
 
 def test_log_decision_writes_record(tmp_path):
