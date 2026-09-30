@@ -105,6 +105,7 @@ class AutoLoopConfig:
     test_integrity_patterns: list[str] = field(
         default_factory=lambda: ["pytest.mark.skip", "pytest.mark.xfail"]
     )
+    implement_isolation: str = "off"
     project_dir: str = ""
 
 
@@ -210,6 +211,13 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
         config.jev_gate_low = float(jev["gate_low"])
     if "gate_high" in jev:
         config.jev_gate_high = float(jev["gate_high"])
+    implement = data.get("implement", {})
+    if "isolation" in implement:
+        isolation = str(implement["isolation"])
+        if isolation not in ("off", "worktree"):
+            raise ValueError(f"implement.isolation must be 'off' or 'worktree', got '{isolation}'")
+        config.implement_isolation = isolation
+
     if "protected_paths" in data:
         config.protected_paths = list(data["protected_paths"])
 

@@ -41,6 +41,47 @@ Likely causes:
  3. The inner claude invocation failed to start (check claude CLI auth)"""
 
 
+# --- Worktree lifecycle helpers ---
+
+
+def ensure_worktree(run_id: str) -> Path:
+    """Create a persistent worktree at ~/.autoloop/<run_id>/worktree if it doesn't exist.
+
+    Returns the worktree path regardless of whether it was newly created or already existed.
+    """
+    worktree_path = Path.home() / ".autoloop" / run_id / "worktree"
+    if worktree_path.exists():
+        return worktree_path
+    worktree_path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "worktree", "add", "--detach", str(worktree_path)],
+        check=True,
+    )
+    return worktree_path
+
+
+def reset_worktree_branch(worktree_path: Path, branch: str) -> None:
+    """Reset the worktree to a clean branch from origin/main."""
+    subprocess.run(
+        ["git", "checkout", "-B", branch, "origin/main"],
+        cwd=worktree_path,
+        check=True,
+    )
+
+
+def resolve_working_path(run_id: str, branch: str) -> Path:
+    """Return the working directory for implementation based on isolation config.
+
+    When cfg.implement_isolation is 'worktree', creates/reuses a persistent worktree
+    and resets it to a clean branch. When 'off', returns Path.cwd().
+    """
+    if cfg.implement_isolation != "worktree":
+        return Path.cwd()
+    worktree_path = ensure_worktree(run_id)
+    reset_worktree_branch(worktree_path, branch)
+    return worktree_path
+
+
 # --- Pure functions (testable without mocking) ---
 
 

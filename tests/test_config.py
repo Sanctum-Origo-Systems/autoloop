@@ -871,3 +871,47 @@ def test_repo_context_migrates_both_files(tmp_path, fake_home):
 
     assert (ctx.data_dir / "run_history.l").read_text() == "history"
     assert (ctx.data_dir / "jev_decisions.l").read_text() == "decisions"
+
+
+# --- implement.isolation config field ---
+
+
+def test_implement_isolation_default_off():
+    config = AutoLoopConfig()
+    assert config.implement_isolation == "off"
+
+
+def test_implement_isolation_omitted_yields_off(tmp_path, monkeypatch):
+    for var in ("AUTOLOOP_TRIAGE_MODEL", "AUTOLOOP_IMPL_MODEL", "AUTOLOOP_TIMEOUT"):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('repo = "acme-corp/widget"\n')
+    config = load_config(toml_path)
+    assert config.implement_isolation == "off"
+
+
+def test_implement_isolation_worktree_from_toml(tmp_path, monkeypatch):
+    for var in ("AUTOLOOP_TRIAGE_MODEL", "AUTOLOOP_IMPL_MODEL", "AUTOLOOP_TIMEOUT"):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('repo = "acme-corp/widget"\n\n[implement]\nisolation = "worktree"\n')
+    config = load_config(toml_path)
+    assert config.implement_isolation == "worktree"
+
+
+def test_implement_isolation_off_from_toml(tmp_path, monkeypatch):
+    for var in ("AUTOLOOP_TRIAGE_MODEL", "AUTOLOOP_IMPL_MODEL", "AUTOLOOP_TIMEOUT"):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('repo = "acme-corp/widget"\n\n[implement]\nisolation = "off"\n')
+    config = load_config(toml_path)
+    assert config.implement_isolation == "off"
+
+
+def test_implement_isolation_invalid_raises(tmp_path, monkeypatch):
+    for var in ("AUTOLOOP_TRIAGE_MODEL", "AUTOLOOP_IMPL_MODEL", "AUTOLOOP_TIMEOUT"):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('repo = "acme-corp/widget"\n\n[implement]\nisolation = "docker"\n')
+    with pytest.raises(ValueError, match="must be 'off' or 'worktree'"):
+        load_config(toml_path)

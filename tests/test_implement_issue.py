@@ -31,6 +31,7 @@ from autoloop.implement_issue import (
     detect_active_claude_session,
     detect_issue_type,
     ensure_clean_main,
+    ensure_worktree,
     extract_linked_issue_number,
     get_issue_by_number,
     has_design_comment,
@@ -49,6 +50,8 @@ from autoloop.implement_issue import (
     post_timeout_failure,
     priority_rank,
     release_lock,
+    reset_worktree_branch,
+    resolve_working_path,
     review_implementation,
     run_auto_fix_loop,
     scan_test_integrity_violations,
@@ -4856,3 +4859,126 @@ def test_log_run_omits_auto_merge_when_none(tmp_path, monkeypatch):
 
     entry = json.loads(log_path.read_text().strip())
     assert "auto_merge" not in entry
+
+
+# --- Worktree lifecycle helpers ---
+
+
+def test_ensure_worktree_creates_directory(monkeypatch, tmp_path):
+    """ensure_worktree creates ~/.autoloop/<id>/worktree via git worktree add."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        worktree_dir = fake_home / ".autoloop" / "run-42" / "worktree"
+        worktree_dir.mkdir(parents=True, exist_ok=True)
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    result = ensure_worktree("run-42")
+
+    expected = fake_home / ".autoloop" / "run-42" / "worktree"
+    assert result == expected
+    assert expected.exists()
+    assert captured["cmd"][0:3] == ["git", "worktree", "add"]
+    assert str(expected) in captured["cmd"]
+
+
+def test_ensure_worktree_skips_when_exists(monkeypatch, tmp_path):
+    """ensure_worktree skips git worktree add when the directory already exists."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
+    fake_home = tmp_path / "home"
+    worktree_dir = fake_home / ".autoloop" / "run-42" / "worktree"
+    worktree_dir.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    result = ensure_worktree("run-42")
+
+    assert result == worktree_dir
+    assert len(calls) == 0
+
+
+def test_reset_worktree_branch_runs_checkout(monkeypatch):
+    """reset_worktree_branch runs git checkout -B inside the worktree."""
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    wt = Path("/fake/worktree")
+    reset_worktree_branch(wt, "autoloop/42-add-feature")
+
+    assert captured["cmd"] == ["git", "checkout", "-B", "autoloop/42-add-feature", "origin/main"]
+    assert captured["kwargs"]["cwd"] == wt
+
+
+def test_resolve_working_path_worktree_mode(monkeypatch, tmp_path):
+    """resolve_working_path returns worktree path when isolation is 'worktree'."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(implement_isolation="worktree"))
+    fake_home = tmp_path / "home"
+    worktree_dir = fake_home / ".autoloop" / "run-42" / "worktree"
+    worktree_dir.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    result = resolve_working_path("run-42", "autoloop/42-feat")
+
+    assert result == worktree_dir
+    assert result != Path.cwd()
+    assert any("checkout" in str(c) for c in calls)
+
+
+def test_resolve_working_path_off_mode(monkeypatch):
+    """resolve_working_path returns Path.cwd() when isolation is 'off'."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(implement_isolation="off"))
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    result = resolve_working_path("run-42", "autoloop/42-feat")
+
+    assert result == Path.cwd()
+    assert len(calls) == 0
+
+
+def test_resolve_working_path_off_no_worktree_created(monkeypatch, tmp_path):
+    """When isolation is 'off', no worktree directory is created."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(implement_isolation="off"))
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0})(),
+    )
+    resolve_working_path("run-42", "autoloop/42-feat")
+
+    assert not (fake_home / ".autoloop" / "run-42").exists()
