@@ -288,6 +288,15 @@ For each issue, autoloop:
 
 Autoloop opens the PR but never merges it. You review and merge. That's the human gate. On merge, the CI workflow cleans up labels and auto-closes parent issues when all sub-issues are complete.
 
+#### Merge queue (optional)
+
+The CI workflow triggers on `merge_group` events, so it works with GitHub's merge queue. To enable it:
+
+1. Go to **Settings > Rules > Rulesets** (or **Settings > Branches** for classic branch protection)
+2. Enable **Require merge queue** on your target branch
+3. Under **Required status checks**, add the `test` job from the CI workflow
+4. PRs will be queued, rebased, and CI-verified before merging
+
 ### 8. Fix broken PRs
 
 ```bash

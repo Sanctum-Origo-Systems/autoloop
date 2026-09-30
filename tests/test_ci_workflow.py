@@ -53,3 +53,8 @@ def test_ci_runs_ruff_check():
 def test_ci_runs_ruff_format_check():
     content = _read_ci()
     assert "ruff format --check" in content
+
+
+def test_ci_triggers_on_merge_group():
+    content = _read_ci()
+    assert "merge_group" in content
