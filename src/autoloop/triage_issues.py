@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from autoloop.config import AutoLoopConfig
+    from autoloop.config import AutoLoopConfig, RepoContext
 
 from autoloop.claude_runner import ClaudeResult, run_claude
 from autoloop.create_issue import build_issue_body
@@ -485,6 +485,7 @@ def log_run(
     attempts: int,
     duration: float,
     cost_usd: float,
+    data_dir: Path,
     input_tokens: int = 0,
     output_tokens: int = 0,
     cache_read_tokens: int = 0,
@@ -503,7 +504,7 @@ def log_run(
         "cache_read_tokens": cache_read_tokens,
         "cache_creation_tokens": cache_creation_tokens,
     }
-    log_file = Path.cwd() / "autoloop" / "run_history.jsonl"
+    log_file = data_dir / "run_history.jsonl"
     log_file.parent.mkdir(parents=True, exist_ok=True)
     with open(log_file, "a") as f:
         f.write(json.dumps(entry) + "\n")
@@ -531,9 +532,8 @@ def jev_triage(issue: dict, cfg: AutoLoopConfig) -> dict:
 # --- Subprocess functions ---
 
 
-def load_project_context() -> tuple[str, str]:
+def load_project_context(repo_dir: Path) -> tuple[str, str]:
     """Return the project source tree and CLAUDE.md contents for prompt context."""
-    repo_dir = Path.cwd()
     tree = subprocess.run(
         ["find", "src/", "tests/", "-name", "*.py", "-not", "-path", "*__pycache__*"],
         capture_output=True,
@@ -596,9 +596,9 @@ def list_untriaged_issues(cfg: AutoLoopConfig) -> list[dict]:
     ]
 
 
-def evaluate_issue(issue: dict, cfg: AutoLoopConfig) -> tuple[dict, ClaudeResult]:
+def evaluate_issue(issue: dict, cfg: AutoLoopConfig, repo_dir: Path) -> tuple[dict, ClaudeResult]:
     """Run Claude to evaluate an issue against the triage prompt."""
-    tree, claude_md = load_project_context()
+    tree, claude_md = load_project_context(repo_dir)
     triage_prompt = build_triage_prompt(cfg)
     prompt = (
         triage_prompt
@@ -619,9 +619,11 @@ def evaluate_issue(issue: dict, cfg: AutoLoopConfig) -> tuple[dict, ClaudeResult
     return parse_triage_response(result.text), result
 
 
-def discover_files(issue: dict, cfg: AutoLoopConfig) -> tuple[list[dict], ClaudeResult]:
+def discover_files(
+    issue: dict, cfg: AutoLoopConfig, repo_dir: Path
+) -> tuple[list[dict], ClaudeResult]:
     """Ask Claude to identify relevant files for an issue."""
-    tree, claude_md = load_project_context()
+    tree, claude_md = load_project_context(repo_dir)
     prompt = FILE_DISCOVERY_PROMPT.format(
         tree=tree[: cfg.tree_truncation],
         claude_md=claude_md,
@@ -635,7 +637,7 @@ def discover_files(issue: dict, cfg: AutoLoopConfig) -> tuple[list[dict], Claude
         return [], result
 
     files = parse_file_discovery_response(result.text)
-    return validate_discovered_files(files, Path.cwd()), result
+    return validate_discovered_files(files, repo_dir), result
 
 
 def list_issues_with_labels(cfg: AutoLoopConfig, labels: list[str]) -> list[dict]:
@@ -1044,6 +1046,7 @@ def get_decomposition_depth(issue: dict, cfg: AutoLoopConfig) -> int:
 
 
 def triage_issue(
+    ctx: RepoContext,
     issue: dict,
     cfg: AutoLoopConfig,
     auto_fix: bool = True,
@@ -1051,7 +1054,7 @@ def triage_issue(
 ) -> list[ClaudeResult]:
     """Evaluate a single issue and apply the appropriate label."""
     results: list[ClaudeResult] = []
-    verdict, eval_result = evaluate_issue(issue, cfg)
+    verdict, eval_result = evaluate_issue(issue, cfg, ctx.repo_dir)
     results.append(eval_result)
 
     if cfg.jev_mode == "shadow":
@@ -1087,14 +1090,14 @@ def triage_issue(
             results.append(rewrite_result)
             if new_body:
                 apply_rewrite(issue["number"], new_body, cfg)
-                results.extend(triage_issue({**issue, "body": new_body}, cfg, auto_fix=False))
+                results.extend(triage_issue(ctx, {**issue, "body": new_body}, cfg, auto_fix=False))
                 return results
         reject_issue(issue["number"], verdict["reason"], cfg)
         return results
 
     discovered_files: list[dict] = []
     if verdict.get("files_missing", False):
-        discovered_files, disc_result = discover_files(issue, cfg)
+        discovered_files, disc_result = discover_files(issue, cfg, ctx.repo_dir)
         results.append(disc_result)
         if discovered_files:
             enrich_issue_with_files(issue["number"], discovered_files, cfg)
@@ -1199,11 +1202,13 @@ def triage_issue(
     return results
 
 
-def main(issue=None, drain=False, max_rounds=None):
-    from autoloop.config import load_config
+def main(issue=None, drain=False, max_rounds=None, ctx=None):
+    from autoloop.config import RepoContext, load_config
     from autoloop.implement_issue import detect_active_claude_session
 
     cfg = load_config()
+    if ctx is None:
+        ctx = RepoContext(repo_dir=Path.cwd())
 
     session_detected = detect_active_claude_session(cfg.project_dir)
     if session_detected is True:
@@ -1223,7 +1228,7 @@ def main(issue=None, drain=False, max_rounds=None):
             print(f"Issue #{issue} not found.")
             return
         print(f"Triaging #{fetched['number']}: {fetched['title']}")
-        results.extend(triage_issue(fetched, cfg))
+        results.extend(triage_issue(ctx, fetched, cfg))
         num_triaged = 1
 
     elif drain:
@@ -1243,7 +1248,7 @@ def main(issue=None, drain=False, max_rounds=None):
             pass_stats = {"decomposed": 0}
             for iss in new_issues:
                 print(f"Triaging #{iss['number']}: {iss['title']}")
-                results.extend(triage_issue(iss, cfg, _pass_stats=pass_stats))
+                results.extend(triage_issue(ctx, iss, cfg, _pass_stats=pass_stats))
                 triaged_this_run.add(iss["number"])
             completed_passes += 1
             num_triaged += len(new_issues)
@@ -1264,7 +1269,7 @@ def main(issue=None, drain=False, max_rounds=None):
             return
         for iss in issues:
             print(f"Triaging #{iss['number']}: {iss['title']}")
-            results.extend(triage_issue(iss, cfg))
+            results.extend(triage_issue(ctx, iss, cfg))
         num_triaged = len(issues)
 
     if results:
@@ -1290,6 +1295,7 @@ def main(issue=None, drain=False, max_rounds=None):
             num_triaged,
             elapsed,
             total_cost,
+            ctx.data_dir,
             total_input,
             total_output,
             total_cache_read,
