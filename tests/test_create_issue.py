@@ -5,6 +5,9 @@ import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
+from autoloop.config import RepoContext
 from autoloop.create_issue import (
     DEFAULT_ACCEPTANCE,
     build_issue,
@@ -28,6 +31,26 @@ def _cfg(**overrides):
     defaults = {"repo": "test-owner/test-repo", "triage_model": "sonnet"}
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
+
+
+@pytest.fixture()
+def ctx(tmp_path):
+    """Construct a RepoContext with a tmp_path-based repo_dir."""
+    fake_home = tmp_path / "ctx_home"
+    fake_home.mkdir()
+    repo_dir = tmp_path / "ctx_repo"
+    repo_dir.mkdir()
+
+    def mock_git_remote(cmd, **kwargs):
+        if cmd == ["git", "remote", "get-url", "origin"]:
+            return subprocess.CompletedProcess(cmd, 128, stdout="", stderr="fatal: no remote")
+        return subprocess.run(cmd, **kwargs)
+
+    with (
+        patch("autoloop.config.Path.home", return_value=fake_home),
+        patch("autoloop.config.subprocess.run", side_effect=mock_git_remote),
+    ):
+        return RepoContext(repo_dir=repo_dir)
 
 
 # --- Pure function tests: build_issue_body ---
@@ -377,7 +400,7 @@ def test_prompt_multiline_empty_immediately(monkeypatch):
 # --- cfg.triage_model tests ---
 
 
-def test_suggest_fields_uses_cfg_triage_model(monkeypatch):
+def test_suggest_fields_uses_cfg_triage_model(monkeypatch, ctx):
     cfg = _cfg(triage_model="opus")
     captured = {}
     call_count = [0]
@@ -407,13 +430,13 @@ def test_suggest_fields_uses_cfg_triage_model(monkeypatch):
 
     monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/claude")
     with patch("autoloop.create_issue.subprocess.run", side_effect=selective_run):
-        suggest_fields("Fix something", "bug", cfg)
+        suggest_fields("Fix something", "bug", cfg, ctx)
 
     assert "--model" in captured["cmd"]
     assert captured["cmd"][captured["cmd"].index("--model") + 1] == "opus"
 
 
-def test_suggest_fields_returns_parsed_json(monkeypatch):
+def test_suggest_fields_returns_parsed_json(monkeypatch, ctx):
     cfg = _cfg()
     suggestion_json = json.dumps(
         {
@@ -431,19 +454,19 @@ def test_suggest_fields_returns_parsed_json(monkeypatch):
 
     monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/claude")
     with patch("autoloop.create_issue.subprocess.run", return_value=FakeResult()):
-        result = suggest_fields("Fix profile loading", "bug", cfg)
+        result = suggest_fields("Fix profile loading", "bug", cfg, ctx)
     assert result is not None
     assert result["files"] == ["src/patina/agent/runtime.py"]
     assert "Mirror load_soul" in result["implementation_hints"]
 
 
-def test_suggest_fields_returns_none_when_no_claude(monkeypatch):
+def test_suggest_fields_returns_none_when_no_claude(monkeypatch, ctx):
     cfg = _cfg()
     monkeypatch.setattr("shutil.which", lambda cmd: None)
-    assert suggest_fields("Fix something", "bug", cfg) is None
+    assert suggest_fields("Fix something", "bug", cfg, ctx) is None
 
 
-def test_suggest_fields_returns_none_on_bad_json(monkeypatch):
+def test_suggest_fields_returns_none_on_bad_json(monkeypatch, ctx):
     cfg = _cfg()
 
     class FakeResult:
@@ -452,10 +475,60 @@ def test_suggest_fields_returns_none_on_bad_json(monkeypatch):
 
     monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/claude")
     with patch("autoloop.create_issue.subprocess.run", return_value=FakeResult()):
-        assert suggest_fields("Fix something", "bug", cfg) is None
+        assert suggest_fields("Fix something", "bug", cfg, ctx) is None
 
 
-def test_suggest_fields_returns_none_on_timeout(monkeypatch):
+def test_suggest_fields_uses_ctx_repo_dir_not_process_cwd(monkeypatch, tmp_path):
+    """Process cwd differs from ctx.repo_dir; subprocess.run cwd must equal ctx.repo_dir."""
+    scratch_dir = tmp_path / "scratch"
+    scratch_dir.mkdir()
+    monkeypatch.chdir(scratch_dir)
+
+    fake_home = tmp_path / "sf_home"
+    fake_home.mkdir()
+    repo_dir = tmp_path / "sf_repo"
+    repo_dir.mkdir()
+
+    def mock_git_remote(cmd, **kwargs):
+        if cmd == ["git", "remote", "get-url", "origin"]:
+            return subprocess.CompletedProcess(cmd, 128, stdout="", stderr="fatal: no remote")
+        return subprocess.run(cmd, **kwargs)
+
+    with (
+        patch("autoloop.config.Path.home", return_value=fake_home),
+        patch("autoloop.config.subprocess.run", side_effect=mock_git_remote),
+    ):
+        repo_ctx = RepoContext(repo_dir=repo_dir)
+
+    cfg = _cfg()
+    captured_kwargs = {}
+
+    class FakeResult:
+        returncode = 0
+        stdout = json.dumps(
+            {
+                "files": [],
+                "current_behavior": "",
+                "expected_behavior": "works",
+                "acceptance_criteria": [],
+                "implementation_hints": "",
+            }
+        )
+
+    def capturing_run(cmd, **kwargs):
+        if cmd[0] == "find":
+            captured_kwargs.update(kwargs)
+        return FakeResult()
+
+    monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/claude")
+    with patch("autoloop.create_issue.subprocess.run", side_effect=capturing_run):
+        suggest_fields("Fix something", "bug", cfg, repo_ctx)
+
+    assert captured_kwargs["cwd"] == repo_ctx.repo_dir
+    assert captured_kwargs["cwd"] != scratch_dir
+
+
+def test_suggest_fields_returns_none_on_timeout(monkeypatch, ctx):
     cfg = _cfg()
     monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/claude")
 
@@ -473,7 +546,7 @@ def test_suggest_fields_returns_none_on_timeout(monkeypatch):
         raise subprocess.TimeoutExpired(cmd="claude", timeout=30)
 
     with patch("autoloop.create_issue.subprocess.run", side_effect=selective_run):
-        assert suggest_fields("Fix something", "bug", cfg) is None
+        assert suggest_fields("Fix something", "bug", cfg, ctx) is None
 
 
 # --- cfg.repo tests ---
@@ -519,7 +592,7 @@ def test_update_issue_uses_cfg_repo():
         assert call[call.index("--repo") + 1] == "acme/widgets"
 
 
-def test_create_issues_from_spec_uses_cfg_repo(tmp_path, monkeypatch):
+def test_create_issues_from_spec_uses_cfg_repo(tmp_path, monkeypatch, ctx):
     cfg = _cfg(repo="acme/widgets")
     spec_file = tmp_path / "spec.md"
     spec_file.write_text(
@@ -538,7 +611,7 @@ def test_create_issues_from_spec_uses_cfg_repo(tmp_path, monkeypatch):
         return FakeResult()
 
     with patch("autoloop.create_issue.subprocess.run", side_effect=fake_run):
-        create_issues_from_spec(str(spec_file), skip=[], cfg=cfg)
+        create_issues_from_spec(ctx, str(spec_file), skip=[], cfg=cfg)
 
     gh_calls = [c for c in calls if c[0] == "gh"]
     assert len(gh_calls) >= 1
@@ -565,7 +638,7 @@ def test_no_bare_triage_model_constant():
 # --- I/O tests: build_issue ---
 
 
-def test_build_issue_feature_happy_path(monkeypatch):
+def test_build_issue_feature_happy_path(monkeypatch, ctx):
     cfg = _cfg()
     monkeypatch.setattr("shutil.which", lambda cmd: None)
     inputs = iter(
@@ -582,12 +655,12 @@ def test_build_issue_feature_happy_path(monkeypatch):
         ]
     )
     monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
-    title, body = build_issue(cfg)
+    title, body = build_issue(ctx, cfg)
     assert title == "Add verbose flag"
     assert "## Type\nfeature" in body
 
 
-def test_build_issue_type_from_arg_skips_prompt(monkeypatch):
+def test_build_issue_type_from_arg_skips_prompt(monkeypatch, ctx):
     cfg = _cfg()
     monkeypatch.setattr("shutil.which", lambda cmd: None)
     inputs = iter(
@@ -602,12 +675,12 @@ def test_build_issue_type_from_arg_skips_prompt(monkeypatch):
         ]
     )
     monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
-    title, body = build_issue(cfg, issue_type="refactor")
+    title, body = build_issue(ctx, cfg, issue_type="refactor")
     assert title == "Refactor extraction"
     assert "## Type\nrefactor" in body
 
 
-def test_build_issue_bug_prompts_current_behavior(monkeypatch):
+def test_build_issue_bug_prompts_current_behavior(monkeypatch, ctx):
     cfg = _cfg()
     monkeypatch.setattr("shutil.which", lambda cmd: None)
     inputs = iter(
@@ -625,7 +698,7 @@ def test_build_issue_bug_prompts_current_behavior(monkeypatch):
         ]
     )
     monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
-    title, body = build_issue(cfg)
+    title, body = build_issue(ctx, cfg)
     assert "## Current Behavior\nIt crashes with IndexError" in body
 
 

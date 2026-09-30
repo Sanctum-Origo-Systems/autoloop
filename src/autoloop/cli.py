@@ -164,7 +164,9 @@ def main():
         run_init(args.repo, args.reviewer, args.verify_cmd, args.dry_run, args.skip_labels)
 
     elif args.command == "plan":
-        from autoloop.config import load_config
+        from pathlib import Path
+
+        from autoloop.config import RepoContext, load_config
         from autoloop.create_issue import create_issues_from_spec
         from autoloop.implement_issue import detect_active_claude_session
 
@@ -176,7 +178,8 @@ def main():
                 "Close it, or move the Claude Code session to a parent folder."
             )
             sys.exit(1)
-        create_issues_from_spec(args.from_spec, skip=args.skip, cfg=cfg, dry_run=args.dry_run)
+        ctx = RepoContext(repo_dir=Path.cwd())
+        create_issues_from_spec(ctx, args.from_spec, skip=args.skip, cfg=cfg, dry_run=args.dry_run)
 
     elif args.command == "triage":
         from autoloop.triage_issues import main as triage_main
@@ -239,11 +242,14 @@ def main():
             sys.exit(1)
 
     elif args.command == "auto-close-parent":
+        from pathlib import Path
+
         from autoloop.auto_close_parent import check_and_close_parent
-        from autoloop.config import load_config
+        from autoloop.config import RepoContext, load_config
 
         cfg = load_config()
-        result = check_and_close_parent(args.pr_number, cfg=cfg)
+        ctx = RepoContext(repo_dir=Path.cwd())
+        result = check_and_close_parent(ctx, args.pr_number, cfg=cfg)
         if result:
             print(f"Closed parent issue #{result}")
         else:

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from autoloop.auto_close_parent import (
     GhClient,
@@ -14,6 +17,27 @@ from autoloop.auto_close_parent import (
     parse_closes_ref,
     parse_parent_ref,
 )
+from autoloop.config import RepoContext
+
+
+@pytest.fixture()
+def ctx(tmp_path):
+    """Construct a RepoContext with a tmp_path-based repo_dir."""
+    fake_home = tmp_path / "ctx_home"
+    fake_home.mkdir()
+    repo_dir = tmp_path / "ctx_repo"
+    repo_dir.mkdir()
+
+    def mock_git_remote(cmd, **kwargs):
+        if cmd == ["git", "remote", "get-url", "origin"]:
+            return subprocess.CompletedProcess(cmd, 128, stdout="", stderr="fatal: no remote")
+        return subprocess.run(cmd, **kwargs)
+
+    with (
+        patch("autoloop.config.Path.home", return_value=fake_home),
+        patch("autoloop.config.subprocess.run", side_effect=mock_git_remote),
+    ):
+        return RepoContext(repo_dir=repo_dir)
 
 
 def test_ghclient_stores_repo():
@@ -145,7 +169,7 @@ def _orchestration_gh(
     return gh
 
 
-def test_check_and_close_parent_closes_when_last_sibling():
+def test_check_and_close_parent_closes_when_last_sibling(ctx):
     all_issues = [
         {"number": 56, "body": "Parent issue: #55"},
         {"number": 57, "body": "Parent issue: #55"},
@@ -157,14 +181,14 @@ def test_check_and_close_parent_closes_when_last_sibling():
         all_issues=all_issues,
     )
 
-    assert check_and_close_parent(42, gh) == 55
+    assert check_and_close_parent(ctx, 42, gh) == 55
     gh.close_issue.assert_called_once_with(55)
     (num, body), _ = gh.comment_issue.call_args
     assert num == 55
     assert "All 2 sub-issues are now complete." in body
 
 
-def test_check_and_close_parent_skips_when_sibling_open():
+def test_check_and_close_parent_skips_when_sibling_open(ctx):
     gh = _orchestration_gh(
         pr_body="Closes #57",
         issue_body="Parent issue: #55",
@@ -172,12 +196,12 @@ def test_check_and_close_parent_skips_when_sibling_open():
         all_issues=[],
     )
 
-    assert check_and_close_parent(42, gh) is None
+    assert check_and_close_parent(ctx, 42, gh) is None
     gh.close_issue.assert_not_called()
     gh.comment_issue.assert_not_called()
 
 
-def test_check_and_close_parent_skips_when_no_parent_ref():
+def test_check_and_close_parent_skips_when_no_parent_ref(ctx):
     gh = _orchestration_gh(
         pr_body="Closes #57",
         issue_body="A sub-issue with no parent reference.",
@@ -185,12 +209,12 @@ def test_check_and_close_parent_skips_when_no_parent_ref():
         all_issues=[],
     )
 
-    assert check_and_close_parent(42, gh) is None
+    assert check_and_close_parent(ctx, 42, gh) is None
     gh.close_issue.assert_not_called()
     gh.comment_issue.assert_not_called()
 
 
-def test_check_and_close_parent_skips_when_no_closes_ref():
+def test_check_and_close_parent_skips_when_no_closes_ref(ctx):
     gh = _orchestration_gh(
         pr_body="This PR has no Closes reference.",
         issue_body="",
@@ -198,13 +222,13 @@ def test_check_and_close_parent_skips_when_no_closes_ref():
         all_issues=[],
     )
 
-    assert check_and_close_parent(42, gh) is None
+    assert check_and_close_parent(ctx, 42, gh) is None
     gh.get_issue_body.assert_not_called()
     gh.close_issue.assert_not_called()
     gh.comment_issue.assert_not_called()
 
 
-def test_check_and_close_parent_constructs_ghclient_from_cfg():
+def test_check_and_close_parent_constructs_ghclient_from_cfg(ctx):
     fake_cfg = SimpleNamespace(repo="owner/other")
 
     with patch("autoloop.auto_close_parent.GhClient") as MockGhClient:
@@ -212,12 +236,12 @@ def test_check_and_close_parent_constructs_ghclient_from_cfg():
         mock_instance.get_pr_body.return_value = ""
         MockGhClient.return_value = mock_instance
 
-        check_and_close_parent(1, cfg=fake_cfg)
+        check_and_close_parent(ctx, 1, cfg=fake_cfg)
 
         MockGhClient.assert_called_once_with(repo="owner/other")
 
 
-def test_check_and_close_parent_cfg_repo_flows_to_gh_calls():
+def test_check_and_close_parent_cfg_repo_flows_to_gh_calls(ctx):
     fake_cfg = SimpleNamespace(repo="owner/other")
     calls: list[list[str]] = []
 
@@ -236,7 +260,7 @@ def test_check_and_close_parent_cfg_repo_flows_to_gh_calls():
         return result
 
     with patch("autoloop.auto_close_parent.subprocess.run", side_effect=fake_run):
-        check_and_close_parent(1, cfg=fake_cfg)
+        check_and_close_parent(ctx, 1, cfg=fake_cfg)
 
     assert len(calls) > 0
     for call in calls:
@@ -247,14 +271,12 @@ def test_check_and_close_parent_cfg_repo_flows_to_gh_calls():
         )
 
 
-def test_check_and_close_parent_raises_without_gh_or_cfg():
-    import pytest
-
+def test_check_and_close_parent_raises_without_gh_or_cfg(ctx):
     with pytest.raises(ValueError, match="Either gh or cfg must be provided"):
-        check_and_close_parent(1)
+        check_and_close_parent(ctx, 1)
 
 
-def test_check_and_close_parent_gh_takes_precedence_over_cfg():
+def test_check_and_close_parent_gh_takes_precedence_over_cfg(ctx):
     fake_cfg = SimpleNamespace(repo="owner/other")
     gh = _orchestration_gh(
         pr_body="This PR has no Closes reference.",
@@ -264,7 +286,7 @@ def test_check_and_close_parent_gh_takes_precedence_over_cfg():
     )
 
     with patch("autoloop.auto_close_parent.GhClient") as MockGhClient:
-        check_and_close_parent(1, gh=gh, cfg=fake_cfg)
+        check_and_close_parent(ctx, 1, gh=gh, cfg=fake_cfg)
         MockGhClient.assert_not_called()
 
 
@@ -370,7 +392,7 @@ def test_close_parent_chain_partial_close():
 # --- check_and_close_parent with chain ---
 
 
-def test_check_and_close_parent_walks_chain():
+def test_check_and_close_parent_walks_chain(ctx):
     """Merged PR closes #30, which has parent #20, which has parent #10. All close."""
     bodies = {30: "Parent issue: #20", 20: "Parent issue: #10", 10: ""}
 
@@ -383,6 +405,6 @@ def test_check_and_close_parent_walks_chain():
         {"number": 20, "body": "Parent issue: #10"},
     ]
 
-    result = check_and_close_parent(42, gh)
+    result = check_and_close_parent(ctx, 42, gh)
     assert result == 20
     assert gh.close_issue.call_count == 2
