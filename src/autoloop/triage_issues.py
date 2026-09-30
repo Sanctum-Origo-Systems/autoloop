@@ -1058,6 +1058,7 @@ def triage_issue(
     results.append(eval_result)
 
     if cfg.jev_mode == "shadow":
+        from autoloop.config import RepoContext
         from autoloop.jev_log import log_decision
 
         jev_result = None
@@ -1080,7 +1081,9 @@ def triage_issue(
             "timestamp": datetime.now(UTC).isoformat(),
         }
         try:
-            log_decision(record)
+            ctx = object.__new__(RepoContext)
+            ctx.data_dir = Path.cwd() / "autoloop"
+            log_decision(record, ctx)
         except Exception:
             logging.exception("Failed to log Jev triage decision")
 

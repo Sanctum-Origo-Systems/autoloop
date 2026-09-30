@@ -309,6 +309,7 @@ def _run_jev_shadow(
 
     Failures are swallowed so they never affect the review outcome.
     """
+    from autoloop.config import RepoContext
     from autoloop.jev import should_auto_merge
     from autoloop.jev_log import log_decision
 
@@ -343,7 +344,9 @@ def _run_jev_shadow(
         "timestamp": datetime.now(UTC).isoformat(),
     }
     try:
-        log_decision(record, repo_dir=repo_dir)
+        ctx = object.__new__(RepoContext)
+        ctx.data_dir = (repo_dir or Path.cwd()) / "autoloop"
+        log_decision(record, ctx)
     except Exception:
         logging.exception("Failed to log Jev auto-merge decision")
 
