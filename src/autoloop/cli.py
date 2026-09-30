@@ -166,8 +166,16 @@ def main():
     elif args.command == "plan":
         from autoloop.config import load_config
         from autoloop.create_issue import create_issues_from_spec
+        from autoloop.implement_issue import detect_active_claude_session
 
         cfg = load_config()
+        session_detected = detect_active_claude_session(cfg.project_dir)
+        if session_detected is True:
+            print(
+                "Active Claude Code session detected in this directory.\n"
+                "Close it, or move the Claude Code session to a parent folder."
+            )
+            sys.exit(1)
         create_issues_from_spec(args.from_spec, skip=args.skip, cfg=cfg, dry_run=args.dry_run)
 
     elif args.command == "triage":
@@ -196,16 +204,32 @@ def main():
     elif args.command == "fix-pr":
         from autoloop.config import load_config
         from autoloop.fix_pr import fix_pr
+        from autoloop.implement_issue import detect_active_claude_session
 
         cfg = load_config()
+        session_detected = detect_active_claude_session(cfg.project_dir)
+        if session_detected is True:
+            print(
+                "Active Claude Code session detected in this directory.\n"
+                "Close it, or move the Claude Code session to a parent folder."
+            )
+            sys.exit(1)
         success = fix_pr(args.pr_number, cfg)
         if not success:
             sys.exit(1)
 
     elif args.command == "review-pr":
         from autoloop.config import load_config
+        from autoloop.implement_issue import detect_active_claude_session
 
         cfg = load_config()
+        session_detected = detect_active_claude_session(cfg.project_dir)
+        if session_detected is True:
+            print(
+                "Active Claude Code session detected in this directory.\n"
+                "Close it, or move the Claude Code session to a parent folder."
+            )
+            sys.exit(1)
         result = review_pr(args.pr_number, cfg)
         if args.json:
             json.dump(result, sys.stdout)
