@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -22,6 +23,8 @@ from autoloop.triage_issues import (
     fetch_single_issue,
     get_decomposition_depth,
     jev_triage,
+    load_project_context,
+    log_run,
     parse_file_discovery_response,
     parse_rewritten_body,
     parse_sub_issue_response,
@@ -30,6 +33,15 @@ from autoloop.triage_issues import (
     validate_decomposition,
     validate_discovered_files,
 )
+
+
+def _mock_ctx(repo_dir=None, data_dir=None):
+    """Build a minimal mock RepoContext without triggering __post_init__."""
+    ctx = SimpleNamespace()
+    ctx.repo_dir = repo_dir or Path("/fake/repo")
+    ctx.data_dir = data_dir or Path("/fake/data")
+    ctx.worktree_dir = ctx.data_dir / "worktrees"
+    return ctx
 
 
 def _cfg(**overrides):
@@ -603,7 +615,7 @@ def test_evaluate_issue_uses_cfg_triage_model(monkeypatch):
     cfg = _cfg(triage_model="opus")
     captured = {}
 
-    def fake_load():
+    def fake_load(repo_dir):
         return "src/patina/store.py\n", "# CLAUDE.md"
 
     monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
@@ -633,7 +645,7 @@ def test_evaluate_issue_uses_cfg_triage_model(monkeypatch):
     from autoloop.triage_issues import evaluate_issue
 
     issue = {"number": 1, "title": "Test", "body": "body"}
-    evaluate_issue(issue, cfg)
+    evaluate_issue(issue, cfg, Path("/fake/repo"))
 
     assert captured["model"] == "opus"
     assert captured["timeout"] == 90
@@ -642,7 +654,7 @@ def test_evaluate_issue_uses_cfg_triage_model(monkeypatch):
 def test_evaluate_issue_uses_cfg_triage_timeout(monkeypatch):
     cfg = _cfg(triage_timeout=45)
 
-    def fake_load():
+    def fake_load(repo_dir):
         return "src/patina/store.py\n", "# CLAUDE.md"
 
     monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
@@ -665,7 +677,7 @@ def test_evaluate_issue_uses_cfg_triage_timeout(monkeypatch):
 
     from autoloop.triage_issues import evaluate_issue
 
-    evaluate_issue({"number": 1, "title": "T", "body": "b"}, cfg)
+    evaluate_issue({"number": 1, "title": "T", "body": "b"}, cfg, Path("/fake/repo"))
     assert captured["timeout"] == 45
 
 
@@ -673,7 +685,7 @@ def test_evaluate_issue_uses_cfg_tree_truncation(monkeypatch):
     cfg = _cfg(tree_truncation=10)
     long_tree = "a" * 100
 
-    def fake_load():
+    def fake_load(repo_dir):
         return long_tree, "# CLAUDE.md"
 
     monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
@@ -696,7 +708,7 @@ def test_evaluate_issue_uses_cfg_tree_truncation(monkeypatch):
 
     from autoloop.triage_issues import evaluate_issue
 
-    evaluate_issue({"number": 1, "title": "T", "body": "b"}, cfg)
+    evaluate_issue({"number": 1, "title": "T", "body": "b"}, cfg, Path("/fake/repo"))
     assert "a" * 100 not in captured["prompt"]
     assert "a" * 10 in captured["prompt"]
 
@@ -704,34 +716,26 @@ def test_evaluate_issue_uses_cfg_tree_truncation(monkeypatch):
 # --- log_run resolves path at call time ---
 
 
-def test_log_run_resolves_path_at_call_time(tmp_path, monkeypatch):
-    """log_run uses Path.cwd() at call time, not a frozen module-level constant."""
-    from autoloop.triage_issues import log_run
-
-    monkeypatch.setattr("autoloop.triage_issues.Path.cwd", lambda: tmp_path)
-    log_run(1, True, 1, 1.0, 0.01)
+def test_log_run_resolves_path_from_data_dir(tmp_path):
+    """log_run writes to the given data_dir, not a frozen module-level constant."""
+    log_run(1, True, 1, 1.0, 0.01, tmp_path)
 
     second_dir = tmp_path / "other"
     second_dir.mkdir()
-    monkeypatch.setattr("autoloop.triage_issues.Path.cwd", lambda: second_dir)
-    log_run(2, True, 1, 1.0, 0.01)
+    log_run(2, True, 1, 1.0, 0.01, second_dir)
 
-    log1 = tmp_path / "autoloop" / "run_history.jsonl"
-    log2 = second_dir / "autoloop" / "run_history.jsonl"
+    log1 = tmp_path / "run_history.jsonl"
+    log2 = second_dir / "run_history.jsonl"
     assert log1.exists()
     assert log2.exists()
     assert json.loads(log1.read_text().strip())["issue"] == 1
     assert json.loads(log2.read_text().strip())["issue"] == 2
 
 
-def test_log_run_writes_jsonl(tmp_path, monkeypatch):
-    monkeypatch.setattr("autoloop.triage_issues.Path.cwd", lambda: tmp_path)
+def test_log_run_writes_jsonl(tmp_path):
+    log_run(42, True, 1, 10.0, 0.05, tmp_path)
 
-    from autoloop.triage_issues import log_run
-
-    log_run(42, True, 1, 10.0, 0.05)
-
-    log_file = tmp_path / "autoloop" / "run_history.jsonl"
+    log_file = tmp_path / "run_history.jsonl"
     lines = log_file.read_text().strip().split("\n")
     assert len(lines) == 1
     entry = json.loads(lines[0])
@@ -739,14 +743,10 @@ def test_log_run_writes_jsonl(tmp_path, monkeypatch):
     assert entry["success"] is True
 
 
-def test_log_run_includes_cache_creation_tokens(tmp_path, monkeypatch):
-    monkeypatch.setattr("autoloop.triage_issues.Path.cwd", lambda: tmp_path)
+def test_log_run_includes_cache_creation_tokens(tmp_path):
+    log_run(42, True, 1, 10.0, 0.05, tmp_path, 1000, 200, 500, 300)
 
-    from autoloop.triage_issues import log_run
-
-    log_run(42, True, 1, 10.0, 0.05, 1000, 200, 500, 300)
-
-    log_file = tmp_path / "autoloop" / "run_history.jsonl"
+    log_file = tmp_path / "run_history.jsonl"
     entry = json.loads(log_file.read_text().strip())
     assert entry["input_tokens"] == 1000
     assert entry["output_tokens"] == 200
@@ -1371,7 +1371,7 @@ def test_triage_issue_caps_depth_2_routes_to_needs_human(monkeypatch):
     """A depth-2 sub-issue with needs-decomposition verdict should be labeled needs-human."""
     cfg = _cfg()
 
-    def fake_load():
+    def fake_load(repo_dir):
         return "src/module.py\n", "# CLAUDE.md"
 
     monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
@@ -1414,10 +1414,11 @@ def test_triage_issue_caps_depth_2_routes_to_needs_human(monkeypatch):
         calls.append(list(cmd))
         return FakeResult()
 
+    ctx = _mock_ctx()
     with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
         from autoloop.triage_issues import triage_issue
 
-        triage_issue({"number": 5, "title": "Test", "body": "Sub-issue of #3."}, cfg)
+        triage_issue(ctx, {"number": 5, "title": "Test", "body": "Sub-issue of #3."}, cfg)
 
     label_calls = [c for c in calls if "edit" in c and "--add-label" in c]
     assert any("needs-human" in c[c.index("--add-label") + 1] for c in label_calls)
@@ -1431,7 +1432,7 @@ def test_triage_issue_caps_depth_1_small_points_routes_to_ready(monkeypatch):
     """A depth-1 sub-issue with <=5 points should be approved instead of decomposed."""
     cfg = _cfg()
 
-    def fake_load():
+    def fake_load(repo_dir):
         return "src/module.py\n", "# CLAUDE.md"
 
     monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
@@ -1474,10 +1475,11 @@ def test_triage_issue_caps_depth_1_small_points_routes_to_ready(monkeypatch):
         calls.append(list(cmd))
         return FakeResult()
 
+    ctx = _mock_ctx()
     with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
         from autoloop.triage_issues import triage_issue
 
-        triage_issue({"number": 6, "title": "Test", "body": "Sub-issue of #1."}, cfg)
+        triage_issue(ctx, {"number": 6, "title": "Test", "body": "Sub-issue of #1."}, cfg)
 
     label_calls = [c for c in calls if "edit" in c and "--add-label" in c]
     assert any("ready" in c[c.index("--add-label") + 1] for c in label_calls)
@@ -1489,7 +1491,7 @@ def test_triage_issue_allows_decomposition_depth_0(monkeypatch):
     """A root issue (depth 0) should still be decomposed normally."""
     cfg = _cfg()
 
-    def fake_load():
+    def fake_load(repo_dir):
         return "src/module.py\n", "# CLAUDE.md"
 
     monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
@@ -1534,10 +1536,11 @@ def test_triage_issue_allows_decomposition_depth_0(monkeypatch):
         calls.append(list(cmd))
         return FakeResult()
 
+    ctx = _mock_ctx()
     with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
         from autoloop.triage_issues import triage_issue
 
-        triage_issue({"number": 7, "title": "Test", "body": "Root issue."}, cfg)
+        triage_issue(ctx, {"number": 7, "title": "Test", "body": "Root issue."}, cfg)
 
     label_calls = [c for c in calls if "edit" in c and "--add-label" in c]
     assert any("needs-decomposition" in c[c.index("--add-label") + 1] for c in label_calls)
@@ -1547,7 +1550,7 @@ def test_triage_issue_custom_max_decomposition_depth(monkeypatch):
     """max_decomposition_depth=3 allows depth-2 to decompose, blocks depth-3."""
     cfg = _cfg(max_decomposition_depth=3)
 
-    def fake_load():
+    def fake_load(repo_dir):
         return "src/module.py\n", "# CLAUDE.md"
 
     monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
@@ -1590,10 +1593,11 @@ def test_triage_issue_custom_max_decomposition_depth(monkeypatch):
         calls.append(list(cmd))
         return FakeResult()
 
+    ctx = _mock_ctx()
     with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
         from autoloop.triage_issues import triage_issue
 
-        triage_issue({"number": 8, "title": "Test", "body": "Depth-2 issue."}, cfg)
+        triage_issue(ctx, {"number": 8, "title": "Test", "body": "Depth-2 issue."}, cfg)
 
     label_calls = [c for c in calls if "edit" in c and "--add-label" in c]
     assert any("needs-decomposition" in c[c.index("--add-label") + 1] for c in label_calls)
@@ -1603,7 +1607,7 @@ def test_triage_issue_custom_max_decomposition_depth(monkeypatch):
     monkeypatch.setattr("autoloop.triage_issues.get_decomposition_depth", lambda issue, cfg: 3)
 
     with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
-        triage_issue({"number": 9, "title": "Test", "body": "Depth-3 issue."}, cfg)
+        triage_issue(ctx, {"number": 9, "title": "Test", "body": "Depth-3 issue."}, cfg)
 
     label_calls = [c for c in calls if "edit" in c and "--add-label" in c]
     assert any("needs-human" in c[c.index("--add-label") + 1] for c in label_calls)
@@ -1852,7 +1856,7 @@ def test_triage_issue_collapsed_decomposition_routes_to_ready(monkeypatch):
     """End-to-end: triage_issue with decomposition that collapses to 1 step."""
     cfg = _cfg()
 
-    def fake_load():
+    def fake_load(repo_dir):
         return "src/module.py\n", "# CLAUDE.md"
 
     monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
@@ -1916,10 +1920,11 @@ def test_triage_issue_collapsed_decomposition_routes_to_ready(monkeypatch):
         calls.append(list(cmd))
         return FakeResult()
 
+    ctx = _mock_ctx()
     with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
         from autoloop.triage_issues import triage_issue
 
-        triage_issue({"number": 42, "title": "Big issue", "body": "Root issue."}, cfg)
+        triage_issue(ctx, {"number": 42, "title": "Big issue", "body": "Root issue."}, cfg)
 
     label_calls = [c for c in calls if "edit" in c and "--add-label" in c]
     assert any("ready" in c[c.index("--add-label") + 1] for c in label_calls)
@@ -2296,7 +2301,7 @@ def test_triage_issue_detects_duplicate_routes_to_needs_human(monkeypatch):
     """When a ready issue overlaps with an existing ready issue, route to needs-human."""
     cfg = _cfg()
 
-    def fake_load():
+    def fake_load(repo_dir):
         return "src/autoloop/config.py\n", "# CLAUDE.md"
 
     monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
@@ -2349,10 +2354,11 @@ def test_triage_issue_detects_duplicate_routes_to_needs_human(monkeypatch):
         "body": "## Files to Modify\n- src/autoloop/config.py\n\n## Type\nfeature",
     }
 
+    ctx = _mock_ctx()
     with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
         from autoloop.triage_issues import triage_issue
 
-        triage_issue(candidate, cfg)
+        triage_issue(ctx, candidate, cfg)
 
     label_calls = [c for c in calls if "edit" in c and "--add-label" in c]
     assert any("needs-human" in c[c.index("--add-label") + 1] for c in label_calls)
@@ -2368,7 +2374,7 @@ def test_triage_issue_no_duplicate_approves_normally(monkeypatch):
     """When no duplicate exists, a ready issue is approved as usual."""
     cfg = _cfg()
 
-    def fake_load():
+    def fake_load(repo_dir):
         return "src/autoloop/config.py\n", "# CLAUDE.md"
 
     monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
@@ -2414,10 +2420,11 @@ def test_triage_issue_no_duplicate_approves_normally(monkeypatch):
         "body": "## Files to Modify\n- src/autoloop/triage_issues.py\n\n## Type\nfeature",
     }
 
+    ctx = _mock_ctx()
     with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
         from autoloop.triage_issues import triage_issue
 
-        triage_issue(candidate, cfg)
+        triage_issue(ctx, candidate, cfg)
 
     label_calls = [c for c in calls if "edit" in c and "--add-label" in c]
     assert any("ready" in c[c.index("--add-label") + 1] for c in label_calls)
@@ -2428,7 +2435,7 @@ def test_triage_issue_duplicate_check_excludes_self(monkeypatch):
     """The candidate issue should not be flagged as a duplicate of itself."""
     cfg = _cfg()
 
-    def fake_load():
+    def fake_load(repo_dir):
         return "src/autoloop/config.py\n", "# CLAUDE.md"
 
     monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
@@ -2481,10 +2488,11 @@ def test_triage_issue_duplicate_check_excludes_self(monkeypatch):
         calls.append(list(cmd))
         return FakeResult()
 
+    ctx = _mock_ctx()
     with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
         from autoloop.triage_issues import triage_issue
 
-        triage_issue(candidate, cfg)
+        triage_issue(ctx, candidate, cfg)
 
     label_calls = [c for c in calls if "edit" in c and "--add-label" in c]
     assert any("ready" in c[c.index("--add-label") + 1] for c in label_calls)
@@ -2495,7 +2503,7 @@ def test_triage_issue_uses_discovered_files_for_duplicate_check(monkeypatch):
     """Discovered files from file discovery should be used in duplicate detection."""
     cfg = _cfg()
 
-    def fake_load():
+    def fake_load(repo_dir):
         return "src/autoloop/config.py\n", "# CLAUDE.md"
 
     monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
@@ -2521,7 +2529,7 @@ def test_triage_issue_uses_discovered_files_for_duplicate_check(monkeypatch):
 
     monkeypatch.setattr("autoloop.triage_issues.run_claude", fake_run_claude)
 
-    def fake_discover(issue, cfg):
+    def fake_discover(issue, cfg, repo_dir):
         return [{"path": "src/autoloop/config.py", "reason": "main"}], ClaudeResult(
             "ok", 0.01, 50, 25, 0, 0, True
         )
@@ -2555,10 +2563,11 @@ def test_triage_issue_uses_discovered_files_for_duplicate_check(monkeypatch):
         "body": "",
     }
 
+    ctx = _mock_ctx()
     with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
         from autoloop.triage_issues import triage_issue
 
-        triage_issue(candidate, cfg)
+        triage_issue(ctx, candidate, cfg)
 
     label_calls = [c for c in calls if "edit" in c and "--add-label" in c]
     assert any("needs-human" in c[c.index("--add-label") + 1] for c in label_calls)
@@ -2635,7 +2644,7 @@ def test_main_with_issue_triages_single_issue(monkeypatch):
 
     triaged = []
 
-    def fake_triage_issue(issue, cfg):
+    def fake_triage_issue(ctx, issue, cfg):
         triaged.append(issue["number"])
         return [ClaudeResult("ok", 0.01, 100, 50, 0, 0, True)]
 
@@ -2648,7 +2657,7 @@ def test_main_with_issue_triages_single_issue(monkeypatch):
 
     from autoloop.triage_issues import main
 
-    main(issue=42)
+    main(issue=42, ctx=_mock_ctx())
 
     assert triaged == [42]
 
@@ -2669,7 +2678,7 @@ def test_main_with_issue_not_found(monkeypatch, capsys):
 
     from autoloop.triage_issues import main
 
-    main(issue=99)
+    main(issue=99, ctx=_mock_ctx())
 
     output = capsys.readouterr().out
     assert "Issue #99 not found" in output
@@ -2694,7 +2703,7 @@ def test_main_without_issue_uses_list_untriaged(monkeypatch):
 
     from autoloop.triage_issues import main
 
-    main()
+    main(ctx=_mock_ctx())
 
     assert len(list_called) == 1
 
@@ -2726,7 +2735,7 @@ def test_main_drain_converges_in_two_passes(monkeypatch, capsys):
 
     monkeypatch.setattr("autoloop.triage_issues.list_untriaged_issues", fake_list)
 
-    def fake_triage_issue(issue, cfg, _pass_stats=None):
+    def fake_triage_issue(ctx, issue, cfg, _pass_stats=None):
         if issue["number"] == 50 and _pass_stats is not None:
             _pass_stats["decomposed"] += 1
         return [ClaudeResult("ok", 0.01, 100, 50, 0, 0, True)]
@@ -2736,7 +2745,7 @@ def test_main_drain_converges_in_two_passes(monkeypatch, capsys):
 
     from autoloop.triage_issues import main
 
-    main(drain=True)
+    main(drain=True, ctx=_mock_ctx())
 
     output = capsys.readouterr().out
     assert "Pass 1" in output
@@ -2770,7 +2779,7 @@ def test_main_drain_hits_max_rounds(monkeypatch, capsys):
 
     monkeypatch.setattr("autoloop.triage_issues.list_untriaged_issues", fake_list)
 
-    def fake_triage_issue(issue, cfg, _pass_stats=None):
+    def fake_triage_issue(ctx, issue, cfg, _pass_stats=None):
         return [ClaudeResult("ok", 0.01, 100, 50, 0, 0, True)]
 
     monkeypatch.setattr("autoloop.triage_issues.triage_issue", fake_triage_issue)
@@ -2778,7 +2787,7 @@ def test_main_drain_hits_max_rounds(monkeypatch, capsys):
 
     from autoloop.triage_issues import main
 
-    main(drain=True, max_rounds=3)
+    main(drain=True, max_rounds=3, ctx=_mock_ctx())
 
     output = capsys.readouterr().out
     assert "Pass 1" in output
@@ -2800,7 +2809,7 @@ def test_main_drain_no_issues_initially(monkeypatch, capsys):
 
     from autoloop.triage_issues import main
 
-    main(drain=True)
+    main(drain=True, ctx=_mock_ctx())
 
     output = capsys.readouterr().out
     assert "No untriaged issues found" in output
@@ -2830,7 +2839,7 @@ def test_main_drain_default_max_rounds_is_five(monkeypatch, capsys):
 
     monkeypatch.setattr("autoloop.triage_issues.list_untriaged_issues", fake_list)
 
-    def fake_triage_issue(issue, cfg, _pass_stats=None):
+    def fake_triage_issue(ctx, issue, cfg, _pass_stats=None):
         return [ClaudeResult("ok", 0.01, 100, 50, 0, 0, True)]
 
     monkeypatch.setattr("autoloop.triage_issues.triage_issue", fake_triage_issue)
@@ -2838,7 +2847,7 @@ def test_main_drain_default_max_rounds_is_five(monkeypatch, capsys):
 
     from autoloop.triage_issues import main
 
-    main(drain=True)
+    main(drain=True, ctx=_mock_ctx())
 
     output = capsys.readouterr().out
     assert "Pass 5" in output
@@ -2864,7 +2873,7 @@ def test_main_without_drain_unchanged(monkeypatch, capsys):
 
     monkeypatch.setattr("autoloop.triage_issues.list_untriaged_issues", fake_list)
 
-    def fake_triage_issue(issue, cfg, _pass_stats=None):
+    def fake_triage_issue(ctx, issue, cfg, _pass_stats=None):
         return [ClaudeResult("ok", 0.01, 100, 50, 0, 0, True)]
 
     monkeypatch.setattr("autoloop.triage_issues.triage_issue", fake_triage_issue)
@@ -2872,7 +2881,7 @@ def test_main_without_drain_unchanged(monkeypatch, capsys):
 
     from autoloop.triage_issues import main
 
-    main()
+    main(ctx=_mock_ctx())
 
     assert list_calls["n"] == 1
     output = capsys.readouterr().out
@@ -2902,7 +2911,7 @@ def test_main_drain_skips_already_triaged_issue(monkeypatch, capsys):
 
     triaged_numbers = []
 
-    def fake_triage_issue(issue, cfg, _pass_stats=None):
+    def fake_triage_issue(ctx, issue, cfg, _pass_stats=None):
         triaged_numbers.append(issue["number"])
         return [ClaudeResult("ok", 0.01, 100, 50, 0, 0, True)]
 
@@ -2911,7 +2920,7 @@ def test_main_drain_skips_already_triaged_issue(monkeypatch, capsys):
 
     from autoloop.triage_issues import main
 
-    main(drain=True)
+    main(drain=True, ctx=_mock_ctx())
 
     assert triaged_numbers == [50]
 
@@ -2943,7 +2952,7 @@ def test_main_drain_picks_up_new_sub_issues(monkeypatch, capsys):
 
     triaged_numbers = []
 
-    def fake_triage_issue(issue, cfg, _pass_stats=None):
+    def fake_triage_issue(ctx, issue, cfg, _pass_stats=None):
         triaged_numbers.append(issue["number"])
         if issue["number"] == 50 and _pass_stats is not None:
             _pass_stats["decomposed"] += 1
@@ -2954,7 +2963,7 @@ def test_main_drain_picks_up_new_sub_issues(monkeypatch, capsys):
 
     from autoloop.triage_issues import main
 
-    main(drain=True)
+    main(drain=True, ctx=_mock_ctx())
 
     assert triaged_numbers == [50, 51, 52]
     assert triaged_numbers.count(50) == 1
@@ -2981,7 +2990,7 @@ def test_main_drain_aggregates_stats(monkeypatch, capsys):
 
     monkeypatch.setattr("autoloop.triage_issues.list_untriaged_issues", fake_list)
 
-    def fake_triage_issue(issue, cfg, _pass_stats=None):
+    def fake_triage_issue(ctx, issue, cfg, _pass_stats=None):
         return [ClaudeResult("ok", 0.05, 200, 100, 0, 0, True)]
 
     monkeypatch.setattr("autoloop.triage_issues.triage_issue", fake_triage_issue)
@@ -2989,7 +2998,7 @@ def test_main_drain_aggregates_stats(monkeypatch, capsys):
 
     from autoloop.triage_issues import main
 
-    main(drain=True)
+    main(drain=True, ctx=_mock_ctx())
 
     output = capsys.readouterr().out
     assert "Claude calls: 2" in output
@@ -3056,7 +3065,7 @@ def test_triage_issue_jev_off_no_jev_call(monkeypatch, tmp_path):
     """With jev_mode='off', no Jev calls are made and no log is written."""
     cfg = _cfg(jev_mode="off")
 
-    def fake_load():
+    def fake_load(repo_dir):
         return "src/module.py\n", "# CLAUDE.md"
 
     monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
@@ -3082,7 +3091,6 @@ def test_triage_issue_jev_off_no_jev_call(monkeypatch, tmp_path):
 
     monkeypatch.setattr("autoloop.triage_issues.run_claude", fake_run_claude)
     monkeypatch.setattr("autoloop.triage_issues.list_issues_with_labels", lambda cfg, labels: [])
-    monkeypatch.setattr("autoloop.triage_issues.Path.cwd", lambda: tmp_path)
 
     jev_called = []
     monkeypatch.setattr(
@@ -3093,10 +3101,11 @@ def test_triage_issue_jev_off_no_jev_call(monkeypatch, tmp_path):
     class FakeResult:
         returncode = 0
 
+    ctx = _mock_ctx(repo_dir=tmp_path, data_dir=tmp_path / "data")
     with patch("autoloop.triage_issues.subprocess.run", return_value=FakeResult()):
         from autoloop.triage_issues import triage_issue
 
-        triage_issue({"number": 1, "title": "Test", "body": "body"}, cfg)
+        triage_issue(ctx, {"number": 1, "title": "Test", "body": "body"}, cfg)
 
     assert len(jev_called) == 0
     log_file = tmp_path / "autoloop" / "jev_decisions.jsonl"
@@ -3107,7 +3116,7 @@ def test_triage_issue_jev_shadow_logs_decision(monkeypatch, tmp_path):
     """With jev_mode='shadow', Jev is called and the decision is logged."""
     cfg = _cfg(jev_mode="shadow", jev_api_key_env="OPENROUTER_API_KEY")
 
-    def fake_load():
+    def fake_load(repo_dir):
         return "src/module.py\n", "# CLAUDE.md"
 
     monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
@@ -3147,10 +3156,11 @@ def test_triage_issue_jev_shadow_logs_decision(monkeypatch, tmp_path):
     class FakeResult:
         returncode = 0
 
+    ctx = _mock_ctx(repo_dir=tmp_path, data_dir=tmp_path / "data")
     with patch("autoloop.triage_issues.subprocess.run", return_value=FakeResult()):
         from autoloop.triage_issues import triage_issue
 
-        triage_issue({"number": 5, "title": "Test", "body": "body"}, cfg)
+        triage_issue(ctx, {"number": 5, "title": "Test", "body": "body"}, cfg)
 
     log_file = tmp_path / "autoloop" / "jev_decisions.jsonl"
     assert log_file.exists()
@@ -3168,7 +3178,7 @@ def test_triage_issue_jev_shadow_uses_incumbent_verdict(monkeypatch, tmp_path):
     """With jev_mode='shadow', the pipeline outcome is determined by the incumbent only."""
     cfg = _cfg(jev_mode="shadow", jev_api_key_env="OPENROUTER_API_KEY")
 
-    def fake_load():
+    def fake_load(repo_dir):
         return "src/module.py\n", "# CLAUDE.md"
 
     monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
@@ -3205,10 +3215,11 @@ def test_triage_issue_jev_shadow_uses_incumbent_verdict(monkeypatch, tmp_path):
         calls.append(list(cmd))
         return FakeResult()
 
+    ctx = _mock_ctx(repo_dir=tmp_path, data_dir=tmp_path / "data")
     with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
         from autoloop.triage_issues import triage_issue
 
-        triage_issue({"number": 7, "title": "Test", "body": "body"}, cfg, auto_fix=False)
+        triage_issue(ctx, {"number": 7, "title": "Test", "body": "body"}, cfg, auto_fix=False)
 
     label_calls = [c for c in calls if "edit" in c and "--add-label" in c]
     assert any("rejected" in c[c.index("--add-label") + 1] for c in label_calls)
@@ -3219,7 +3230,7 @@ def test_triage_issue_jev_shadow_failure_continues(monkeypatch, tmp_path):
     """Jev failure in shadow mode does not affect the triage pipeline."""
     cfg = _cfg(jev_mode="shadow", jev_api_key_env="OPENROUTER_API_KEY")
 
-    def fake_load():
+    def fake_load(repo_dir):
         return "src/module.py\n", "# CLAUDE.md"
 
     monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
@@ -3255,10 +3266,11 @@ def test_triage_issue_jev_shadow_failure_continues(monkeypatch, tmp_path):
     class FakeResult:
         returncode = 0
 
+    ctx = _mock_ctx(repo_dir=tmp_path, data_dir=tmp_path / "data")
     with patch("autoloop.triage_issues.subprocess.run", return_value=FakeResult()):
         from autoloop.triage_issues import triage_issue
 
-        results = triage_issue({"number": 9, "title": "Test", "body": "body"}, cfg)
+        results = triage_issue(ctx, {"number": 9, "title": "Test", "body": "body"}, cfg)
 
     assert len(results) > 0
 
@@ -3581,7 +3593,7 @@ def test_triage_main_aborts_when_active_session_detected(capsys):
         from autoloop.triage_issues import main as triage_main
 
         with pytest.raises(SystemExit) as exc_info:
-            triage_main()
+            triage_main(ctx=_mock_ctx())
         assert exc_info.value.code == 1
 
     out = capsys.readouterr().out
@@ -3600,7 +3612,187 @@ def test_triage_main_proceeds_when_session_not_detected(capsys):
     ):
         from autoloop.triage_issues import main as triage_main
 
-        triage_main()
+        triage_main(ctx=_mock_ctx())
 
     out = capsys.readouterr().out
     assert "Active Claude Code session" not in out
+
+
+# --- RepoContext threading ---
+
+
+def test_load_project_context_uses_repo_dir(tmp_path):
+    """load_project_context reads tree and CLAUDE.md from the given repo_dir."""
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    (src_dir / "app.py").touch()
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_app.py").touch()
+    (tmp_path / "CLAUDE.md").write_text("# Test project")
+
+    tree, claude_md = load_project_context(tmp_path)
+
+    assert "app.py" in tree
+    assert "test_app.py" in tree
+    assert claude_md == "# Test project"
+
+
+def test_triage_issue_accepts_repo_context(tmp_path, monkeypatch):
+    """triage_issue accepts a RepoContext as its first parameter and threads repo_dir."""
+    cfg = _cfg()
+    captured = {}
+
+    def fake_load(repo_dir):
+        captured["repo_dir"] = repo_dir
+        return "src/module.py\n", "# CLAUDE.md"
+
+    monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
+
+    def fake_run_claude(prompt, model, timeout):
+        return ClaudeResult(
+            json.dumps(
+                {
+                    "verdict": "ready",
+                    "points": 2,
+                    "priority": "p1",
+                    "reason": "ok",
+                    "files_missing": False,
+                }
+            ),
+            0.01,
+            100,
+            50,
+            0,
+            0,
+            True,
+        )
+
+    monkeypatch.setattr("autoloop.triage_issues.run_claude", fake_run_claude)
+    monkeypatch.setattr("autoloop.triage_issues.list_issues_with_labels", lambda cfg, labels: [])
+
+    class FakeResult:
+        returncode = 0
+
+    ctx = _mock_ctx(repo_dir=tmp_path)
+    with patch("autoloop.triage_issues.subprocess.run", return_value=FakeResult()):
+        from autoloop.triage_issues import triage_issue
+
+        triage_issue(ctx, {"number": 1, "title": "Test", "body": "body"}, cfg)
+
+    assert captured["repo_dir"] == tmp_path
+
+
+def test_triage_issue_repo_context_overrides_cwd(tmp_path, monkeypatch):
+    """File operations target RepoContext.repo_dir, not the process cwd."""
+    cfg = _cfg()
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    cwd_dir = tmp_path / "cwd"
+    cwd_dir.mkdir()
+
+    captured = {}
+
+    def fake_load(repo_dir):
+        captured["repo_dir"] = repo_dir
+        return "src/module.py\n", "# CLAUDE.md"
+
+    monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
+    monkeypatch.chdir(cwd_dir)
+
+    def fake_run_claude(prompt, model, timeout):
+        return ClaudeResult(
+            json.dumps(
+                {
+                    "verdict": "ready",
+                    "points": 2,
+                    "priority": "p1",
+                    "reason": "ok",
+                    "files_missing": False,
+                }
+            ),
+            0.01,
+            100,
+            50,
+            0,
+            0,
+            True,
+        )
+
+    monkeypatch.setattr("autoloop.triage_issues.run_claude", fake_run_claude)
+    monkeypatch.setattr("autoloop.triage_issues.list_issues_with_labels", lambda cfg, labels: [])
+
+    class FakeResult:
+        returncode = 0
+
+    ctx = _mock_ctx(repo_dir=repo_dir)
+    with patch("autoloop.triage_issues.subprocess.run", return_value=FakeResult()):
+        from autoloop.triage_issues import triage_issue
+
+        triage_issue(ctx, {"number": 1, "title": "Test", "body": "body"}, cfg)
+
+    assert captured["repo_dir"] == repo_dir
+    assert captured["repo_dir"] != cwd_dir
+
+
+def test_discover_files_uses_repo_dir(tmp_path, monkeypatch):
+    """discover_files passes repo_dir to validate_discovered_files, not Path.cwd()."""
+    cfg = _cfg()
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    (repo_dir / "src").mkdir()
+    (repo_dir / "src" / "real.py").touch()
+
+    def fake_load(rd):
+        return "src/real.py\n", "# CLAUDE.md"
+
+    monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
+
+    def fake_run_claude(prompt, model, timeout):
+        return ClaudeResult(
+            json.dumps({"files_to_modify": [{"path": "src/real.py", "reason": "main"}]}),
+            0.01,
+            100,
+            50,
+            0,
+            0,
+            True,
+        )
+
+    monkeypatch.setattr("autoloop.triage_issues.run_claude", fake_run_claude)
+
+    from autoloop.triage_issues import discover_files
+
+    files, result = discover_files({"number": 1, "title": "T", "body": "b"}, cfg, repo_dir)
+    assert len(files) == 1
+    assert files[0]["path"] == "src/real.py"
+
+
+def test_log_run_uses_data_dir(tmp_path):
+    """log_run writes to data_dir, not Path.cwd()."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+
+    log_run(1, True, 1, 1.0, 0.01, data_dir)
+
+    log_file = data_dir / "run_history.jsonl"
+    assert log_file.exists()
+    entry = json.loads(log_file.read_text().strip())
+    assert entry["issue"] == 1
+
+
+def test_no_bare_path_cwd_in_triage_functions():
+    """No function (except main's fallback) should call Path.cwd() directly."""
+    import inspect
+
+    import autoloop.triage_issues as mod
+
+    for name, func in inspect.getmembers(mod, inspect.isfunction):
+        if name == "main":
+            continue
+        if func.__module__ != "autoloop.triage_issues":
+            continue
+        source = inspect.getsource(func)
+        assert "Path.cwd()" not in source, (
+            f"{name}() contains Path.cwd() — use repo_dir or data_dir parameter instead"
+        )
