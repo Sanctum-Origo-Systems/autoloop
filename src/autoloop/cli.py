@@ -202,7 +202,7 @@ def main():
         _show_status()
 
     elif args.command == "fix-pr":
-        from autoloop.config import load_config
+        from autoloop.config import RepoContext, load_config
         from autoloop.fix_pr import fix_pr
         from autoloop.implement_issue import detect_active_claude_session
 
@@ -214,7 +214,8 @@ def main():
                 "Close it, or move the Claude Code session to a parent folder."
             )
             sys.exit(1)
-        success = fix_pr(args.pr_number, cfg)
+        ctx = RepoContext(repo_dir=Path.cwd())
+        success = fix_pr(ctx, args.pr_number, cfg)
         if not success:
             sys.exit(1)
 

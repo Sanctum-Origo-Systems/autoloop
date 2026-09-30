@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -28,6 +29,8 @@ from autoloop.fix_pr import (
     verify,
 )
 
+_REPO_DIR = Path("/fake/repo")
+
 
 def _cfg(**overrides):
     defaults = {
@@ -42,6 +45,12 @@ def _cfg(**overrides):
     return SimpleNamespace(**defaults)
 
 
+def _ctx(repo_dir=_REPO_DIR, data_dir=None):
+    ns = SimpleNamespace(repo_dir=repo_dir)
+    ns.data_dir = data_dir or repo_dir / ".autoloop-data"
+    return ns
+
+
 def _ok(stdout="", returncode=0):
     return type("R", (), {"returncode": returncode, "stdout": stdout, "stderr": ""})()
 
@@ -52,9 +61,19 @@ def _ok(stdout="", returncode=0):
 def test_no_module_level_repo_dir():
     import autoloop.fix_pr as mod
 
-    assert not hasattr(mod, "REPO_DIR"), (
-        "fix_pr should not have a module-level REPO_DIR; use Path.cwd() at call time"
-    )
+    assert not hasattr(mod, "REPO_DIR"), "fix_pr should not have a module-level REPO_DIR"
+
+
+# --- No Path.cwd() calls ---
+
+
+def test_no_path_cwd_in_source():
+    import inspect
+
+    import autoloop.fix_pr as mod
+
+    source = inspect.getsource(mod)
+    assert "Path.cwd()" not in source, "fix_pr.py must not contain bare Path.cwd() calls"
 
 
 # --- get_pr_info ---
@@ -147,7 +166,7 @@ def test_checkout_branch_returns_true_on_success():
         return _ok()
 
     with patch("autoloop.fix_pr.subprocess.run", fake_run):
-        assert checkout_branch("feature-branch") is True
+        assert checkout_branch("feature-branch", _REPO_DIR) is True
 
 
 def test_checkout_branch_returns_false_on_failure():
@@ -160,7 +179,7 @@ def test_checkout_branch_returns_false_on_failure():
         return _ok(returncode=1)
 
     with patch("autoloop.fix_pr.subprocess.run", fake_run):
-        assert checkout_branch("bad-branch") is False
+        assert checkout_branch("bad-branch", _REPO_DIR) is False
 
 
 def test_checkout_branch_fetches_first():
@@ -171,7 +190,7 @@ def test_checkout_branch_fetches_first():
         return _ok()
 
     with patch("autoloop.fix_pr.subprocess.run", fake_run):
-        checkout_branch("my-branch")
+        checkout_branch("my-branch", _REPO_DIR)
 
     assert calls[0][:2] == ["git", "fetch"]
     assert "my-branch" in calls[0]
@@ -189,7 +208,7 @@ def test_update_main_fetches_origin():
         return _ok()
 
     with patch("autoloop.fix_pr.subprocess.run", fake_run):
-        update_main()
+        update_main(_REPO_DIR)
 
     assert calls[0] == ["git", "fetch", "origin", "main"]
 
@@ -202,7 +221,7 @@ def test_is_behind_main_true():
         return _ok(stdout="3\n")
 
     with patch("autoloop.fix_pr.subprocess.run", fake_run):
-        assert is_behind_main("my-branch") is True
+        assert is_behind_main("my-branch", _REPO_DIR) is True
 
 
 def test_is_behind_main_false():
@@ -210,7 +229,7 @@ def test_is_behind_main_false():
         return _ok(stdout="0\n")
 
     with patch("autoloop.fix_pr.subprocess.run", fake_run):
-        assert is_behind_main("my-branch") is False
+        assert is_behind_main("my-branch", _REPO_DIR) is False
 
 
 def test_is_behind_main_handles_failure():
@@ -218,7 +237,7 @@ def test_is_behind_main_handles_failure():
         return _ok(returncode=1)
 
     with patch("autoloop.fix_pr.subprocess.run", fake_run):
-        assert is_behind_main("my-branch") is False
+        assert is_behind_main("my-branch", _REPO_DIR) is False
 
 
 # --- _parse_conflicting_files ---
@@ -249,7 +268,7 @@ def test_get_unmerged_files_finds_uu():
         return _ok(stdout="UU src/conflict.py\nM  src/clean.py\n")
 
     with patch("autoloop.fix_pr.subprocess.run", fake_run):
-        assert _get_unmerged_files() == ["src/conflict.py"]
+        assert _get_unmerged_files(_REPO_DIR) == ["src/conflict.py"]
 
 
 def test_get_unmerged_files_finds_aa():
@@ -257,7 +276,7 @@ def test_get_unmerged_files_finds_aa():
         return _ok(stdout="AA src/both_added.py\n")
 
     with patch("autoloop.fix_pr.subprocess.run", fake_run):
-        assert _get_unmerged_files() == ["src/both_added.py"]
+        assert _get_unmerged_files(_REPO_DIR) == ["src/both_added.py"]
 
 
 def test_get_unmerged_files_empty():
@@ -265,7 +284,7 @@ def test_get_unmerged_files_empty():
         return _ok(stdout="M  src/clean.py\n")
 
     with patch("autoloop.fix_pr.subprocess.run", fake_run):
-        assert _get_unmerged_files() == []
+        assert _get_unmerged_files(_REPO_DIR) == []
 
 
 # --- rebase_on_main ---
@@ -276,7 +295,7 @@ def test_rebase_clean():
         return _ok()
 
     with patch("autoloop.fix_pr.subprocess.run", fake_run):
-        clean, files = rebase_on_main()
+        clean, files = rebase_on_main(_REPO_DIR)
 
     assert clean is True
     assert files == []
@@ -292,7 +311,7 @@ def test_rebase_with_conflicts_from_output():
         return _ok(stdout="")
 
     with patch("autoloop.fix_pr.subprocess.run", fake_run):
-        clean, files = rebase_on_main()
+        clean, files = rebase_on_main(_REPO_DIR)
 
     assert clean is False
     assert files == ["src/main.py"]
@@ -307,7 +326,7 @@ def test_rebase_falls_back_to_unmerged_files():
         return _ok(stdout="")
 
     with patch("autoloop.fix_pr.subprocess.run", fake_run):
-        clean, files = rebase_on_main()
+        clean, files = rebase_on_main(_REPO_DIR)
 
     assert clean is False
     assert files == ["src/conflict.py"]
@@ -321,7 +340,7 @@ def test_continue_rebase_succeeds():
         return _ok()
 
     with patch("autoloop.fix_pr.subprocess.run", fake_run):
-        assert continue_rebase() is True
+        assert continue_rebase(_REPO_DIR) is True
 
 
 def test_continue_rebase_fails_with_unresolved():
@@ -333,10 +352,10 @@ def test_continue_rebase_fails_with_unresolved():
         return _ok()
 
     with patch("autoloop.fix_pr.subprocess.run", fake_run):
-        assert continue_rebase() is False
+        assert continue_rebase(_REPO_DIR) is False
 
 
-def test_continue_rebase_respects_max_rounds(tmp_path, monkeypatch):
+def test_continue_rebase_respects_max_rounds(tmp_path):
     def fake_run(cmd, **kwargs):
         if cmd[:3] == ["git", "rebase", "--continue"]:
             return _ok(returncode=1)
@@ -345,9 +364,8 @@ def test_continue_rebase_respects_max_rounds(tmp_path, monkeypatch):
         return _ok()
 
     (tmp_path / ".git" / "rebase-merge").mkdir(parents=True)
-    monkeypatch.setattr("autoloop.fix_pr.Path.cwd", lambda: tmp_path)
     with patch("autoloop.fix_pr.subprocess.run", fake_run):
-        assert continue_rebase(max_rounds=3) is False
+        assert continue_rebase(tmp_path, max_rounds=3) is False
 
 
 # --- run_lint_fix ---
@@ -358,7 +376,7 @@ def test_run_lint_fix_succeeds():
         return _ok()
 
     with patch("autoloop.fix_pr.subprocess.run", fake_run):
-        fixed, output = run_lint_fix(_cfg())
+        fixed, output = run_lint_fix(_cfg(), _REPO_DIR)
 
     assert fixed is True
 
@@ -373,7 +391,7 @@ def test_run_lint_fix_fails():
         return _ok()
 
     with patch("autoloop.fix_pr.subprocess.run", fake_run):
-        fixed, output = run_lint_fix(_cfg())
+        fixed, output = run_lint_fix(_cfg(), _REPO_DIR)
 
     assert fixed is False
 
@@ -386,7 +404,7 @@ def test_verify_passes():
         return _ok(stdout="all tests passed")
 
     with patch("autoloop.fix_pr.subprocess.run", fake_run):
-        passed, output = verify(_cfg())
+        passed, output = verify(_cfg(), _REPO_DIR)
 
     assert passed is True
     assert "all tests passed" in output
@@ -397,7 +415,7 @@ def test_verify_fails():
         return _ok(returncode=1, stdout="FAILED test_x")
 
     with patch("autoloop.fix_pr.subprocess.run", fake_run):
-        passed, output = verify(_cfg())
+        passed, output = verify(_cfg(), _REPO_DIR)
 
     assert passed is False
 
@@ -411,7 +429,7 @@ def test_verify_uses_cfg_verify_cmd():
         return _ok()
 
     with patch("autoloop.fix_pr.subprocess.run", fake_run):
-        verify(_cfg(verify_cmd="make test"))
+        verify(_cfg(verify_cmd="make test"), _REPO_DIR)
 
     assert captured["cmd"] == "make test"
     assert captured["kwargs"]["shell"] is True
@@ -425,7 +443,7 @@ def test_verify_uses_cfg_test_timeout():
         return _ok()
 
     with patch("autoloop.fix_pr.subprocess.run", fake_run):
-        verify(_cfg(test_timeout=30))
+        verify(_cfg(test_timeout=30), _REPO_DIR)
 
     assert captured["timeout"] == 30
 
@@ -438,7 +456,7 @@ def test_lint_check_passes():
         return _ok()
 
     with patch("autoloop.fix_pr.subprocess.run", fake_run):
-        passed, _ = lint_check(_cfg())
+        passed, _ = lint_check(_cfg(), _REPO_DIR)
 
     assert passed is True
 
@@ -448,7 +466,7 @@ def test_lint_check_fails():
         return _ok(returncode=1, stdout="ruff error")
 
     with patch("autoloop.fix_pr.subprocess.run", fake_run):
-        passed, output = lint_check(_cfg())
+        passed, output = lint_check(_cfg(), _REPO_DIR)
 
     assert passed is False
     assert "ruff error" in output
@@ -462,7 +480,7 @@ def test_has_staged_changes_true():
         return _ok(stdout="M  src/file.py\n")
 
     with patch("autoloop.fix_pr.subprocess.run", fake_run):
-        assert has_staged_changes() is True
+        assert has_staged_changes(_REPO_DIR) is True
 
 
 def test_has_staged_changes_false():
@@ -470,7 +488,7 @@ def test_has_staged_changes_false():
         return _ok(stdout="")
 
     with patch("autoloop.fix_pr.subprocess.run", fake_run):
-        assert has_staged_changes() is False
+        assert has_staged_changes(_REPO_DIR) is False
 
 
 # --- commit_fixes ---
@@ -484,7 +502,7 @@ def test_commit_fixes_success():
         return _ok()
 
     with patch("autoloop.fix_pr.subprocess.run", fake_run):
-        assert commit_fixes() is True
+        assert commit_fixes(_REPO_DIR) is True
 
     assert calls[0][:2] == ["git", "add"]
     assert calls[1][:2] == ["git", "commit"]
@@ -498,7 +516,7 @@ def test_force_push_success():
         return _ok()
 
     with patch("autoloop.fix_pr.subprocess.run", fake_run):
-        assert force_push("my-branch") is True
+        assert force_push("my-branch", _REPO_DIR) is True
 
 
 def test_force_push_failure():
@@ -506,7 +524,7 @@ def test_force_push_failure():
         return _ok(returncode=1)
 
     with patch("autoloop.fix_pr.subprocess.run", fake_run):
-        assert force_push("my-branch") is False
+        assert force_push("my-branch", _REPO_DIR) is False
 
 
 def test_force_push_uses_force_with_lease():
@@ -517,7 +535,7 @@ def test_force_push_uses_force_with_lease():
         return _ok()
 
     with patch("autoloop.fix_pr.subprocess.run", fake_run):
-        force_push("my-branch")
+        force_push("my-branch", _REPO_DIR)
 
     assert "--force-with-lease" in captured["cmd"]
     assert "my-branch" in captured["cmd"]
@@ -534,7 +552,7 @@ def test_abort_rebase_calls_git():
         return _ok()
 
     with patch("autoloop.fix_pr.subprocess.run", fake_run):
-        abort_rebase()
+        abort_rebase(_REPO_DIR)
 
     assert calls[0][:3] == ["git", "rebase", "--abort"]
 
@@ -550,7 +568,7 @@ def test_restore_main_checks_out_main():
         return _ok()
 
     with patch("autoloop.fix_pr.subprocess.run", fake_run):
-        restore_main()
+        restore_main(_REPO_DIR)
 
     assert calls[0][:3] == ["git", "checkout", "main"]
 
@@ -577,6 +595,7 @@ def _fake_pr_info(
 
 def test_fix_pr_clean_rebase_no_check_failures(capsys):
     cfg = _cfg()
+    ctx = _ctx()
 
     def fake_run(cmd, **kwargs):
         if isinstance(cmd, str):
@@ -588,7 +607,7 @@ def test_fix_pr_clean_rebase_no_check_failures(capsys):
         patch("autoloop.fix_pr.is_behind_main", return_value=True),
         patch("autoloop.fix_pr.subprocess.run", fake_run),
     ):
-        result = fix_pr(42, cfg)
+        result = fix_pr(ctx, 42, cfg)
 
     assert result is True
     out = capsys.readouterr().out
@@ -598,6 +617,7 @@ def test_fix_pr_clean_rebase_no_check_failures(capsys):
 
 def test_fix_pr_nothing_to_fix(capsys):
     cfg = _cfg()
+    ctx = _ctx()
 
     def fake_run(cmd, **kwargs):
         return _ok()
@@ -607,7 +627,7 @@ def test_fix_pr_nothing_to_fix(capsys):
         patch("autoloop.fix_pr.is_behind_main", return_value=False),
         patch("autoloop.fix_pr.subprocess.run", fake_run),
     ):
-        result = fix_pr(42, cfg)
+        result = fix_pr(ctx, 42, cfg)
 
     assert result is True
     out = capsys.readouterr().out
@@ -616,9 +636,10 @@ def test_fix_pr_nothing_to_fix(capsys):
 
 def test_fix_pr_pr_not_found(capsys):
     cfg = _cfg()
+    ctx = _ctx()
 
     with patch("autoloop.fix_pr.get_pr_info", return_value=None):
-        result = fix_pr(42, cfg)
+        result = fix_pr(ctx, 42, cfg)
 
     assert result is False
     out = capsys.readouterr().out
@@ -627,9 +648,10 @@ def test_fix_pr_pr_not_found(capsys):
 
 def test_fix_pr_pr_already_merged(capsys):
     cfg = _cfg()
+    ctx = _ctx()
 
     with patch("autoloop.fix_pr.get_pr_info", return_value=_fake_pr_info(state="MERGED")):
-        result = fix_pr(42, cfg)
+        result = fix_pr(ctx, 42, cfg)
 
     assert result is False
     out = capsys.readouterr().out
@@ -638,6 +660,7 @@ def test_fix_pr_pr_already_merged(capsys):
 
 def test_fix_pr_conflicts_resolved(capsys):
     cfg = _cfg()
+    ctx = _ctx()
 
     def fake_run(cmd, **kwargs):
         if isinstance(cmd, list) and cmd[:2] == ["git", "rebase"]:
@@ -659,7 +682,7 @@ def test_fix_pr_conflicts_resolved(capsys):
         patch("autoloop.fix_pr.resolve_conflicts_with_claude", return_value=True),
         patch("autoloop.fix_pr.subprocess.run", fake_run),
     ):
-        result = fix_pr(42, cfg)
+        result = fix_pr(ctx, 42, cfg)
 
     assert result is True
     out = capsys.readouterr().out
@@ -668,6 +691,7 @@ def test_fix_pr_conflicts_resolved(capsys):
 
 def test_fix_pr_conflict_resolution_fails(capsys):
     cfg = _cfg()
+    ctx = _ctx()
 
     def fake_run(cmd, **kwargs):
         if isinstance(cmd, list) and cmd[:2] == ["git", "rebase"]:
@@ -687,7 +711,7 @@ def test_fix_pr_conflict_resolution_fails(capsys):
         patch("autoloop.fix_pr.resolve_conflicts_with_claude", return_value=False),
         patch("autoloop.fix_pr.subprocess.run", fake_run),
     ):
-        result = fix_pr(42, cfg)
+        result = fix_pr(ctx, 42, cfg)
 
     assert result is False
     out = capsys.readouterr().out
@@ -696,6 +720,7 @@ def test_fix_pr_conflict_resolution_fails(capsys):
 
 def test_fix_pr_lint_failure_auto_fixed(capsys):
     cfg = _cfg()
+    ctx = _ctx()
     lint_calls = [0]
 
     def fake_run(cmd, **kwargs):
@@ -716,7 +741,7 @@ def test_fix_pr_lint_failure_auto_fixed(capsys):
         patch("autoloop.fix_pr.is_behind_main", return_value=False),
         patch("autoloop.fix_pr.subprocess.run", fake_run),
     ):
-        result = fix_pr(42, cfg)
+        result = fix_pr(ctx, 42, cfg)
 
     assert result is True
     out = capsys.readouterr().out
@@ -725,6 +750,7 @@ def test_fix_pr_lint_failure_auto_fixed(capsys):
 
 def test_fix_pr_test_failure_claude_fixes(capsys):
     cfg = _cfg()
+    ctx = _ctx()
     verify_calls = [0]
 
     def fake_run(cmd, **kwargs):
@@ -746,7 +772,7 @@ def test_fix_pr_test_failure_claude_fixes(capsys):
         patch("autoloop.fix_pr.fix_checks_with_claude", return_value=True),
         patch("autoloop.fix_pr.subprocess.run", fake_run),
     ):
-        result = fix_pr(42, cfg)
+        result = fix_pr(ctx, 42, cfg)
 
     assert result is True
     out = capsys.readouterr().out
@@ -755,6 +781,7 @@ def test_fix_pr_test_failure_claude_fixes(capsys):
 
 def test_fix_pr_push_failure(capsys):
     cfg = _cfg()
+    ctx = _ctx()
 
     def fake_run(cmd, **kwargs):
         if isinstance(cmd, list) and "push" in cmd:
@@ -768,7 +795,7 @@ def test_fix_pr_push_failure(capsys):
         patch("autoloop.fix_pr.is_behind_main", return_value=True),
         patch("autoloop.fix_pr.subprocess.run", fake_run),
     ):
-        result = fix_pr(42, cfg)
+        result = fix_pr(ctx, 42, cfg)
 
     assert result is False
     out = capsys.readouterr().out
@@ -801,6 +828,7 @@ def test_post_pr_comment_calls_gh():
 
 def test_fix_pr_posts_success_comment_on_rebase(capsys):
     cfg = _cfg()
+    ctx = _ctx()
     comments = []
 
     def fake_run(cmd, **kwargs):
@@ -814,7 +842,7 @@ def test_fix_pr_posts_success_comment_on_rebase(capsys):
         patch("autoloop.fix_pr.subprocess.run", fake_run),
         patch("autoloop.fix_pr.post_pr_comment", side_effect=lambda *a: comments.append(a)),
     ):
-        result = fix_pr(42, cfg)
+        result = fix_pr(ctx, 42, cfg)
 
     assert result is True
     assert len(comments) == 1
@@ -829,6 +857,7 @@ def test_fix_pr_posts_success_comment_on_rebase(capsys):
 
 def test_fix_pr_posts_success_comment_with_conflict_resolution(capsys):
     cfg = _cfg()
+    ctx = _ctx()
     comments = []
 
     def fake_run(cmd, **kwargs):
@@ -855,7 +884,7 @@ def test_fix_pr_posts_success_comment_with_conflict_resolution(capsys):
         patch("autoloop.fix_pr.subprocess.run", fake_run),
         patch("autoloop.fix_pr.post_pr_comment", side_effect=lambda *a: comments.append(a)),
     ):
-        result = fix_pr(42, cfg)
+        result = fix_pr(ctx, 42, cfg)
 
     assert result is True
     assert len(comments) == 1
@@ -865,6 +894,7 @@ def test_fix_pr_posts_success_comment_with_conflict_resolution(capsys):
 
 def test_fix_pr_posts_success_comment_with_check_fix(capsys):
     cfg = _cfg()
+    ctx = _ctx()
     comments = []
     verify_calls = [0]
 
@@ -890,7 +920,7 @@ def test_fix_pr_posts_success_comment_with_check_fix(capsys):
         patch("autoloop.fix_pr.subprocess.run", fake_run),
         patch("autoloop.fix_pr.post_pr_comment", side_effect=lambda *a: comments.append(a)),
     ):
-        result = fix_pr(42, cfg)
+        result = fix_pr(ctx, 42, cfg)
 
     assert result is True
     assert len(comments) == 1
@@ -900,6 +930,7 @@ def test_fix_pr_posts_success_comment_with_check_fix(capsys):
 
 def test_fix_pr_posts_failure_comment_on_checkout_fail(capsys):
     cfg = _cfg()
+    ctx = _ctx()
     comments = []
 
     with (
@@ -910,7 +941,7 @@ def test_fix_pr_posts_failure_comment_on_checkout_fail(capsys):
         patch("autoloop.fix_pr.checkout_branch", return_value=False),
         patch("autoloop.fix_pr.post_pr_comment", side_effect=lambda *a: comments.append(a)),
     ):
-        result = fix_pr(42, cfg)
+        result = fix_pr(ctx, 42, cfg)
 
     assert result is False
     assert len(comments) == 1
@@ -923,6 +954,7 @@ def test_fix_pr_posts_failure_comment_on_checkout_fail(capsys):
 
 def test_fix_pr_posts_failure_comment_on_rebase_fail(capsys):
     cfg = _cfg()
+    ctx = _ctx()
     comments = []
 
     def fake_run(cmd, **kwargs):
@@ -940,7 +972,7 @@ def test_fix_pr_posts_failure_comment_on_rebase_fail(capsys):
         patch("autoloop.fix_pr.subprocess.run", fake_run),
         patch("autoloop.fix_pr.post_pr_comment", side_effect=lambda *a: comments.append(a)),
     ):
-        result = fix_pr(42, cfg)
+        result = fix_pr(ctx, 42, cfg)
 
     assert result is False
     assert len(comments) == 1
@@ -952,6 +984,7 @@ def test_fix_pr_posts_failure_comment_on_rebase_fail(capsys):
 
 def test_fix_pr_posts_failure_comment_on_rebase_fail_with_conflicts(capsys):
     cfg = _cfg()
+    ctx = _ctx()
     comments = []
 
     def fake_run(cmd, **kwargs):
@@ -976,7 +1009,7 @@ def test_fix_pr_posts_failure_comment_on_rebase_fail_with_conflicts(capsys):
         patch("autoloop.fix_pr.subprocess.run", fake_run),
         patch("autoloop.fix_pr.post_pr_comment", side_effect=lambda *a: comments.append(a)),
     ):
-        result = fix_pr(42, cfg)
+        result = fix_pr(ctx, 42, cfg)
 
     assert result is False
     assert len(comments) == 1
@@ -986,6 +1019,7 @@ def test_fix_pr_posts_failure_comment_on_rebase_fail_with_conflicts(capsys):
 
 def test_fix_pr_posts_failure_comment_on_checks_fail(capsys):
     cfg = _cfg()
+    ctx = _ctx()
     comments = []
 
     def fake_run(cmd, **kwargs):
@@ -1003,7 +1037,7 @@ def test_fix_pr_posts_failure_comment_on_checks_fail(capsys):
         patch("autoloop.fix_pr.subprocess.run", fake_run),
         patch("autoloop.fix_pr.post_pr_comment", side_effect=lambda *a: comments.append(a)),
     ):
-        result = fix_pr(42, cfg)
+        result = fix_pr(ctx, 42, cfg)
 
     assert result is False
     assert len(comments) == 1
@@ -1016,6 +1050,7 @@ def test_fix_pr_posts_failure_comment_on_checks_fail(capsys):
 
 def test_fix_pr_posts_failure_comment_on_push_fail(capsys):
     cfg = _cfg()
+    ctx = _ctx()
     comments = []
 
     def fake_run(cmd, **kwargs):
@@ -1031,7 +1066,7 @@ def test_fix_pr_posts_failure_comment_on_push_fail(capsys):
         patch("autoloop.fix_pr.subprocess.run", fake_run),
         patch("autoloop.fix_pr.post_pr_comment", side_effect=lambda *a: comments.append(a)),
     ):
-        result = fix_pr(42, cfg)
+        result = fix_pr(ctx, 42, cfg)
 
     assert result is False
     assert len(comments) == 1
@@ -1043,6 +1078,7 @@ def test_fix_pr_posts_failure_comment_on_push_fail(capsys):
 
 def test_fix_pr_posts_failure_comment_on_unexpected_error(capsys):
     cfg = _cfg()
+    ctx = _ctx()
     comments = []
 
     with (
@@ -1052,7 +1088,7 @@ def test_fix_pr_posts_failure_comment_on_unexpected_error(capsys):
         patch("autoloop.fix_pr.restore_main"),
         patch("autoloop.fix_pr.post_pr_comment", side_effect=lambda *a: comments.append(a)),
     ):
-        result = fix_pr(42, cfg)
+        result = fix_pr(ctx, 42, cfg)
 
     assert result is False
     assert len(comments) == 1
@@ -1064,6 +1100,7 @@ def test_fix_pr_posts_failure_comment_on_unexpected_error(capsys):
 
 def test_fix_pr_no_comment_when_nothing_to_fix(capsys):
     cfg = _cfg()
+    ctx = _ctx()
     comments = []
 
     def fake_run(cmd, **kwargs):
@@ -1075,7 +1112,7 @@ def test_fix_pr_no_comment_when_nothing_to_fix(capsys):
         patch("autoloop.fix_pr.subprocess.run", fake_run),
         patch("autoloop.fix_pr.post_pr_comment", side_effect=lambda *a: comments.append(a)),
     ):
-        result = fix_pr(42, cfg)
+        result = fix_pr(ctx, 42, cfg)
 
     assert result is True
     assert len(comments) == 0
@@ -1083,13 +1120,76 @@ def test_fix_pr_no_comment_when_nothing_to_fix(capsys):
 
 def test_fix_pr_no_comment_when_pr_not_found():
     cfg = _cfg()
+    ctx = _ctx()
     comments = []
 
     with (
         patch("autoloop.fix_pr.get_pr_info", return_value=None),
         patch("autoloop.fix_pr.post_pr_comment", side_effect=lambda *a: comments.append(a)),
     ):
-        result = fix_pr(42, cfg)
+        result = fix_pr(ctx, 42, cfg)
 
     assert result is False
     assert len(comments) == 0
+
+
+# --- RepoContext threading: ctx.repo_dir used instead of cwd ---
+
+
+def test_fix_pr_uses_ctx_repo_dir_not_cwd(tmp_path, capsys):
+    """Verify that git/file operations target ctx.repo_dir, not the process cwd."""
+    repo_dir = tmp_path / "actual-repo"
+    repo_dir.mkdir()
+    cwd_dir = tmp_path / "wrong-cwd"
+    cwd_dir.mkdir()
+
+    ctx = _ctx(repo_dir=repo_dir)
+    cfg = _cfg()
+
+    captured_cwds = []
+
+    def fake_run(cmd, **kwargs):
+        if "cwd" in kwargs and kwargs["cwd"] is not None:
+            captured_cwds.append(Path(kwargs["cwd"]))
+        if isinstance(cmd, str):
+            return _ok(stdout="ok")
+        return _ok()
+
+    import os
+
+    orig_cwd = os.getcwd()
+    try:
+        os.chdir(cwd_dir)
+        with (
+            patch("autoloop.fix_pr.get_pr_info", return_value=_fake_pr_info()),
+            patch("autoloop.fix_pr.is_behind_main", return_value=False),
+            patch("autoloop.fix_pr.subprocess.run", fake_run),
+        ):
+            result = fix_pr(ctx, 42, cfg)
+    finally:
+        os.chdir(orig_cwd)
+
+    assert result is True
+    for cwd_used in captured_cwds:
+        assert cwd_used == repo_dir, (
+            f"Expected cwd={repo_dir}, got cwd={cwd_used}. "
+            "fix_pr should use ctx.repo_dir, not the process cwd."
+        )
+    assert cwd_dir not in captured_cwds
+
+
+def test_checkout_branch_uses_repo_dir(tmp_path):
+    """Verify checkout_branch passes repo_dir as cwd to subprocess."""
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    captured_cwds = []
+
+    def fake_run(cmd, **kwargs):
+        captured_cwds.append(kwargs.get("cwd"))
+        return _ok()
+
+    with patch("autoloop.fix_pr.subprocess.run", fake_run):
+        checkout_branch("my-branch", repo_dir)
+
+    for cwd in captured_cwds:
+        assert cwd == repo_dir
