@@ -1058,7 +1058,6 @@ def triage_issue(
     results.append(eval_result)
 
     if cfg.jev_mode == "shadow":
-        from autoloop.config import RepoContext
         from autoloop.jev_log import log_decision
 
         jev_result = None
