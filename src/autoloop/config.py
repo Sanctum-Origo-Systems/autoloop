@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -14,6 +16,44 @@ def __getattr__(name: str):
     if name == "REPO_DIR":
         return Path.cwd()
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+@dataclass
+class RepoContext:
+    repo_dir: Path
+    data_dir: Path = field(init=False)
+    worktree_dir: Path = field(init=False)
+
+    def __post_init__(self):
+        self.repo_dir = Path(self.repo_dir).resolve()
+        remote_url = self._get_remote_url()
+        hash_input = remote_url if remote_url else str(self.repo_dir)
+        digest = hashlib.sha256(hash_input.encode()).hexdigest()[:16]
+        self.data_dir = Path.home() / ".autoloop" / digest
+        self.worktree_dir = self.data_dir / "worktrees"
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self._migrate_files()
+
+    def _get_remote_url(self) -> str | None:
+        try:
+            result = subprocess.run(
+                ["git", "remote", "get-url", "origin"],
+                capture_output=True,
+                text=True,
+                cwd=self.repo_dir,
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+        except FileNotFoundError:
+            pass
+        return None
+
+    def _migrate_files(self):
+        for filename in ("run_history.l", "jev_decisions.l"):
+            src = self.repo_dir / filename
+            dst = self.data_dir / filename
+            if src.exists() and not dst.exists():
+                shutil.copy2(src, dst)
 
 
 @dataclass

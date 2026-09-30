@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import ast
+import hashlib
+from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from autoloop.config import (
     AutoLoopConfig,
+    RepoContext,
     load_config,
     touches_protected_path,
     verify_implementation,
@@ -701,7 +705,6 @@ def test_triage_labels_from_repo_autoloop_toml(monkeypatch):
         "JEV_MODE",
     ):
         monkeypatch.delenv(var, raising=False)
-    from pathlib import Path
 
     repo_toml = Path(__file__).resolve().parent.parent / "autoloop.toml"
     config = load_config(repo_toml)
@@ -709,3 +712,162 @@ def test_triage_labels_from_repo_autoloop_toml(monkeypatch):
     assert "rejected" in config.triage_labels
     assert "needs-human" in config.triage_labels
     assert len(config.triage_labels) == 6
+
+
+# --- RepoContext ---
+
+
+def _mock_git_remote(url):
+    """Return a side_effect for subprocess.run that fakes git remote get-url origin."""
+
+    def side_effect(cmd, **kwargs):
+        if cmd == ["git", "remote", "get-url", "origin"]:
+            import subprocess
+
+            result = subprocess.CompletedProcess(cmd, 0, stdout=url + "\n", stderr="")
+            return result
+        import subprocess
+
+        return subprocess.run(cmd, **kwargs)
+
+    return side_effect
+
+
+def _mock_git_remote_fail():
+    """Return a side_effect for subprocess.run that fakes a missing remote."""
+
+    def side_effect(cmd, **kwargs):
+        if cmd == ["git", "remote", "get-url", "origin"]:
+            import subprocess
+
+            return subprocess.CompletedProcess(cmd, 128, stdout="", stderr="fatal: no remote")
+        import subprocess
+
+        return subprocess.run(cmd, **kwargs)
+
+    return side_effect
+
+
+@pytest.fixture()
+def fake_home(tmp_path):
+    """Redirect Path.home() to a temp directory so RepoContext tests are isolated."""
+    home = tmp_path / "fakehome"
+    home.mkdir()
+    with patch("autoloop.config.Path.home", return_value=home):
+        yield home
+
+
+def test_repo_context_attributes_with_remote(tmp_path, fake_home):
+    remote_url = "https://github.com/acme-corp/widget.git"
+    expected_hash = hashlib.sha256(remote_url.encode()).hexdigest()[:16]
+    expected_data_dir = fake_home / ".autoloop" / expected_hash
+
+    with patch("autoloop.config.subprocess.run", side_effect=_mock_git_remote(remote_url)):
+        ctx = RepoContext(repo_dir=tmp_path)
+
+    assert ctx.repo_dir == tmp_path.resolve()
+    assert ctx.data_dir == expected_data_dir
+    assert ctx.worktree_dir == expected_data_dir / "worktrees"
+
+
+def test_repo_context_same_remote_same_data_dir(tmp_path, fake_home):
+    repo_a = tmp_path / "repo_a"
+    repo_a.mkdir()
+    repo_b = tmp_path / "repo_b"
+    repo_b.mkdir()
+    remote_url = "https://github.com/acme-corp/widget.git"
+
+    with patch("autoloop.config.subprocess.run", side_effect=_mock_git_remote(remote_url)):
+        ctx_a = RepoContext(repo_dir=repo_a)
+        ctx_b = RepoContext(repo_dir=repo_b)
+
+    assert ctx_a.data_dir == ctx_b.data_dir
+    assert ctx_a.repo_dir != ctx_b.repo_dir
+
+
+def test_repo_context_different_remotes_different_data_dir(tmp_path, fake_home):
+    repo_a = tmp_path / "repo_a"
+    repo_a.mkdir()
+    repo_b = tmp_path / "repo_b"
+    repo_b.mkdir()
+
+    with patch(
+        "autoloop.config.subprocess.run",
+        side_effect=_mock_git_remote("https://github.com/acme-corp/alpha.git"),
+    ):
+        ctx_a = RepoContext(repo_dir=repo_a)
+
+    with patch(
+        "autoloop.config.subprocess.run",
+        side_effect=_mock_git_remote("https://github.com/acme-corp/beta.git"),
+    ):
+        ctx_b = RepoContext(repo_dir=repo_b)
+
+    assert ctx_a.data_dir != ctx_b.data_dir
+
+
+def test_repo_context_fallback_no_remote(tmp_path, fake_home):
+    expected_hash = hashlib.sha256(str(tmp_path.resolve()).encode()).hexdigest()[:16]
+    expected_data_dir = fake_home / ".autoloop" / expected_hash
+
+    with patch("autoloop.config.subprocess.run", side_effect=_mock_git_remote_fail()):
+        ctx = RepoContext(repo_dir=tmp_path)
+
+    assert ctx.data_dir == expected_data_dir
+
+
+def test_repo_context_migrates_run_history(tmp_path, fake_home):
+    (tmp_path / "run_history.l").write_text("history data")
+    remote_url = "https://github.com/acme-corp/widget.git"
+
+    with patch("autoloop.config.subprocess.run", side_effect=_mock_git_remote(remote_url)):
+        ctx = RepoContext(repo_dir=tmp_path)
+
+    assert (ctx.data_dir / "run_history.l").read_text() == "history data"
+    assert (tmp_path / "run_history.l").exists()
+
+
+def test_repo_context_migrates_jev_decisions(tmp_path, fake_home):
+    (tmp_path / "jev_decisions.l").write_text("decisions data")
+    remote_url = "https://github.com/acme-corp/widget.git"
+
+    with patch("autoloop.config.subprocess.run", side_effect=_mock_git_remote(remote_url)):
+        ctx = RepoContext(repo_dir=tmp_path)
+
+    assert (ctx.data_dir / "jev_decisions.l").read_text() == "decisions data"
+    assert (tmp_path / "jev_decisions.l").exists()
+
+
+def test_repo_context_no_migration_files(tmp_path, fake_home):
+    remote_url = "https://github.com/acme-corp/widget.git"
+
+    with patch("autoloop.config.subprocess.run", side_effect=_mock_git_remote(remote_url)):
+        ctx = RepoContext(repo_dir=tmp_path)
+
+    assert not (ctx.data_dir / "run_history.l").exists()
+    assert not (ctx.data_dir / "jev_decisions.l").exists()
+
+
+def test_repo_context_migration_idempotent(tmp_path, fake_home):
+    (tmp_path / "run_history.l").write_text("original")
+    remote_url = "https://github.com/acme-corp/widget.git"
+
+    with patch("autoloop.config.subprocess.run", side_effect=_mock_git_remote(remote_url)):
+        ctx1 = RepoContext(repo_dir=tmp_path)
+        (tmp_path / "run_history.l").write_text("modified after first migration")
+        ctx2 = RepoContext(repo_dir=tmp_path)
+
+    assert ctx1.data_dir == ctx2.data_dir
+    assert (ctx2.data_dir / "run_history.l").read_text() == "original"
+
+
+def test_repo_context_migrates_both_files(tmp_path, fake_home):
+    (tmp_path / "run_history.l").write_text("history")
+    (tmp_path / "jev_decisions.l").write_text("decisions")
+    remote_url = "https://github.com/acme-corp/widget.git"
+
+    with patch("autoloop.config.subprocess.run", side_effect=_mock_git_remote(remote_url)):
+        ctx = RepoContext(repo_dir=tmp_path)
+
+    assert (ctx.data_dir / "run_history.l").read_text() == "history"
+    assert (ctx.data_dir / "jev_decisions.l").read_text() == "decisions"
