@@ -92,24 +92,24 @@ def test_result_dataclass():
 # --- autoloop.toml check ---
 
 
-def test_check_autoloop_toml_exists_and_valid(tmp_path):
-    toml_file = tmp_path / "autoloop.toml"
+def test_check_autoloop_toml_exists_and_valid(repo_ctx):
+    toml_file = repo_ctx.repo_dir / "autoloop.toml"
     toml_file.write_text('repo = "acme/widgets"\n')
-    passed, msg = check_autoloop_toml(tmp_path)
+    passed, msg = check_autoloop_toml(repo_ctx)
     assert passed is True
     assert "found and valid" in msg
 
 
-def test_check_autoloop_toml_missing(tmp_path):
-    passed, msg = check_autoloop_toml(tmp_path)
+def test_check_autoloop_toml_missing(repo_ctx):
+    passed, msg = check_autoloop_toml(repo_ctx)
     assert passed is False
     assert "not found" in msg
 
 
-def test_check_autoloop_toml_invalid_syntax(tmp_path):
-    toml_file = tmp_path / "autoloop.toml"
+def test_check_autoloop_toml_invalid_syntax(repo_ctx):
+    toml_file = repo_ctx.repo_dir / "autoloop.toml"
     toml_file.write_text("[invalid toml\nno closing bracket")
-    passed, msg = check_autoloop_toml(tmp_path)
+    passed, msg = check_autoloop_toml(repo_ctx)
     assert passed is False
     assert "invalid" in msg
 
@@ -117,17 +117,17 @@ def test_check_autoloop_toml_invalid_syntax(tmp_path):
 # --- .claude/settings.json check ---
 
 
-def test_check_claude_settings_exists(tmp_path):
-    settings_dir = tmp_path / ".claude"
+def test_check_claude_settings_exists(repo_ctx):
+    settings_dir = repo_ctx.repo_dir / ".claude"
     settings_dir.mkdir()
     (settings_dir / "settings.json").write_text("{}")
-    passed, msg = check_claude_settings(tmp_path)
+    passed, msg = check_claude_settings(repo_ctx)
     assert passed is True
     assert "found" in msg
 
 
-def test_check_claude_settings_missing(tmp_path):
-    passed, msg = check_claude_settings(tmp_path)
+def test_check_claude_settings_missing(repo_ctx):
+    passed, msg = check_claude_settings(repo_ctx)
     assert passed is False
     assert "not found" in msg
 
@@ -135,8 +135,8 @@ def test_check_claude_settings_missing(tmp_path):
 # --- get_checks integration ---
 
 
-def test_get_checks_returns_registered_checks():
-    checks = get_checks()
+def test_get_checks_returns_registered_checks(repo_ctx):
+    checks = get_checks(repo_ctx)
     assert len(checks) == 8
     assert checks[0].name == "autoloop.toml"
     assert checks[1].name == ".claude/settings.json"
@@ -151,14 +151,14 @@ def test_get_checks_returns_registered_checks():
     assert "autoloop doctor" in checks[6].fix_hint
 
 
-def test_get_checks_all_pass(tmp_path, capsys):
-    toml_file = tmp_path / "autoloop.toml"
+def test_get_checks_all_pass(repo_ctx, capsys):
+    toml_file = repo_ctx.repo_dir / "autoloop.toml"
     toml_file.write_text('repo = "acme/widgets"\nverify_cmd = "true"\n')
-    settings_dir = tmp_path / ".claude"
+    settings_dir = repo_ctx.repo_dir / ".claude"
     settings_dir.mkdir()
     (settings_dir / "settings.json").write_text("{}")
 
-    checks = get_checks(tmp_path)
+    checks = get_checks(repo_ctx)
     results = run_checks(checks)
 
     assert len(results) == 8
@@ -168,13 +168,32 @@ def test_get_checks_all_pass(tmp_path, capsys):
     assert "✓" in out
 
 
-def test_get_checks_all_fail(tmp_path, capsys):
-    checks = get_checks(tmp_path)
+def test_get_checks_all_fail(repo_ctx, capsys):
+    checks = get_checks(repo_ctx)
     results = run_checks(checks)
 
     assert len(results) == 8
     out = capsys.readouterr().out
     assert "✗" in out
+
+
+def test_get_checks_resolves_paths_under_ctx(repo_ctx):
+    """Verify that get_checks resolves file checks under ctx.repo_dir, not Path.cwd()."""
+    toml_file = repo_ctx.repo_dir / "autoloop.toml"
+    toml_file.write_text('repo = "acme/widgets"\n')
+    settings_dir = repo_ctx.repo_dir / ".claude"
+    settings_dir.mkdir()
+    (settings_dir / "settings.json").write_text("{}")
+
+    checks = get_checks(repo_ctx)
+    toml_check = checks[0]
+    settings_check = checks[1]
+
+    passed_toml, _ = toml_check.fn()
+    passed_settings, _ = settings_check.fn()
+
+    assert passed_toml is True
+    assert passed_settings is True
 
 
 # --- claude CLI installed check ---
@@ -272,23 +291,23 @@ def test_check_gh_cli_not_authenticated():
 # --- Claude Code session conflict check ---
 
 
-def test_check_claude_session_no_conflict(tmp_path):
+def test_check_claude_session_no_conflict(repo_ctx):
     with patch("autoloop.implement_issue.detect_active_claude_session", return_value=False):
-        passed, msg = check_claude_session(tmp_path)
+        passed, msg = check_claude_session(repo_ctx)
     assert passed is True
     assert "No active Claude Code session conflict" in msg
 
 
-def test_check_claude_session_conflict_detected(tmp_path):
+def test_check_claude_session_conflict_detected(repo_ctx):
     with patch("autoloop.implement_issue.detect_active_claude_session", return_value=True):
-        passed, msg = check_claude_session(tmp_path)
+        passed, msg = check_claude_session(repo_ctx)
     assert passed is False
     assert "Active Claude Code session detected" in msg
 
 
-def test_check_claude_session_detection_unavailable(tmp_path):
+def test_check_claude_session_detection_unavailable(repo_ctx):
     with patch("autoloop.implement_issue.detect_active_claude_session", return_value=None):
-        passed, msg = check_claude_session(tmp_path)
+        passed, msg = check_claude_session(repo_ctx)
     assert passed is True
     assert "unavailable" in msg
 
@@ -296,64 +315,64 @@ def test_check_claude_session_detection_unavailable(tmp_path):
 # --- verify_cmd check ---
 
 
-def test_check_verify_cmd_passes(tmp_path):
-    toml_file = tmp_path / "autoloop.toml"
+def test_check_verify_cmd_passes(repo_ctx):
+    toml_file = repo_ctx.repo_dir / "autoloop.toml"
     toml_file.write_text('repo = "acme/widgets"\nverify_cmd = "true"\n')
-    passed, msg = check_verify_cmd(tmp_path)
+    passed, msg = check_verify_cmd(repo_ctx)
     assert passed is True
     assert "passes" in msg
     assert "exit 0" in msg
 
 
-def test_check_verify_cmd_fails_with_output(tmp_path):
-    toml_file = tmp_path / "autoloop.toml"
+def test_check_verify_cmd_fails_with_output(repo_ctx):
+    toml_file = repo_ctx.repo_dir / "autoloop.toml"
     toml_file.write_text(
         'repo = "acme/widgets"\nverify_cmd = "echo build-error-output >&2 && exit 1"\n'
     )
-    passed, msg = check_verify_cmd(tmp_path)
+    passed, msg = check_verify_cmd(repo_ctx)
     assert passed is False
     assert "failed" in msg
     assert "exit 1" in msg
     assert "build-error-output" in msg
 
 
-def test_check_verify_cmd_truncates_long_output(tmp_path):
-    toml_file = tmp_path / "autoloop.toml"
+def test_check_verify_cmd_truncates_long_output(repo_ctx):
+    toml_file = repo_ctx.repo_dir / "autoloop.toml"
     long_msg = "x" * 800
     toml_file.write_text(f'repo = "acme/widgets"\nverify_cmd = "echo {long_msg} && exit 1"\n')
-    passed, msg = check_verify_cmd(tmp_path)
+    passed, msg = check_verify_cmd(repo_ctx)
     assert passed is False
     output_line = [line for line in msg.split("\n") if "Output:" in line][0]
     output_text = output_line.split("Output: ", 1)[1]
     assert len(output_text) <= 500
 
 
-def test_check_verify_cmd_not_found(tmp_path):
-    toml_file = tmp_path / "autoloop.toml"
+def test_check_verify_cmd_not_found(repo_ctx):
+    toml_file = repo_ctx.repo_dir / "autoloop.toml"
     toml_file.write_text('repo = "acme/widgets"\nverify_cmd = "nonexistent_command_abc123"\n')
-    passed, msg = check_verify_cmd(tmp_path)
+    passed, msg = check_verify_cmd(repo_ctx)
     assert passed is False
     assert "nonexistent_command_abc123" in msg
 
 
-def test_check_verify_cmd_empty(tmp_path):
-    toml_file = tmp_path / "autoloop.toml"
+def test_check_verify_cmd_empty(repo_ctx):
+    toml_file = repo_ctx.repo_dir / "autoloop.toml"
     toml_file.write_text('repo = "acme/widgets"\nverify_cmd = ""\n')
-    passed, msg = check_verify_cmd(tmp_path)
+    passed, msg = check_verify_cmd(repo_ctx)
     assert passed is True
     assert "skipping" in msg
 
 
-def test_check_verify_cmd_not_set(tmp_path):
-    toml_file = tmp_path / "autoloop.toml"
+def test_check_verify_cmd_not_set(repo_ctx):
+    toml_file = repo_ctx.repo_dir / "autoloop.toml"
     toml_file.write_text('repo = "acme/widgets"\nverify_cmd = "  "\n')
-    passed, msg = check_verify_cmd(tmp_path)
+    passed, msg = check_verify_cmd(repo_ctx)
     assert passed is True
     assert "skipping" in msg
 
 
-def test_check_verify_cmd_no_config(tmp_path):
-    passed, msg = check_verify_cmd(tmp_path)
+def test_check_verify_cmd_no_config(repo_ctx):
+    passed, msg = check_verify_cmd(repo_ctx)
     assert passed is False
     assert "could not load" in msg
 
@@ -361,63 +380,63 @@ def test_check_verify_cmd_no_config(tmp_path):
 # --- Jev config check ---
 
 
-def test_check_jev_disabled(tmp_path, monkeypatch):
-    toml_file = tmp_path / "autoloop.toml"
+def test_check_jev_disabled(repo_ctx, monkeypatch):
+    toml_file = repo_ctx.repo_dir / "autoloop.toml"
     toml_file.write_text('repo = "acme/widgets"\n')
     monkeypatch.delenv("JEV_MODE", raising=False)
-    passed, msg = check_jev(tmp_path)
+    passed, msg = check_jev(repo_ctx)
     assert passed is True
     assert "disabled" in msg
 
 
-def test_check_jev_shadow_mode_api_key_set(tmp_path, monkeypatch):
-    toml_file = tmp_path / "autoloop.toml"
+def test_check_jev_shadow_mode_api_key_set(repo_ctx, monkeypatch):
+    toml_file = repo_ctx.repo_dir / "autoloop.toml"
     toml_file.write_text('repo = "acme/widgets"\n\n[jev]\nmode = "shadow"\n')
     monkeypatch.delenv("JEV_MODE", raising=False)
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key-123")
-    passed, msg = check_jev(tmp_path)
+    passed, msg = check_jev(repo_ctx)
     assert passed is True
     assert "shadow mode" in msg
     assert "API key set" in msg
     assert "MISSING" not in msg
 
 
-def test_check_jev_shadow_mode_api_key_missing(tmp_path, monkeypatch):
-    toml_file = tmp_path / "autoloop.toml"
+def test_check_jev_shadow_mode_api_key_missing(repo_ctx, monkeypatch):
+    toml_file = repo_ctx.repo_dir / "autoloop.toml"
     toml_file.write_text('repo = "acme/widgets"\n\n[jev]\nmode = "shadow"\n')
     monkeypatch.delenv("JEV_MODE", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    passed, msg = check_jev(tmp_path)
+    passed, msg = check_jev(repo_ctx)
     assert passed is False
     assert "shadow mode" in msg
     assert "API key MISSING" in msg
     assert "OPENROUTER_API_KEY" in msg
 
 
-def test_check_jev_gate_mode_api_key_set(tmp_path, monkeypatch):
-    toml_file = tmp_path / "autoloop.toml"
+def test_check_jev_gate_mode_api_key_set(repo_ctx, monkeypatch):
+    toml_file = repo_ctx.repo_dir / "autoloop.toml"
     toml_file.write_text('repo = "acme/widgets"\n\n[jev]\nmode = "gate"\n')
     monkeypatch.delenv("JEV_MODE", raising=False)
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key-123")
-    passed, msg = check_jev(tmp_path)
+    passed, msg = check_jev(repo_ctx)
     assert passed is True
     assert "gate mode" in msg
     assert "API key set" in msg
 
 
-def test_check_jev_custom_api_key_env(tmp_path, monkeypatch):
-    toml_file = tmp_path / "autoloop.toml"
+def test_check_jev_custom_api_key_env(repo_ctx, monkeypatch):
+    toml_file = repo_ctx.repo_dir / "autoloop.toml"
     toml_file.write_text(
         'repo = "acme/widgets"\n\n[jev]\nmode = "shadow"\napi_key_env = "MY_CUSTOM_KEY"\n'
     )
     monkeypatch.delenv("JEV_MODE", raising=False)
     monkeypatch.delenv("MY_CUSTOM_KEY", raising=False)
-    passed, msg = check_jev(tmp_path)
+    passed, msg = check_jev(repo_ctx)
     assert passed is False
     assert "MY_CUSTOM_KEY" in msg
 
 
-def test_check_jev_no_config(tmp_path):
-    passed, msg = check_jev(tmp_path)
+def test_check_jev_no_config(repo_ctx):
+    passed, msg = check_jev(repo_ctx)
     assert passed is False
     assert "could not load" in msg

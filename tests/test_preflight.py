@@ -106,3 +106,37 @@ def test_run_preflight_output_combines_stdout_and_stderr():
 
     assert "stdout line" in result["verify_cmd"]["output"]
     assert "stderr line" in result["verify_cmd"]["output"]
+
+
+def test_run_preflight_with_ctx_passes_cwd(repo_ctx):
+    """Verify that run_preflight passes ctx.repo_dir as cwd to subprocess.run."""
+    cwd_values = []
+
+    def fake_run(cmd, **kwargs):
+        cwd_values.append(kwargs.get("cwd"))
+        return _ok(stdout="ok\n")
+
+    with patch("autoloop.preflight.subprocess.run", fake_run):
+        from autoloop.preflight import run_preflight
+
+        run_preflight(_cfg(), repo_ctx)
+
+    assert all(cwd == repo_ctx.repo_dir for cwd in cwd_values)
+
+
+def test_run_preflight_with_ctx_resolves_under_tmp_path(repo_ctx):
+    """Verify commands execute under ctx.repo_dir, not the real cwd."""
+    captured_cwds = []
+
+    def fake_run(cmd, **kwargs):
+        captured_cwds.append(kwargs.get("cwd"))
+        return _ok(stdout="ok\n")
+
+    with patch("autoloop.preflight.subprocess.run", fake_run):
+        from autoloop.preflight import run_preflight
+
+        run_preflight(_cfg(), repo_ctx)
+
+    for cwd in captured_cwds:
+        assert cwd is not None
+        assert str(cwd).startswith(str(repo_ctx.repo_dir))
