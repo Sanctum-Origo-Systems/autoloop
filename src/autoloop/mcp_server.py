@@ -332,6 +332,7 @@ def main():
             pr: With publish, create a branch and PR instead of committing to main.
             repo_dir: Target repository directory. Defaults to server's working directory.
         """
+        from autoloop.config import RepoContext
         from autoloop.eval import (
             compare_snapshots,
             compute_snapshot,
@@ -347,10 +348,10 @@ def main():
             save_snapshot,
         )
 
-        base = Path(repo_dir) if repo_dir else Path.cwd()
+        ctx = RepoContext(repo_dir=Path(repo_dir) if repo_dir else Path.cwd())
 
         if trend:
-            snapshots = load_all_snapshots(base)
+            snapshots = load_all_snapshots(ctx)
             return format_trend(snapshots)
 
         repo = None
@@ -358,32 +359,32 @@ def main():
         try:
             from autoloop.config import load_config
 
-            cfg = load_config(path=base / "autoloop.toml")
+            cfg = load_config(path=ctx.repo_dir / "autoloop.toml")
             repo = cfg.repo
         except FileNotFoundError:
             pass
 
-        runs = load_run_history(base)
+        runs = load_run_history(ctx)
         pr_data = fetch_pr_data(repo) if repo else []
         pr_data = enrich_pr_data_with_runs(pr_data, runs)
         current = compute_snapshot(runs, pr_data)
 
         if compare:
-            previous = load_latest_snapshot(base)
+            previous = load_latest_snapshot(ctx)
             if previous is None:
-                save_snapshot(current, base)
+                save_snapshot(current, ctx)
                 return "No previous snapshot to compare against.\n\n" + format_snapshot(current)
             comparison = compare_snapshots(previous, current)
-            save_snapshot(current, base)
+            save_snapshot(current, ctx)
             return format_comparison(comparison)
 
-        snap_path = save_snapshot(current, base)
+        snap_path = save_snapshot(current, ctx)
         result = format_snapshot(current)
 
         if publish:
             from autoloop.eval import _publish_via_pr
 
-            all_snaps = load_all_snapshots(base)
+            all_snaps = load_all_snapshots(ctx)
             md_content = generate_eval_md(
                 current,
                 all_snaps,
@@ -392,18 +393,19 @@ def main():
                 volume_floor=cfg.auto_merge_volume_floor if cfg else 10,
                 promotion_level=cfg.auto_merge_promotion_level if cfg else "module",
             )
-            md_path = base / "EVAL.md"
+            md_path = ctx.repo_dir / "EVAL.md"
             md_path.write_text(md_content)
             date = current["date"]
 
             if pr:
-                pr_msg = _publish_via_pr(base, snap_path, md_path, date)
+                pr_msg = _publish_via_pr(ctx, snap_path, md_path, date)
                 return result + f"\n\n{pr_msg}"
             else:
+                repo_dir_str = str(ctx.repo_dir)
                 try:
                     add = subprocess.run(
                         ["git", "add", str(snap_path), str(md_path)],
-                        cwd=str(base),
+                        cwd=repo_dir_str,
                         capture_output=True,
                         text=True,
                     )
@@ -416,7 +418,7 @@ def main():
                 try:
                     commit = subprocess.run(
                         ["git", "commit", "-m", commit_msg],
-                        cwd=str(base),
+                        cwd=repo_dir_str,
                         capture_output=True,
                         text=True,
                     )
@@ -428,7 +430,7 @@ def main():
                 try:
                     push = subprocess.run(
                         ["git", "push"],
-                        cwd=str(base),
+                        cwd=repo_dir_str,
                         capture_output=True,
                         text=True,
                     )

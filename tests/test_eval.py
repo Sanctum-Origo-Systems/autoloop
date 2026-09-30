@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 
+from autoloop.config import RepoContext
 from autoloop.eval import (
     _compute_period_stats,
     _detect_module_prefixes,
@@ -32,35 +33,43 @@ from autoloop.eval import (
 )
 
 
+def _make_ctx(tmp_path):
+    ctx = object.__new__(RepoContext)
+    ctx.repo_dir = tmp_path
+    ctx.data_dir = tmp_path / "autoloop"
+    ctx.worktree_dir = ctx.data_dir / "worktrees"
+    ctx.data_dir.mkdir(parents=True, exist_ok=True)
+    return ctx
+
+
 # --- load_run_history ---
 
 
 def test_load_run_history_empty_when_no_file(tmp_path):
-    assert load_run_history(tmp_path) == []
+    ctx = _make_ctx(tmp_path)
+    assert load_run_history(ctx) == []
 
 
 def test_load_run_history_reads_entries(tmp_path):
-    log_dir = tmp_path / "autoloop"
-    log_dir.mkdir()
-    log_file = log_dir / "run_history.jsonl"
+    ctx = _make_ctx(tmp_path)
+    log_file = ctx.data_dir / "run_history.jsonl"
     entries = [
         {"type": "implement", "issue": 1, "success": True, "attempts": 1},
         {"type": "implement", "issue": 2, "success": False, "attempts": 2},
     ]
     log_file.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
 
-    result = load_run_history(tmp_path)
+    result = load_run_history(ctx)
     assert len(result) == 2
     assert result[0]["issue"] == 1
     assert result[1]["issue"] == 2
 
 
 def test_load_run_history_skips_blank_lines(tmp_path):
-    log_dir = tmp_path / "autoloop"
-    log_dir.mkdir()
-    log_file = log_dir / "run_history.jsonl"
+    ctx = _make_ctx(tmp_path)
+    log_file = ctx.data_dir / "run_history.jsonl"
     log_file.write_text(json.dumps({"type": "implement", "issue": 1, "success": True}) + "\n\n")
-    assert len(load_run_history(tmp_path)) == 1
+    assert len(load_run_history(ctx)) == 1
 
 
 # --- classify_module ---
@@ -324,46 +333,52 @@ def test_enrich_pr_data_no_matching_run():
 
 
 def test_save_and_load_snapshot(tmp_path):
+    ctx = _make_ctx(tmp_path)
     snap = {"date": "2026-09-14", "total_implementations": 10, "first_attempt_rate": 0.9}
-    path = save_snapshot(snap, tmp_path)
+    path = save_snapshot(snap, ctx)
     assert path.exists()
     assert path.name == "2026-09-14.json"
 
-    loaded = load_snapshot("2026-09-14", tmp_path)
+    loaded = load_snapshot("2026-09-14", ctx)
     assert loaded["total_implementations"] == 10
 
 
 def test_load_snapshot_returns_none_for_missing(tmp_path):
-    assert load_snapshot("2099-01-01", tmp_path) is None
+    ctx = _make_ctx(tmp_path)
+    assert load_snapshot("2099-01-01", ctx) is None
 
 
 def test_load_latest_snapshot(tmp_path):
+    ctx = _make_ctx(tmp_path)
     snap_dir = tmp_path / "autoloop" / "eval_snapshots"
     snap_dir.mkdir(parents=True)
     (snap_dir / "2026-09-13.json").write_text(json.dumps({"date": "2026-09-13"}))
     (snap_dir / "2026-09-14.json").write_text(json.dumps({"date": "2026-09-14"}))
 
-    latest = load_latest_snapshot(tmp_path)
+    latest = load_latest_snapshot(ctx)
     assert latest["date"] == "2026-09-14"
 
 
 def test_load_latest_snapshot_none_when_empty(tmp_path):
-    assert load_latest_snapshot(tmp_path) is None
+    ctx = _make_ctx(tmp_path)
+    assert load_latest_snapshot(ctx) is None
 
 
 def test_load_all_snapshots(tmp_path):
+    ctx = _make_ctx(tmp_path)
     snap_dir = tmp_path / "autoloop" / "eval_snapshots"
     snap_dir.mkdir(parents=True)
     (snap_dir / "2026-09-13.json").write_text(json.dumps({"date": "2026-09-13"}))
     (snap_dir / "2026-09-14.json").write_text(json.dumps({"date": "2026-09-14"}))
 
-    all_snaps = load_all_snapshots(tmp_path)
+    all_snaps = load_all_snapshots(ctx)
     assert len(all_snaps) == 2
     assert all_snaps[0]["date"] == "2026-09-13"
 
 
 def test_load_all_snapshots_empty(tmp_path):
-    assert load_all_snapshots(tmp_path) == []
+    ctx = _make_ctx(tmp_path)
+    assert load_all_snapshots(ctx) == []
 
 
 # --- compare_snapshots ---
@@ -581,7 +596,7 @@ def test_main_snapshot(tmp_path, monkeypatch, capsys):
         + "\n"
     )
 
-    main(base=tmp_path)
+    main(ctx=_make_ctx(tmp_path))
 
     out = capsys.readouterr().out
     assert "Eval Snapshot" in out
@@ -609,7 +624,7 @@ def test_main_trend(tmp_path, capsys):
             )
         )
 
-    main(trend=True, base=tmp_path)
+    main(trend=True, ctx=_make_ctx(tmp_path))
 
     out = capsys.readouterr().out
     assert "Eval Trend" in out
@@ -633,7 +648,7 @@ def test_main_compare_latest_no_previous(tmp_path, capsys):
         + "\n"
     )
 
-    main(compare="latest", base=tmp_path)
+    main(compare="latest", ctx=_make_ctx(tmp_path))
 
     out = capsys.readouterr().out
     assert "No previous snapshot" in out
@@ -673,7 +688,7 @@ def test_main_compare_latest_with_previous(tmp_path, capsys):
         + "\n"
     )
 
-    main(compare="latest", base=tmp_path)
+    main(compare="latest", ctx=_make_ctx(tmp_path))
 
     out = capsys.readouterr().out
     assert "Comparison:" in out
@@ -935,7 +950,7 @@ def test_main_output_json_snapshot(tmp_path, capsys):
         + "\n"
     )
 
-    main(base=tmp_path, output="json")
+    main(ctx=_make_ctx(tmp_path), output="json")
 
     out = capsys.readouterr().out
     data = json.loads(out)
@@ -961,7 +976,7 @@ def test_main_output_json_trend(tmp_path, capsys):
             )
         )
 
-    main(trend=True, base=tmp_path, output="json")
+    main(trend=True, ctx=_make_ctx(tmp_path), output="json")
 
     out = capsys.readouterr().out
     data = json.loads(out)
@@ -989,7 +1004,7 @@ def test_main_output_json_compare_no_previous(tmp_path, capsys):
         + "\n"
     )
 
-    main(compare="latest", base=tmp_path, output="json")
+    main(compare="latest", ctx=_make_ctx(tmp_path), output="json")
 
     out = capsys.readouterr().out
     data = json.loads(out)
@@ -1030,7 +1045,7 @@ def test_main_output_json_compare_with_previous(tmp_path, capsys):
         + "\n"
     )
 
-    main(compare="latest", base=tmp_path, output="json")
+    main(compare="latest", ctx=_make_ctx(tmp_path), output="json")
 
     out = capsys.readouterr().out
     data = json.loads(out)
@@ -1058,7 +1073,7 @@ def test_main_default_output_unchanged(tmp_path, capsys):
         + "\n"
     )
 
-    main(base=tmp_path)
+    main(ctx=_make_ctx(tmp_path))
 
     out = capsys.readouterr().out
     assert "Eval Snapshot" in out
@@ -1686,7 +1701,7 @@ def test_main_publish_writes_snapshot(tmp_path, monkeypatch, capsys):
     calls = []
     monkeypatch.setattr("autoloop.eval.subprocess.run", _fake_subprocess_on_main(calls))
 
-    main(publish=True, base=tmp_path)
+    main(publish=True, ctx=_make_ctx(tmp_path))
 
     snap_dir = tmp_path / "autoloop" / "eval_snapshots"
     snap_files = list(snap_dir.glob("*.json"))
@@ -1715,7 +1730,7 @@ def test_main_publish_writes_eval_md(tmp_path, monkeypatch, capsys):
 
     monkeypatch.setattr("autoloop.eval.subprocess.run", _fake_subprocess_on_main())
 
-    main(publish=True, base=tmp_path)
+    main(publish=True, ctx=_make_ctx(tmp_path))
 
     eval_md = tmp_path / "EVAL.md"
     assert eval_md.exists()
@@ -1746,7 +1761,7 @@ def test_main_publish_commits(tmp_path, monkeypatch, capsys):
     calls = []
     monkeypatch.setattr("autoloop.eval.subprocess.run", _fake_subprocess_on_main(calls))
 
-    main(publish=True, base=tmp_path)
+    main(publish=True, ctx=_make_ctx(tmp_path))
 
     git_adds = [c for c in calls if c[:2] == ["git", "add"]]
     git_commits = [c for c in calls if c[:2] == ["git", "commit"]]
@@ -1780,7 +1795,7 @@ def test_main_publish_rejects_non_main_branch(tmp_path, monkeypatch, capsys):
 
     monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
 
-    main(publish=True, base=tmp_path)
+    main(publish=True, ctx=_make_ctx(tmp_path))
 
     out = capsys.readouterr().out
     assert "must be run from the main branch" in out
@@ -1810,7 +1825,7 @@ def test_main_publish_handles_git_not_found(tmp_path, monkeypatch, capsys):
 
     monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
 
-    main(publish=True, base=tmp_path)
+    main(publish=True, ctx=_make_ctx(tmp_path))
 
     out = capsys.readouterr().out
     assert "git not found" in out
@@ -1845,7 +1860,7 @@ def test_main_publish_handles_git_commit_failure(tmp_path, monkeypatch, capsys):
 
     monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
 
-    main(publish=True, base=tmp_path)
+    main(publish=True, ctx=_make_ctx(tmp_path))
 
     out = capsys.readouterr().out
     assert "git commit failed" in out
@@ -1879,7 +1894,7 @@ def test_main_publish_handles_git_add_failure(tmp_path, monkeypatch, capsys):
 
     monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
 
-    main(publish=True, base=tmp_path)
+    main(publish=True, ctx=_make_ctx(tmp_path))
 
     out = capsys.readouterr().out
     assert "git add failed" in out
@@ -1904,7 +1919,7 @@ def test_main_no_publish_no_eval_md(tmp_path, monkeypatch, capsys):
         + "\n"
     )
 
-    main(base=tmp_path)
+    main(ctx=_make_ctx(tmp_path))
 
     eval_md = tmp_path / "EVAL.md"
     assert not eval_md.exists()
@@ -1977,7 +1992,7 @@ def test_publish_via_pr_creates_branch_and_pr(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr("autoloop.eval.subprocess.run", _fake_subprocess_all_ok(calls))
 
-    result = _publish_via_pr(tmp_path, snap_path, eval_path, "2026-09-19")
+    result = _publish_via_pr(_make_ctx(tmp_path), snap_path, eval_path, "2026-09-19")
 
     assert "PR created:" in result
     assert "https://github.com/owner/repo/pull/99" in result
@@ -2019,7 +2034,7 @@ def test_publish_via_pr_handles_branch_creation_failure(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
-    result = _publish_via_pr(tmp_path, snap_path, eval_path, "2026-09-19")
+    result = _publish_via_pr(_make_ctx(tmp_path), snap_path, eval_path, "2026-09-19")
 
     assert "could not create branch" in result
 
@@ -2039,7 +2054,7 @@ def test_publish_via_pr_handles_push_failure(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
-    result = _publish_via_pr(tmp_path, snap_path, eval_path, "2026-09-19")
+    result = _publish_via_pr(_make_ctx(tmp_path), snap_path, eval_path, "2026-09-19")
 
     assert "git push failed" in result
     main_checkouts = [c for c in calls if c == ["git", "checkout", "main"]]
@@ -2061,7 +2076,7 @@ def test_publish_via_pr_handles_pr_creation_failure(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
-    result = _publish_via_pr(tmp_path, snap_path, eval_path, "2026-09-19")
+    result = _publish_via_pr(_make_ctx(tmp_path), snap_path, eval_path, "2026-09-19")
 
     assert "PR creation failed" in result
     main_checkouts = [c for c in calls if c == ["git", "checkout", "main"]]
@@ -2078,7 +2093,7 @@ def test_publish_via_pr_handles_git_not_found(tmp_path, monkeypatch):
         raise FileNotFoundError("git not found")
 
     monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
-    result = _publish_via_pr(tmp_path, snap_path, eval_path, "2026-09-19")
+    result = _publish_via_pr(_make_ctx(tmp_path), snap_path, eval_path, "2026-09-19")
 
     assert "git not found" in result
 
@@ -2098,7 +2113,7 @@ def test_publish_via_pr_checkouts_main_on_add_failure(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
-    result = _publish_via_pr(tmp_path, snap_path, eval_path, "2026-09-19")
+    result = _publish_via_pr(_make_ctx(tmp_path), snap_path, eval_path, "2026-09-19")
 
     assert "git add failed" in result
     main_checkouts = [c for c in calls if c == ["git", "checkout", "main"]]
@@ -2120,7 +2135,7 @@ def test_publish_via_pr_checkouts_main_on_commit_failure(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
-    result = _publish_via_pr(tmp_path, snap_path, eval_path, "2026-09-19")
+    result = _publish_via_pr(_make_ctx(tmp_path), snap_path, eval_path, "2026-09-19")
 
     assert "git commit failed" in result
     main_checkouts = [c for c in calls if c == ["git", "checkout", "main"]]
@@ -2161,7 +2176,7 @@ def test_main_publish_pr(tmp_path, monkeypatch, capsys):
 
     monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
 
-    main(publish=True, pr=True, base=tmp_path)
+    main(publish=True, pr=True, ctx=_make_ctx(tmp_path))
 
     out = capsys.readouterr().out
     assert "PR created:" in out
@@ -2194,7 +2209,7 @@ def test_main_publish_pr_rejects_non_main(tmp_path, monkeypatch, capsys):
 
     monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
 
-    main(publish=True, pr=True, base=tmp_path)
+    main(publish=True, pr=True, ctx=_make_ctx(tmp_path))
 
     out = capsys.readouterr().out
     assert "must be run from the main branch" in out
@@ -2234,7 +2249,7 @@ def test_main_publish_push_failure_suggests_pr(tmp_path, monkeypatch, capsys):
 
     monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
 
-    main(publish=True, base=tmp_path)
+    main(publish=True, ctx=_make_ctx(tmp_path))
 
     out = capsys.readouterr().out
     assert "branch protection" in out
@@ -2267,7 +2282,7 @@ def test_main_publish_push_generic_failure(tmp_path, monkeypatch, capsys):
 
     monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
 
-    main(publish=True, base=tmp_path)
+    main(publish=True, ctx=_make_ctx(tmp_path))
 
     out = capsys.readouterr().out
     assert "git push failed" in out
@@ -2655,7 +2670,7 @@ def test_main_publish_skips_commit_no_material_change(tmp_path, monkeypatch, cap
     calls = []
     monkeypatch.setattr("autoloop.eval.subprocess.run", _fake_subprocess_on_main(calls))
 
-    main(publish=True, base=tmp_path)
+    main(publish=True, ctx=_make_ctx(tmp_path))
 
     out = capsys.readouterr().out
     assert "No material change, skipping EVAL.md commit" in out
@@ -2705,7 +2720,7 @@ def test_main_publish_commits_on_material_change(tmp_path, monkeypatch, capsys):
     calls = []
     monkeypatch.setattr("autoloop.eval.subprocess.run", _fake_subprocess_on_main(calls))
 
-    main(publish=True, base=tmp_path)
+    main(publish=True, ctx=_make_ctx(tmp_path))
 
     out = capsys.readouterr().out
     assert "Material change detected, publishing EVAL.md" in out
@@ -2736,7 +2751,7 @@ def test_main_publish_first_run_commits(tmp_path, monkeypatch, capsys):
     calls = []
     monkeypatch.setattr("autoloop.eval.subprocess.run", _fake_subprocess_on_main(calls))
 
-    main(publish=True, base=tmp_path)
+    main(publish=True, ctx=_make_ctx(tmp_path))
 
     out = capsys.readouterr().out
     assert "Material change detected, publishing EVAL.md" in out
@@ -3174,7 +3189,7 @@ def test_main_stores_period_stats(tmp_path, capsys):
         + "\n"
     )
 
-    main(base=tmp_path)
+    main(ctx=_make_ctx(tmp_path))
 
     snap_dir = tmp_path / "autoloop" / "eval_snapshots"
     snap_file = list(snap_dir.glob("*.json"))[0]
@@ -3217,7 +3232,7 @@ def test_main_period_stats_with_previous(tmp_path, capsys):
     ]
     log_file.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
 
-    main(base=tmp_path)
+    main(ctx=_make_ctx(tmp_path))
 
     snap_files = sorted(snap_dir.glob("*.json"))
     new_snap = json.loads(snap_files[-1].read_text())

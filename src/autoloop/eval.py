@@ -12,11 +12,13 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from autoloop.config import RepoContext
+
 _PR_LIMIT = 500
 
 
-def load_run_history(base: Path | None = None) -> list[dict]:
-    log_file = (base or Path.cwd()) / "autoloop" / "run_history.jsonl"
+def load_run_history(ctx: RepoContext) -> list[dict]:
+    log_file = ctx.data_dir / "run_history.jsonl"
     if not log_file.exists():
         return []
     entries = []
@@ -272,8 +274,8 @@ def enrich_pr_data_with_runs(pr_data: list[dict], runs: list[dict]) -> list[dict
     return pr_data
 
 
-def save_snapshot(snapshot: dict, base: Path | None = None) -> Path:
-    snap_dir = (base or Path.cwd()) / "autoloop" / "eval_snapshots"
+def save_snapshot(snapshot: dict, ctx: RepoContext) -> Path:
+    snap_dir = ctx.repo_dir / "autoloop" / "eval_snapshots"
     snap_dir.mkdir(parents=True, exist_ok=True)
     path = snap_dir / f"{snapshot['date']}.json"
     with open(path, "w") as f:
@@ -282,15 +284,15 @@ def save_snapshot(snapshot: dict, base: Path | None = None) -> Path:
     return path
 
 
-def load_snapshot(date: str, base: Path | None = None) -> dict | None:
-    path = (base or Path.cwd()) / "autoloop" / "eval_snapshots" / f"{date}.json"
+def load_snapshot(date: str, ctx: RepoContext) -> dict | None:
+    path = ctx.repo_dir / "autoloop" / "eval_snapshots" / f"{date}.json"
     if not path.exists():
         return None
     return json.loads(path.read_text())
 
 
-def load_latest_snapshot(base: Path | None = None) -> dict | None:
-    snap_dir = (base or Path.cwd()) / "autoloop" / "eval_snapshots"
+def load_latest_snapshot(ctx: RepoContext) -> dict | None:
+    snap_dir = ctx.repo_dir / "autoloop" / "eval_snapshots"
     if not snap_dir.exists():
         return None
     files = sorted(snap_dir.glob("*.json"))
@@ -299,8 +301,8 @@ def load_latest_snapshot(base: Path | None = None) -> dict | None:
     return json.loads(files[-1].read_text())
 
 
-def load_all_snapshots(base: Path | None = None) -> list[dict]:
-    snap_dir = (base or Path.cwd()) / "autoloop" / "eval_snapshots"
+def load_all_snapshots(ctx: RepoContext) -> list[dict]:
+    snap_dir = ctx.repo_dir / "autoloop" / "eval_snapshots"
     if not snap_dir.exists():
         return []
     snapshots = []
@@ -748,15 +750,16 @@ def material_change(new: dict, old: dict) -> bool:
     )
 
 
-def _publish_via_pr(base: Path, snapshot_path: Path, eval_path: Path, date: str) -> str:
+def _publish_via_pr(ctx: RepoContext, snapshot_path: Path, eval_path: Path, date: str) -> str:
     branch_name = f"chore/eval-{date}"
     pr_created = False
+    repo_dir = str(ctx.repo_dir)
     try:
         result = subprocess.run(
             ["git", "checkout", "-b", branch_name],
             capture_output=True,
             text=True,
-            cwd=str(base),
+            cwd=repo_dir,
         )
     except FileNotFoundError:
         return "Error: git not found"
@@ -769,7 +772,7 @@ def _publish_via_pr(base: Path, snapshot_path: Path, eval_path: Path, date: str)
                 ["git", "add", str(snapshot_path), str(eval_path)],
                 capture_output=True,
                 text=True,
-                cwd=str(base),
+                cwd=repo_dir,
             )
         except FileNotFoundError:
             return "Error: git not found"
@@ -782,7 +785,7 @@ def _publish_via_pr(base: Path, snapshot_path: Path, eval_path: Path, date: str)
                 ["git", "commit", "-m", commit_msg],
                 capture_output=True,
                 text=True,
-                cwd=str(base),
+                cwd=repo_dir,
             )
         except FileNotFoundError:
             return "Error: git not found"
@@ -794,7 +797,7 @@ def _publish_via_pr(base: Path, snapshot_path: Path, eval_path: Path, date: str)
                 ["git", "push", "-u", "origin", branch_name],
                 capture_output=True,
                 text=True,
-                cwd=str(base),
+                cwd=repo_dir,
             )
         except FileNotFoundError:
             return "Error: git not found"
@@ -815,7 +818,7 @@ def _publish_via_pr(base: Path, snapshot_path: Path, eval_path: Path, date: str)
                 ],
                 capture_output=True,
                 text=True,
-                cwd=str(base),
+                cwd=repo_dir,
             )
         except FileNotFoundError:
             return "Error: gh not found"
@@ -829,13 +832,13 @@ def _publish_via_pr(base: Path, snapshot_path: Path, eval_path: Path, date: str)
             subprocess.run(
                 ["git", "checkout", "main"],
                 capture_output=True,
-                cwd=str(base),
+                cwd=repo_dir,
             )
             if not pr_created:
                 subprocess.run(
                     ["git", "branch", "-D", branch_name],
                     capture_output=True,
-                    cwd=str(base),
+                    cwd=repo_dir,
                 )
         except FileNotFoundError:
             pass
@@ -845,7 +848,8 @@ def main(
     compare: str | None = None,
     trend: bool = False,
     repo: str | None = None,
-    base: Path | None = None,
+    *,
+    ctx: RepoContext,
     output: str | None = None,
     publish: bool = False,
     pr: bool = False,
@@ -854,7 +858,7 @@ def main(
     auto_merge_volume_floor: int = 10,
     auto_merge_promotion_level: str = "module",
 ):
-    effective_base = base or Path.cwd()
+    repo_dir = str(ctx.repo_dir)
 
     if publish:
         try:
@@ -862,7 +866,7 @@ def main(
                 ["git", "rev-parse", "--abbrev-ref", "HEAD"],
                 capture_output=True,
                 text=True,
-                cwd=str(effective_base),
+                cwd=repo_dir,
             )
         except FileNotFoundError:
             print("Error: git not found")
@@ -871,18 +875,18 @@ def main(
             print("Error: --publish must be run from the main branch")
             return
 
-        runs = load_run_history(effective_base)
+        runs = load_run_history(ctx)
         pr_data = fetch_pr_data(repo) if repo else []
         pr_data = enrich_pr_data_with_runs(pr_data, runs)
         snapshot = compute_snapshot(runs, pr_data)
 
-        previous = load_latest_snapshot(effective_base)
+        previous = load_latest_snapshot(ctx)
         snapshot.update(_compute_period_stats(snapshot, previous))
 
-        path = save_snapshot(snapshot, effective_base)
+        path = save_snapshot(snapshot, ctx)
         print(f"Snapshot saved to {path}")
 
-        all_snaps = load_all_snapshots(effective_base)
+        all_snaps = load_all_snapshots(ctx)
         content = generate_eval_md(
             snapshot,
             all_snaps,
@@ -891,7 +895,7 @@ def main(
             volume_floor=auto_merge_volume_floor,
             promotion_level=auto_merge_promotion_level,
         )
-        eval_path = effective_base / "EVAL.md"
+        eval_path = ctx.repo_dir / "EVAL.md"
         eval_path.write_text(content)
 
         date = snapshot["date"]
@@ -903,13 +907,11 @@ def main(
         print("Material change detected, publishing EVAL.md")
 
         if pr:
-            print(_publish_via_pr(effective_base, path, eval_path, date))
+            print(_publish_via_pr(ctx, path, eval_path, date))
             return
 
         try:
-            add_result = subprocess.run(
-                ["git", "add", str(path), str(eval_path)], cwd=str(effective_base)
-            )
+            add_result = subprocess.run(["git", "add", str(path), str(eval_path)], cwd=repo_dir)
         except FileNotFoundError:
             print("Error: git not found")
             return
@@ -920,7 +922,7 @@ def main(
         try:
             commit_result = subprocess.run(
                 ["git", "commit", "-m", f"chore: update eval report ({date})"],
-                cwd=str(effective_base),
+                cwd=repo_dir,
             )
         except FileNotFoundError:
             print("Error: git not found")
@@ -936,7 +938,7 @@ def main(
                 ["git", "push"],
                 capture_output=True,
                 text=True,
-                cwd=str(effective_base),
+                cwd=repo_dir,
             )
         except FileNotFoundError:
             print("Error: git not found")
@@ -954,7 +956,7 @@ def main(
         return
 
     if trend:
-        snapshots = load_all_snapshots(effective_base)
+        snapshots = load_all_snapshots(ctx)
         if output == "json":
             print(json.dumps(snapshots))
             return
@@ -962,11 +964,11 @@ def main(
         return
 
     if compare == "latest":
-        runs = load_run_history(effective_base)
+        runs = load_run_history(ctx)
         pr_data = fetch_pr_data(repo) if repo else []
         pr_data = enrich_pr_data_with_runs(pr_data, runs)
         current = compute_snapshot(runs, pr_data)
-        previous = load_latest_snapshot(effective_base)
+        previous = load_latest_snapshot(ctx)
         current.update(_compute_period_stats(current, previous))
         if previous is None:
             if output == "json":
@@ -974,7 +976,7 @@ def main(
             else:
                 print("No previous snapshot to compare against.")
                 print(format_snapshot(current))
-            path = save_snapshot(current, effective_base)
+            path = save_snapshot(current, ctx)
             if output != "json":
                 print(f"\nSnapshot saved to {path}")
             return
@@ -985,22 +987,22 @@ def main(
         else:
             print(format_comparison(comparison))
 
-        path = save_snapshot(current, effective_base)
+        path = save_snapshot(current, ctx)
         if output != "json":
             print(f"\nSnapshot saved to {path}")
         return
 
-    runs = load_run_history(effective_base)
+    runs = load_run_history(ctx)
     pr_data = fetch_pr_data(repo) if repo else []
     pr_data = enrich_pr_data_with_runs(pr_data, runs)
     snapshot = compute_snapshot(runs, pr_data)
-    previous = load_latest_snapshot(effective_base)
+    previous = load_latest_snapshot(ctx)
     snapshot.update(_compute_period_stats(snapshot, previous))
 
     if output == "json":
         print(json.dumps(snapshot))
     else:
         print(format_snapshot(snapshot))
-    path = save_snapshot(snapshot, effective_base)
+    path = save_snapshot(snapshot, ctx)
     if output != "json":
         print(f"\nSnapshot saved to {path}")

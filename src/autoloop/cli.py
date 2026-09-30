@@ -249,14 +249,16 @@ def main():
             print("No parent issue to close.")
 
     elif args.command == "eval":
-        from autoloop.config import load_config
+        from autoloop.config import RepoContext, load_config
         from autoloop.eval import main as eval_main
 
         cfg = load_config()
+        ctx = RepoContext(repo_dir=Path.cwd())
         eval_main(
             compare=args.compare,
             trend=args.trend,
             repo=cfg.repo,
+            ctx=ctx,
             output=args.output,
             publish=args.publish,
             pr=args.pr,
