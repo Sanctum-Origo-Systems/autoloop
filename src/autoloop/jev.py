@@ -8,10 +8,6 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from autoloop.config import RepoContext
 
 JEV_ENDPOINT = "https://openrouter.ai/api/alpha/decisions"
 DEFAULT_API_KEY_ENV = "OPENROUTER_API_KEY"
@@ -153,7 +149,6 @@ def _fallback(reason: str, cause: str = "outage", **extra: object) -> dict:
 def triage(
     issue_text: str,
     *,
-    ctx: RepoContext | None = None,
     api_key: str | None = None,
     api_key_env: str = DEFAULT_API_KEY_ENV,
     model: str = DEFAULT_MODEL,
@@ -247,7 +242,6 @@ def should_auto_merge(
     issue_text: str,
     diff: str,
     *,
-    ctx: RepoContext | None = None,
     api_key: str | None = None,
     api_key_env: str = DEFAULT_API_KEY_ENV,
     model: str = DEFAULT_MODEL,

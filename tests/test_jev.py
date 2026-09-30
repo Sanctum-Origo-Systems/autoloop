@@ -6,7 +6,6 @@ import urllib.error
 
 import pytest
 
-from autoloop.config import RepoContext
 from autoloop.jev import (
     BACKOFF_SCHEDULE,
     DEFAULT_API_KEY_ENV,
@@ -891,65 +890,3 @@ class TestShouldAutoMergeShadowMode:
 
         assert result["fallback"] is True
         assert result["fallback_cause"] == "outage"
-
-
-# --- RepoContext threading tests ---
-
-
-class TestTriageWithRepoContext:
-    def test_accepts_ctx_parameter(self, monkeypatch, tmp_path):
-        _mock_evaluate(
-            monkeypatch,
-            {
-                "well_formed": {"type": "noul", "noul": 0.91},
-                "needs_decomposition": {"type": "noul", "noul": 0.08},
-            },
-        )
-        ctx = RepoContext.for_data_dir(tmp_path)
-
-        result = triage("some issue text", ctx=ctx)
-
-        assert result["well_formed"] == 0.91
-        assert result["needs_decomposition"] == 0.08
-        assert "fallback" not in result
-
-    def test_works_without_ctx(self, monkeypatch):
-        _mock_evaluate(
-            monkeypatch,
-            {
-                "well_formed": {"type": "noul", "noul": 0.91},
-                "needs_decomposition": {"type": "noul", "noul": 0.08},
-            },
-        )
-
-        result = triage("some issue text")
-
-        assert result["well_formed"] == 0.91
-
-
-class TestShouldAutoMergeWithRepoContext:
-    def test_accepts_ctx_parameter(self, monkeypatch, tmp_path):
-        _mock_evaluate(
-            monkeypatch,
-            {
-                "meets_acceptance_criteria": {"type": "noul", "noul": 0.95},
-            },
-        )
-        ctx = RepoContext.for_data_dir(tmp_path)
-
-        result = should_auto_merge("issue", "diff", ctx=ctx)
-
-        assert result["meets_acceptance_criteria"] == 0.95
-        assert "fallback" not in result
-
-    def test_works_without_ctx(self, monkeypatch):
-        _mock_evaluate(
-            monkeypatch,
-            {
-                "meets_acceptance_criteria": {"type": "noul", "noul": 0.95},
-            },
-        )
-
-        result = should_auto_merge("issue", "diff")
-
-        assert result["meets_acceptance_criteria"] == 0.95

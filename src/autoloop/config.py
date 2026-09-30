@@ -49,10 +49,10 @@ class RepoContext:
         return None
 
     @classmethod
-    def for_data_dir(cls, data_dir: Path) -> RepoContext:
+    def for_data_dir(cls, data_dir: Path, repo_dir: Path | None = None) -> RepoContext:
         ctx = object.__new__(cls)
-        ctx.repo_dir = Path(data_dir).resolve()
         ctx.data_dir = Path(data_dir).resolve()
+        ctx.repo_dir = Path(repo_dir).resolve() if repo_dir is not None else ctx.data_dir.parent
         ctx.worktree_dir = ctx.data_dir / "worktrees"
         return ctx
 
