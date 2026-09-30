@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from autoloop.claude_runner import ClaudeResult, run_claude
-from autoloop.config import AutoLoopConfig, load_config
+from autoloop.config import AutoLoopConfig, RepoContext, load_config
 
 cfg = None
 
@@ -190,9 +190,9 @@ def collect_verification_errors(
 # --- Lockfile ---
 
 
-def acquire_lock() -> bool:
+def acquire_lock(repo_dir: Path) -> bool:
     """Acquire lockfile. Returns False if another run is active."""
-    lockfile = Path.cwd() / ".autoloop.lock"
+    lockfile = repo_dir / ".autoloop.lock"
     if lockfile.exists():
         try:
             pid = int(lockfile.read_text().strip())
@@ -204,9 +204,9 @@ def acquire_lock() -> bool:
     return True
 
 
-def release_lock():
+def release_lock(repo_dir: Path):
     """Remove the lockfile."""
-    lockfile = Path.cwd() / ".autoloop.lock"
+    lockfile = repo_dir / ".autoloop.lock"
     lockfile.unlink(missing_ok=True)
 
 
@@ -243,7 +243,7 @@ def log_run(
         entry["pr_number"] = pr_number
     if auto_merge is not None:
         entry["auto_merge"] = auto_merge
-    log_file = (repo_dir or Path.cwd()) / "autoloop" / "run_history.jsonl"
+    log_file = (repo_dir or Path()) / "autoloop" / "run_history.jsonl"
     log_file.parent.mkdir(parents=True, exist_ok=True)
     with open(log_file, "a") as f:
         f.write(json.dumps(entry) + "\n")
@@ -296,15 +296,12 @@ def _get_own_pid_chain() -> set[int]:
     return chain
 
 
-def detect_active_claude_session(project_dir: str | None = None) -> bool | None:
+def detect_active_claude_session(project_dir: str) -> bool | None:
     """Check if an interactive Claude Code session is active in the project directory.
 
     Returns True if a session is detected, False if none found, or None if
     detection is inconclusive (tools unavailable).
     """
-    if project_dir is None:
-        project_dir = str(Path.cwd())
-
     project_dir = os.path.realpath(project_dir)
     logging.debug("detect_active_claude_session: resolved project_dir=%s", project_dir)
 
@@ -511,18 +508,19 @@ def dependencies_met(issue: dict) -> bool:
     return True
 
 
-def create_branch(issue: dict) -> str:
+def create_branch(issue: dict, repo_dir: Path | None = None) -> str:
     """Create feature branch from latest main."""
     branch = build_branch_name(issue)
-    subprocess.run(["git", "checkout", "main"], cwd=Path.cwd(), check=True)
-    subprocess.run(["git", "pull", "origin", "main"], cwd=Path.cwd(), check=True)
-    subprocess.run(["git", "checkout", "-b", branch], cwd=Path.cwd(), check=True)
+    subprocess.run(["git", "checkout", "main"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "pull", "origin", "main"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "checkout", "-b", branch], cwd=repo_dir, check=True)
     return branch
 
 
-def build_implementation_prompt(issue: dict) -> str:
+def build_implementation_prompt(issue: dict, repo_dir: Path | None = None) -> str:
     """Build the full prompt for the implementation agent."""
-    claude_md = (Path.cwd() / "CLAUDE.md").read_text()
+    base = repo_dir or Path()
+    claude_md = (base / "CLAUDE.md").read_text()
 
     comments = subprocess.run(
         [
@@ -636,9 +634,10 @@ DESIGN_PROMPT = (
 DESIGN_COMMENT_MARKER = "Implementation Design:"
 
 
-def design_issue(issue: dict) -> str:
+def design_issue(issue: dict, repo_dir: Path | None = None) -> str:
     """Generate an implementation design proposal for the issue via Claude."""
-    claude_md = (Path.cwd() / "CLAUDE.md").read_text()
+    base = repo_dir or Path()
+    claude_md = (base / "CLAUDE.md").read_text()
     prompt = DESIGN_PROMPT.format(
         number=issue["number"],
         title=issue["title"],
@@ -757,19 +756,19 @@ def implement(issue: dict, previous_errors: str | None = None) -> ClaudeResult:
     return run_claude(prompt, cfg.impl_model, cfg.impl_timeout)
 
 
-def is_branch_empty(branch: str) -> bool:
+def is_branch_empty(branch: str, repo_dir: Path | None = None) -> bool:
     """Return True if the branch has zero commits ahead of main."""
     result = subprocess.run(
         ["git", "rev-list", "--count", f"main..{branch}"],
         capture_output=True,
         text=True,
-        cwd=Path.cwd(),
+        cwd=repo_dir,
     )
     count = result.stdout.strip() if result.returncode == 0 else ""
     return count == "0" or count == ""
 
 
-def mutation_gate(branch: str, issue_type: str) -> None:
+def mutation_gate(branch: str, issue_type: str, repo_dir: Path | None = None) -> None:
     """Verify tests actually exercise the implementation by reverting source files.
 
     Raises RuntimeError if tests still pass after reverting source-only changes.
@@ -785,7 +784,7 @@ def mutation_gate(branch: str, issue_type: str) -> None:
         ["git", "diff", "--name-status", f"main..{branch}"],
         capture_output=True,
         text=True,
-        cwd=Path.cwd(),
+        cwd=repo_dir,
     )
     changed_files: list[tuple[str, str]] = []
     for line in diff_result.stdout.strip().split("\n"):
@@ -804,22 +803,23 @@ def mutation_gate(branch: str, issue_type: str) -> None:
     modified = [f for status, f in source_files if status != "A"]
     added = [f for status, f in source_files if status == "A"]
     all_paths = [f for _, f in source_files]
+    base = repo_dir or Path()
 
     try:
         if modified:
             subprocess.run(
                 ["git", "checkout", "main", "--"] + modified,
-                cwd=Path.cwd(),
+                cwd=repo_dir,
                 check=True,
             )
         for f in added:
-            os.remove(Path.cwd() / f)
+            os.remove(base / f)
         result = subprocess.run(
             cfg.verify_cmd,
             shell=True,
             capture_output=True,
             text=True,
-            cwd=Path.cwd(),
+            cwd=repo_dir,
             timeout=cfg.test_timeout,
         )
         if result.returncode == 0:
@@ -827,7 +827,7 @@ def mutation_gate(branch: str, issue_type: str) -> None:
     finally:
         subprocess.run(
             ["git", "checkout", branch, "--"] + all_paths,
-            cwd=Path.cwd(),
+            cwd=repo_dir,
         )
 
 
@@ -857,7 +857,7 @@ def scan_test_integrity_violations(diff_text: str, patterns: list[str]) -> list[
     return violations
 
 
-def check_test_integrity(branch: str) -> list[str]:
+def check_test_integrity(branch: str, repo_dir: Path | None = None) -> list[str]:
     """Run the test-integrity guard on test file diffs.
 
     Returns a list of violations, empty if the guard is disabled or no issues found.
@@ -872,7 +872,7 @@ def check_test_integrity(branch: str) -> list[str]:
         ["git", "diff", "--name-only", f"main..{branch}"],
         capture_output=True,
         text=True,
-        cwd=Path.cwd(),
+        cwd=repo_dir,
     )
     test_files = [
         f
@@ -886,7 +886,7 @@ def check_test_integrity(branch: str) -> list[str]:
         ["git", "diff", f"main..{branch}", "--"] + test_files,
         capture_output=True,
         text=True,
-        cwd=Path.cwd(),
+        cwd=repo_dir,
     )
     return scan_test_integrity_violations(diff.stdout, cfg.test_integrity_patterns)
 
@@ -895,7 +895,7 @@ def verify_implementation(
     branch: str, issue_body: str = "", title: str = "", repo_dir: Path | None = None
 ) -> tuple[bool, str]:
     """Verify the agent actually produced valid work."""
-    cwd = repo_dir or Path.cwd()
+    cwd = repo_dir or Path()
     ahead = subprocess.run(
         ["git", "rev-list", "--count", f"main..{branch}"],
         capture_output=True,
@@ -1005,7 +1005,7 @@ def parse_review_response(text: str) -> tuple[bool, str]:
 
 
 def review_implementation(
-    issue: dict, branch: str, pr_number: int | None = None
+    issue: dict, branch: str, pr_number: int | None = None, repo_dir: Path | None = None
 ) -> tuple[bool, str]:
     """Review the implementation for semantic quality via Claude.
 
@@ -1028,20 +1028,20 @@ def review_implementation(
         subprocess.run(
             ["git", "fetch", "origin", "main"],
             capture_output=True,
-            cwd=Path.cwd(),
+            cwd=repo_dir,
         )
         diff = subprocess.run(
             ["git", "diff", f"main..{branch}"],
             capture_output=True,
             text=True,
-            cwd=Path.cwd(),
+            cwd=repo_dir,
         ).stdout
 
         name_only = subprocess.run(
             ["git", "diff", "--name-only", f"main..{branch}"],
             capture_output=True,
             text=True,
-            cwd=Path.cwd(),
+            cwd=repo_dir,
         ).stdout
     changed_files = [f for f in name_only.strip().split("\n") if f]
 
@@ -1102,20 +1102,20 @@ def review_implementation(
     return approved, feedback
 
 
-def ensure_clean_main():
+def ensure_clean_main(repo_dir: Path | None = None):
     """Reset to a clean main branch, discarding any leftover state."""
-    subprocess.run(["git", "checkout", "--", "."], cwd=Path.cwd())
-    subprocess.run(["git", "checkout", "main"], cwd=Path.cwd())
-    subprocess.run(["git", "pull", "--ff-only", "origin", "main"], cwd=Path.cwd())
+    subprocess.run(["git", "checkout", "--", "."], cwd=repo_dir)
+    subprocess.run(["git", "checkout", "main"], cwd=repo_dir)
+    subprocess.run(["git", "pull", "--ff-only", "origin", "main"], cwd=repo_dir)
 
 
-def cleanup_branch(branch: str):
+def cleanup_branch(branch: str, repo_dir: Path | None = None):
     """Delete failed branch locally and remotely."""
-    subprocess.run(["git", "checkout", "main"], cwd=Path.cwd())
-    subprocess.run(["git", "branch", "-D", branch], cwd=Path.cwd())
+    subprocess.run(["git", "checkout", "main"], cwd=repo_dir)
+    subprocess.run(["git", "branch", "-D", branch], cwd=repo_dir)
     subprocess.run(
         ["git", "push", "origin", "--delete", branch],
-        cwd=Path.cwd(),
+        cwd=repo_dir,
         capture_output=True,
     )
 
@@ -1130,6 +1130,7 @@ def create_pr(
     output_tokens: int = 0,
     cache_creation_tokens: int = 0,
     cache_read_tokens: int = 0,
+    repo_dir: Path | None = None,
 ) -> int | None:
     """Create PR with conventional format. Returns PR number or None."""
     issue_type = detect_issue_type(issue.get("body", ""), issue.get("title", ""))
@@ -1165,7 +1166,7 @@ def create_pr(
         ],
         capture_output=True,
         text=True,
-        cwd=Path.cwd(),
+        cwd=repo_dir,
     )
     if result.returncode == 0 and result.stdout.strip():
         match = re.search(r"/pull/(\d+)", result.stdout.strip())
@@ -1284,7 +1285,9 @@ def label_in_review(number: int):
 # --- Auto-fix loop ---
 
 
-def run_auto_fix_loop(pr_number: int, issue: dict, cfg: AutoLoopConfig) -> None:
+def run_auto_fix_loop(
+    pr_number: int, issue: dict, cfg: AutoLoopConfig, repo_dir: Path | None = None
+) -> None:
     """Bounded review→fix loop on a PR. Labels needs-human on exhaustion."""
     labels = {lbl["name"] for lbl in issue.get("labels", [])}
     if "needs-human" in labels:
@@ -1296,7 +1299,7 @@ def run_auto_fix_loop(pr_number: int, issue: dict, cfg: AutoLoopConfig) -> None:
             ["autoloop", "review-pr", str(pr_number)],
             capture_output=True,
             text=True,
-            cwd=Path.cwd(),
+            cwd=repo_dir,
         )
         last_review_output = review.stdout
         print(
@@ -1312,7 +1315,7 @@ def run_auto_fix_loop(pr_number: int, issue: dict, cfg: AutoLoopConfig) -> None:
                 ["autoloop", "fix-pr", str(pr_number)],
                 capture_output=True,
                 text=True,
-                cwd=Path.cwd(),
+                cwd=repo_dir,
             )
 
     subprocess.run(
@@ -1396,7 +1399,9 @@ def wait_for_ci(pr_number: int, timeout: int = 600, poll_interval: int = 30) -> 
     return False
 
 
-def try_auto_merge(branch: str, pr_number: int | None) -> tuple[str, dict]:
+def try_auto_merge(
+    branch: str, pr_number: int | None, repo_dir: Path | None = None
+) -> tuple[str, dict]:
     """Attempt auto-merge after review passes. Returns (decision, gate_metrics)."""
     if not cfg.auto_merge:
         return "skipped-disabled", {}
@@ -1445,7 +1450,7 @@ def try_auto_merge(branch: str, pr_number: int | None) -> tuple[str, dict]:
         ["git", "diff", "--name-only", f"main..{branch}"],
         capture_output=True,
         text=True,
-        cwd=Path.cwd(),
+        cwd=repo_dir,
     )
     changed_files = [f for f in diff.stdout.strip().split("\n") if f]
     if touches_protected_path(changed_files, cfg.protected_paths):
@@ -1479,9 +1484,13 @@ def try_auto_merge(branch: str, pr_number: int | None) -> tuple[str, dict]:
 
 
 def implement_single_issue(
-    issue: dict, require_design: bool = False, auto_fix: bool = False
+    issue: dict,
+    require_design: bool = False,
+    auto_fix: bool = False,
+    ctx: RepoContext | None = None,
 ) -> bool:
     """Implement one issue end-to-end. Returns True if PR created successfully."""
+    repo_dir = ctx.repo_dir if ctx else None
     try:
         from autoloop.config import touches_protected_path
         from autoloop.create_issue import extract_files_from_spec
@@ -1504,7 +1513,7 @@ def implement_single_issue(
             )
             return False
 
-        ensure_clean_main()
+        ensure_clean_main(repo_dir)
 
         if not design_gate(issue, require_design):
             return False
@@ -1532,7 +1541,7 @@ def implement_single_issue(
         )
         post_in_progress_comment(issue["number"])
 
-        branch = create_branch(issue)
+        branch = create_branch(issue, repo_dir)
         print(f"  Branch: {branch}")
 
         last_errors = None
@@ -1550,14 +1559,17 @@ def implement_single_issue(
                 timeout_failure = True
                 break
 
-            if is_branch_empty(branch):
+            if is_branch_empty(branch, repo_dir):
                 print(f"  {EMPTY_BRANCH_DIAGNOSTIC}")
                 post_attempt_failure(issue["number"], attempt, EMPTY_BRANCH_DIAGNOSTIC)
                 empty_branch_failure = True
                 break
 
             valid, errors = verify_implementation(
-                branch, issue_body=issue.get("body", ""), title=issue.get("title", "")
+                branch,
+                issue_body=issue.get("body", ""),
+                title=issue.get("title", ""),
+                repo_dir=repo_dir,
             )
             if not valid:
                 print(f"  Verification failed:\n{errors}")
@@ -1567,7 +1579,9 @@ def implement_single_issue(
 
             try:
                 mutation_gate(
-                    branch, detect_issue_type(issue.get("body", ""), issue.get("title", ""))
+                    branch,
+                    detect_issue_type(issue.get("body", ""), issue.get("title", "")),
+                    repo_dir,
                 )
             except (RuntimeError, subprocess.TimeoutExpired, subprocess.CalledProcessError) as e:
                 gate_msg = f"Mutation gate error: {e}"
@@ -1577,7 +1591,7 @@ def implement_single_issue(
                 continue
 
             print("  Verification passed. Reviewing implementation...")
-            approved, feedback = review_implementation(issue, branch)
+            approved, feedback = review_implementation(issue, branch, repo_dir=repo_dir)
             if not approved:
                 print(f"  Review failed:\n{feedback}")
                 last_errors = feedback
@@ -1619,7 +1633,7 @@ def implement_single_issue(
                     "needs-human",
                 ],
             )
-            cleanup_branch(branch)
+            cleanup_branch(branch, repo_dir)
             log_run(
                 issue["number"],
                 False,
@@ -1630,12 +1644,13 @@ def implement_single_issue(
                 total_output,
                 total_cache_read,
                 total_cache_creation,
+                repo_dir=repo_dir,
             )
             return False
 
-        integrity_violations = check_test_integrity(branch)
+        integrity_violations = check_test_integrity(branch, repo_dir)
 
-        subprocess.run(["git", "push", "-u", "origin", branch], cwd=Path.cwd())
+        subprocess.run(["git", "push", "-u", "origin", branch], cwd=repo_dir)
         pr_number = create_pr(
             issue,
             branch,
@@ -1646,6 +1661,7 @@ def implement_single_issue(
             output_tokens=total_output,
             cache_creation_tokens=total_cache_creation,
             cache_read_tokens=total_cache_read,
+            repo_dir=repo_dir,
         )
         label_in_review(issue["number"])
         print(f"  PR created for #{issue['number']}.")
@@ -1684,16 +1700,16 @@ def implement_single_issue(
                 )
 
         if auto_fix and pr_number is not None:
-            run_auto_fix_loop(pr_number, issue, cfg)
+            run_auto_fix_loop(pr_number, issue, cfg, repo_dir)
 
         if integrity_violations:
             auto_merge_decision, auto_merge_gates = "skipped-integrity", {}
         else:
-            auto_merge_decision, auto_merge_gates = try_auto_merge(branch, pr_number)
+            auto_merge_decision, auto_merge_gates = try_auto_merge(branch, pr_number, repo_dir)
         if cfg.auto_merge:
             print(f"  Auto-merge: {auto_merge_decision}")
 
-        subprocess.run(["git", "checkout", "main"], cwd=Path.cwd())
+        subprocess.run(["git", "checkout", "main"], cwd=repo_dir)
 
         print(f"\n--- AutoLoop Run Stats (#{issue['number']}) ---")
         print(f"  Duration: {elapsed:.0f}s")
@@ -1714,6 +1730,7 @@ def implement_single_issue(
             total_output,
             total_cache_read,
             total_cache_creation,
+            repo_dir=repo_dir,
             auto_merge={
                 "decision": auto_merge_decision,
                 "gates": auto_merge_gates,
@@ -1727,7 +1744,10 @@ def implement_single_issue(
 
 
 def implement_targeted_issue(
-    number: int, require_design: bool = False, auto_fix: bool = False
+    number: int,
+    require_design: bool = False,
+    auto_fix: bool = False,
+    ctx: RepoContext | None = None,
 ) -> bool:
     """Implement a specific issue by number, bypassing label and point checks."""
     issue = get_issue_by_number(number)
@@ -1739,18 +1759,26 @@ def implement_targeted_issue(
         print(f"#{number}: dependencies not met, aborting.")
         return False
 
-    success = implement_single_issue(issue, require_design=require_design, auto_fix=auto_fix)
+    success = implement_single_issue(
+        issue, require_design=require_design, auto_fix=auto_fix, ctx=ctx
+    )
     print(f"\nImplemented {1 if success else 0} issue(s) this run.")
     return success
 
 
-def main(issue=None, max_issues=1, require_design=False, auto_fix=False):
+def main(
+    ctx: RepoContext | None = None, issue=None, max_issues=1, require_design=False, auto_fix=False
+):
     global cfg
     if cfg is None:
         cfg = load_config()
 
-    logging.debug("main: resolved project_dir=%s from cfg", cfg.project_dir)
-    session_detected = detect_active_claude_session(cfg.project_dir)
+    if ctx is None:
+        repo_dir = Path(cfg.project_dir) if cfg.project_dir else Path()
+        ctx = RepoContext(repo_dir)
+
+    logging.debug("main: resolved project_dir=%s from ctx", ctx.repo_dir)
+    session_detected = detect_active_claude_session(str(ctx.repo_dir))
     if session_detected is True:
         print(
             "Active Claude Code session detected in this directory.\n"
@@ -1758,7 +1786,7 @@ def main(issue=None, max_issues=1, require_design=False, auto_fix=False):
         )
         return
 
-    if not acquire_lock():
+    if not acquire_lock(ctx.repo_dir):
         print("Another implementation is running. Exiting.")
         return
 
@@ -1767,7 +1795,9 @@ def main(issue=None, max_issues=1, require_design=False, auto_fix=False):
         unblock_ready_issues()
 
         if issue is not None:
-            implement_targeted_issue(issue, require_design=require_design, auto_fix=auto_fix)
+            implement_targeted_issue(
+                issue, require_design=require_design, auto_fix=auto_fix, ctx=ctx
+            )
             return
 
         implemented = 0
@@ -1779,7 +1809,7 @@ def main(issue=None, max_issues=1, require_design=False, auto_fix=False):
 
             try:
                 success = implement_single_issue(
-                    top_issue, require_design=require_design, auto_fix=auto_fix
+                    top_issue, require_design=require_design, auto_fix=auto_fix, ctx=ctx
                 )
             except SystemicError as exc:
                 print(f"Systemic failure, aborting run: {exc}")
@@ -1790,7 +1820,7 @@ def main(issue=None, max_issues=1, require_design=False, auto_fix=False):
 
         print(f"\nImplemented {implemented} issue(s) this run.")
     finally:
-        release_lock()
+        release_lock(ctx.repo_dir)
 
 
 if __name__ == "__main__":

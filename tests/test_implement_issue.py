@@ -7,7 +7,7 @@ from pathlib import Path
 import autoloop.claude_runner as claude_runner
 import autoloop.implement_issue as implement_issue
 from autoloop.claude_runner import ClaudeResult
-from autoloop.config import AutoLoopConfig
+from autoloop.config import AutoLoopConfig, RepoContext
 from autoloop.implement_issue import (
     EMPTY_BRANCH_DIAGNOSTIC,
     REVIEW_PROMPT,
@@ -898,7 +898,7 @@ def test_verify_implementation_uses_cfg_verify_cmd_with_shell(monkeypatch):
     test_calls = [c for c in captured_calls if c["cmd"] == "make test"]
     assert len(test_calls) == 1
     assert test_calls[0]["kwargs"]["shell"] is True
-    assert test_calls[0]["kwargs"]["cwd"] == Path.cwd()
+    assert test_calls[0]["kwargs"]["cwd"] == Path()
     assert test_calls[0]["kwargs"]["timeout"] == 30
 
     lint_calls = [c for c in captured_calls if c["cmd"] == "eslint ."]
@@ -1321,33 +1321,29 @@ def test_review_implementation_uses_cfg_model(monkeypatch):
 # --- Lockfile tests ---
 
 
-def test_acquire_lock_succeeds_when_no_lockfile(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
+def test_acquire_lock_succeeds_when_no_lockfile(tmp_path):
     lock_path = tmp_path / ".autoloop.lock"
-    assert acquire_lock() is True
+    assert acquire_lock(tmp_path) is True
     assert lock_path.exists()
     assert lock_path.read_text().strip() == str(os.getpid())
 
 
-def test_acquire_lock_fails_when_pid_alive(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
+def test_acquire_lock_fails_when_pid_alive(tmp_path):
     lock_path = tmp_path / ".autoloop.lock"
     lock_path.write_text(str(os.getpid()))
-    assert acquire_lock() is False
+    assert acquire_lock(tmp_path) is False
 
 
-def test_acquire_lock_succeeds_when_pid_stale(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
+def test_acquire_lock_succeeds_when_pid_stale(tmp_path):
     lock_path = tmp_path / ".autoloop.lock"
     lock_path.write_text("999999999")
-    assert acquire_lock() is True
+    assert acquire_lock(tmp_path) is True
 
 
-def test_release_lock_removes_file(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
+def test_release_lock_removes_file(tmp_path):
     lock_path = tmp_path / ".autoloop.lock"
     lock_path.write_text(str(os.getpid()))
-    release_lock()
+    release_lock(tmp_path)
     assert not lock_path.exists()
 
 
@@ -1453,10 +1449,14 @@ def test_implement_single_issue_returns_true_on_success(monkeypatch, tmp_path):
     monkeypatch.setattr(
         implement_issue, "implement", lambda issue, previous_errors=None: _claude_result()
     )
-    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-add-feature")
+    monkeypatch.setattr(
+        implement_issue, "create_branch", lambda issue, repo_dir=None: "autoloop/42-add-feature"
+    )
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: None)
     monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
-    monkeypatch.setattr(implement_issue, "review_implementation", lambda issue, branch: (True, ""))
+    monkeypatch.setattr(
+        implement_issue, "review_implementation", lambda issue, branch, **kw: (True, "")
+    )
 
     result = implement_single_issue(_FAKE_ISSUE)
     assert result is True
@@ -1481,13 +1481,15 @@ def test_implement_single_issue_uses_cfg_max_retries(monkeypatch, tmp_path):
         lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
     )
     monkeypatch.setattr(implement_issue, "implement", fake_implement)
-    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
-    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
-    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: False)
+    monkeypatch.setattr(
+        implement_issue, "create_branch", lambda issue, repo_dir=None: "autoloop/42-x"
+    )
+    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch, repo_dir=None: None)
+    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch, repo_dir=None: False)
     monkeypatch.setattr(
         implement_issue,
         "verify_implementation",
-        lambda branch, issue_body="", title="": (False, "Tests failed"),
+        lambda branch, issue_body="", title="", repo_dir=None: (False, "Tests failed"),
     )
     monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
 
@@ -1511,13 +1513,15 @@ def test_implement_single_issue_returns_false_after_all_retries(monkeypatch, tmp
         lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
     )
     monkeypatch.setattr(implement_issue, "implement", fake_implement)
-    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
-    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
-    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: False)
+    monkeypatch.setattr(
+        implement_issue, "create_branch", lambda issue, repo_dir=None: "autoloop/42-x"
+    )
+    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch, repo_dir=None: None)
+    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch, repo_dir=None: False)
     monkeypatch.setattr(
         implement_issue,
         "verify_implementation",
-        lambda branch, issue_body="", title="": (False, "Tests failed"),
+        lambda branch, issue_body="", title="", repo_dir=None: (False, "Tests failed"),
     )
     monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
 
@@ -1530,7 +1534,7 @@ def test_implement_single_issue_raises_systemic_error_on_unexpected_exception(mo
     import pytest
 
     monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
-    monkeypatch.setattr(implement_issue, "ensure_clean_main", lambda: None)
+    monkeypatch.setattr(implement_issue, "ensure_clean_main", lambda repo_dir=None: None)
     monkeypatch.setattr(implement_issue, "design_gate", lambda i, require_design=False: True)
 
     def exploding_run(cmd, **kwargs):
@@ -1568,17 +1572,21 @@ def test_implement_single_issue_logs_summed_token_totals(monkeypatch, tmp_path):
     monkeypatch.setattr(
         implement_issue, "implement", lambda issue, previous_errors=None: next(results)
     )
-    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-test")
-    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
+    monkeypatch.setattr(
+        implement_issue, "create_branch", lambda issue, repo_dir=None: "autoloop/42-test"
+    )
+    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch, repo_dir=None: None)
     monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: None)
     monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
-    monkeypatch.setattr(implement_issue, "review_implementation", lambda issue, branch: (True, ""))
-    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: False)
+    monkeypatch.setattr(
+        implement_issue, "review_implementation", lambda issue, branch, **kw: (True, "")
+    )
+    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch, repo_dir=None: False)
 
     verify_calls = [0]
 
-    def fake_verify(branch, issue_body="", title=""):
+    def fake_verify(branch, issue_body="", title="", repo_dir=None):
         verify_calls[0] += 1
         if verify_calls[0] < 2:
             return False, "attempt 1 failed"
@@ -1991,7 +1999,7 @@ def test_implement_targeted_issue_bypasses_ready_and_points(monkeypatch, capsys)
     monkeypatch.setattr(
         implement_issue,
         "implement_single_issue",
-        lambda issue, require_design=False, auto_fix=False: (
+        lambda issue, require_design=False, auto_fix=False, ctx=None: (
             implemented.append(issue["number"]) or True
         ),
     )
@@ -2040,7 +2048,7 @@ def test_main_default_implements_one_issue(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
     monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
 
-    def fake_implement_single(issue, require_design=False, auto_fix=False):
+    def fake_implement_single(issue, require_design=False, auto_fix=False, ctx=None):
         call_count[0] += 1
         return True
 
@@ -2082,7 +2090,9 @@ def test_main_issue_flag_targets_specific_issue(monkeypatch, tmp_path):
     monkeypatch.setattr(
         implement_issue,
         "implement_targeted_issue",
-        lambda number, require_design=False, auto_fix=False: targeted.append(number) or True,
+        lambda number, require_design=False, auto_fix=False, ctx=None: (
+            targeted.append(number) or True
+        ),
     )
 
     implement_issue.cfg = None
@@ -2120,7 +2130,7 @@ def test_main_continues_to_next_issue_on_non_systemic_failure(monkeypatch, tmp_p
 
     attempted = []
 
-    def fake_implement_single(issue, require_design=False, auto_fix=False):
+    def fake_implement_single(issue, require_design=False, auto_fix=False, ctx=None):
         attempted.append(issue["number"])
         return issue["number"] != 10
 
@@ -2161,7 +2171,7 @@ def test_main_continues_past_multiple_non_systemic_failures(monkeypatch, tmp_pat
 
     attempted = []
 
-    def fake_implement_single(issue, require_design=False, auto_fix=False):
+    def fake_implement_single(issue, require_design=False, auto_fix=False, ctx=None):
         attempted.append(issue["number"])
         return issue["number"] == 12
 
@@ -2200,7 +2210,7 @@ def test_main_aborts_on_systemic_failure(monkeypatch, tmp_path, capsys):
 
     attempted = []
 
-    def fake_implement_single(issue, require_design=False, auto_fix=False):
+    def fake_implement_single(issue, require_design=False, auto_fix=False, ctx=None):
         attempted.append(issue["number"])
         raise SystemicError("git auth failed")
 
@@ -2243,7 +2253,7 @@ def test_main_aborts_on_systemic_after_successful_issue(monkeypatch, tmp_path, c
 
     attempted = []
 
-    def fake_implement_single(issue, require_design=False, auto_fix=False):
+    def fake_implement_single(issue, require_design=False, auto_fix=False, ctx=None):
         attempted.append(issue["number"])
         if issue["number"] == 11:
             raise SystemicError("disk full")
@@ -2281,7 +2291,7 @@ def test_main_releases_lock_on_systemic_failure(monkeypatch, tmp_path):
 
     monkeypatch.setattr(implement_issue, "get_top_ready_issue", fake_get_top)
 
-    def fake_implement_single(issue, require_design=False, auto_fix=False):
+    def fake_implement_single(issue, require_design=False, auto_fix=False, ctx=None):
         raise SystemicError("auth error")
 
     monkeypatch.setattr(implement_issue, "implement_single_issue", fake_implement_single)
@@ -2303,9 +2313,11 @@ def test_implement_single_issue_empty_branch_returns_false_not_systemic(monkeypa
     monkeypatch.setattr(
         implement_issue, "implement", lambda issue, previous_errors=None: _claude_result()
     )
-    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
-    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
-    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: True)
+    monkeypatch.setattr(
+        implement_issue, "create_branch", lambda issue, repo_dir=None: "autoloop/42-x"
+    )
+    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch, repo_dir=None: None)
+    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch, repo_dir=None: True)
     monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
     monkeypatch.setattr(
         implement_issue.subprocess,
@@ -2335,13 +2347,15 @@ def test_implement_single_issue_review_rejection_returns_false_not_systemic(monk
     monkeypatch.setattr(
         implement_issue, "implement", lambda issue, previous_errors=None: _claude_result()
     )
-    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
-    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
-    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: False)
+    monkeypatch.setattr(
+        implement_issue, "create_branch", lambda issue, repo_dir=None: "autoloop/42-x"
+    )
+    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch, repo_dir=None: None)
+    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch, repo_dir=None: False)
     monkeypatch.setattr(
         implement_issue,
         "review_implementation",
-        lambda issue, branch: (False, "Review rejected"),
+        lambda issue, branch, **kw: (False, "Review rejected"),
     )
     monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
 
@@ -2359,13 +2373,15 @@ def test_implement_single_issue_verification_failure_returns_false_not_systemic(
     monkeypatch.setattr(
         implement_issue, "implement", lambda issue, previous_errors=None: _claude_result()
     )
-    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
-    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
-    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: False)
+    monkeypatch.setattr(
+        implement_issue, "create_branch", lambda issue, repo_dir=None: "autoloop/42-x"
+    )
+    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch, repo_dir=None: None)
+    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch, repo_dir=None: False)
     monkeypatch.setattr(
         implement_issue,
         "verify_implementation",
-        lambda branch, issue_body="", title="": (False, "Tests failed"),
+        lambda branch, issue_body="", title="", repo_dir=None: (False, "Tests failed"),
     )
     monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
     monkeypatch.setattr(
@@ -2456,9 +2472,11 @@ def test_implement_single_issue_empty_branch_no_retries(monkeypatch, tmp_path):
         return _claude_result()
 
     monkeypatch.setattr(implement_issue, "implement", fake_implement)
-    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
-    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
-    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: True)
+    monkeypatch.setattr(
+        implement_issue, "create_branch", lambda issue, repo_dir=None: "autoloop/42-x"
+    )
+    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch, repo_dir=None: None)
+    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch, repo_dir=None: True)
 
     posted_comments = []
     monkeypatch.setattr(
@@ -2488,9 +2506,11 @@ def test_implement_single_issue_empty_branch_posts_diagnostic(monkeypatch, tmp_p
     monkeypatch.setattr(
         implement_issue, "implement", lambda issue, previous_errors=None: _claude_result()
     )
-    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
-    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
-    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: True)
+    monkeypatch.setattr(
+        implement_issue, "create_branch", lambda issue, repo_dir=None: "autoloop/42-x"
+    )
+    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch, repo_dir=None: None)
+    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch, repo_dir=None: True)
     monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
     monkeypatch.setattr(
         implement_issue.subprocess,
@@ -2515,13 +2535,15 @@ def test_implement_single_issue_nonempty_branch_still_retries(monkeypatch, tmp_p
         attempt_count[0] += 1
         return _claude_result()
 
-    def fake_verify(branch, issue_body="", title=""):
+    def fake_verify(branch, issue_body="", title="", repo_dir=None):
         return False, "Tests failed:\nsome test output"
 
     monkeypatch.setattr(implement_issue, "implement", fake_implement)
-    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
-    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
-    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: False)
+    monkeypatch.setattr(
+        implement_issue, "create_branch", lambda issue, repo_dir=None: "autoloop/42-x"
+    )
+    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch, repo_dir=None: None)
+    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch, repo_dir=None: False)
     monkeypatch.setattr(implement_issue, "verify_implementation", fake_verify)
     monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
     monkeypatch.setattr(
@@ -2555,8 +2577,10 @@ def test_implement_single_issue_timeout_posts_guidance(monkeypatch, tmp_path):
         posted_comments.append((number, attempt, timeout_seconds))
 
     monkeypatch.setattr(implement_issue, "implement", fake_implement)
-    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
-    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
+    monkeypatch.setattr(
+        implement_issue, "create_branch", lambda issue, repo_dir=None: "autoloop/42-x"
+    )
+    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch, repo_dir=None: None)
     monkeypatch.setattr(implement_issue, "post_timeout_failure", fake_post_timeout)
     monkeypatch.setattr(
         implement_issue.subprocess,
@@ -2581,8 +2605,10 @@ def test_implement_single_issue_timeout_prints_message(monkeypatch, tmp_path, ca
         "implement",
         lambda issue, previous_errors=None: _claude_result(timed_out=True),
     )
-    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
-    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
+    monkeypatch.setattr(
+        implement_issue, "create_branch", lambda issue, repo_dir=None: "autoloop/42-x"
+    )
+    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch, repo_dir=None: None)
     monkeypatch.setattr(implement_issue, "post_timeout_failure", lambda n, a, t: None)
     monkeypatch.setattr(
         implement_issue.subprocess,
@@ -2608,13 +2634,15 @@ def test_implement_single_issue_non_timeout_failure_still_retries(monkeypatch, t
         return _claude_result()
 
     monkeypatch.setattr(implement_issue, "implement", fake_implement)
-    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
-    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
-    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: False)
+    monkeypatch.setattr(
+        implement_issue, "create_branch", lambda issue, repo_dir=None: "autoloop/42-x"
+    )
+    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch, repo_dir=None: None)
+    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch, repo_dir=None: False)
     monkeypatch.setattr(
         implement_issue,
         "verify_implementation",
-        lambda branch, issue_body="", title="": (False, "Tests failed"),
+        lambda branch, issue_body="", title="", repo_dir=None: (False, "Tests failed"),
     )
     monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
     monkeypatch.setattr(
@@ -2814,7 +2842,7 @@ def test_detect_active_claude_session_uses_explicit_path_not_import_cwd(monkeypa
 
 
 def test_main_passes_cfg_project_dir_to_detect_active_claude_session(monkeypatch, tmp_path, capsys):
-    """main() passes cfg.project_dir, not Path.cwd() or None."""
+    """main() passes ctx.repo_dir (derived from cfg.project_dir), not Path.cwd() or None."""
     monkeypatch.chdir(tmp_path)
 
     cfg_project = tmp_path / "cfg_project"
@@ -2830,7 +2858,7 @@ def test_main_passes_cfg_project_dir_to_detect_active_claude_session(monkeypatch
 
     captured_dirs = []
 
-    def fake_detect(project_dir=None):
+    def fake_detect(project_dir):
         captured_dirs.append(project_dir)
         return False
 
@@ -2840,7 +2868,9 @@ def test_main_passes_cfg_project_dir_to_detect_active_claude_session(monkeypatch
     implement_issue.main()
 
     assert len(captured_dirs) == 1
-    assert captured_dirs[0] == str(cfg_project), "main() must pass cfg.project_dir, not Path.cwd()"
+    assert captured_dirs[0] == str(cfg_project.resolve()), (
+        "main() must pass ctx.repo_dir, not Path.cwd()"
+    )
 
 
 # --- _get_own_pid_chain tests ---
@@ -3477,7 +3507,7 @@ def test_implement_single_issue_mutation_gate_triggers_retry(monkeypatch, tmp_pa
             assert "tests pass without the implementation" in previous_errors
         return _claude_result()
 
-    def fake_mutation_gate(branch, issue_type):
+    def fake_mutation_gate(branch, issue_type, repo_dir=None):
         gate_call_count[0] += 1
         if gate_call_count[0] == 1:
             raise RuntimeError("tests pass without the implementation")
@@ -3488,13 +3518,19 @@ def test_implement_single_issue_mutation_gate_triggers_retry(monkeypatch, tmp_pa
         lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
     )
     monkeypatch.setattr(implement_issue, "implement", fake_implement)
-    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
-    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: False)
     monkeypatch.setattr(
-        implement_issue, "verify_implementation", lambda branch, issue_body="", title="": (True, "")
+        implement_issue, "create_branch", lambda issue, repo_dir=None: "autoloop/42-x"
+    )
+    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch, repo_dir=None: False)
+    monkeypatch.setattr(
+        implement_issue,
+        "verify_implementation",
+        lambda branch, issue_body="", title="", repo_dir=None: (True, ""),
     )
     monkeypatch.setattr(implement_issue, "mutation_gate", fake_mutation_gate)
-    monkeypatch.setattr(implement_issue, "review_implementation", lambda issue, branch: (True, ""))
+    monkeypatch.setattr(
+        implement_issue, "review_implementation", lambda issue, branch, **kw: (True, "")
+    )
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: None)
     monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
     monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
@@ -3523,7 +3559,7 @@ def test_implement_single_issue_mutation_gate_timeout_triggers_retry(monkeypatch
             assert "Mutation gate error" in previous_errors
         return _claude_result()
 
-    def fake_mutation_gate(branch, issue_type):
+    def fake_mutation_gate(branch, issue_type, repo_dir=None):
         gate_call_count[0] += 1
         if gate_call_count[0] == 1:
             raise subprocess.TimeoutExpired(cmd="echo ok", timeout=60)
@@ -3534,13 +3570,19 @@ def test_implement_single_issue_mutation_gate_timeout_triggers_retry(monkeypatch
         lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
     )
     monkeypatch.setattr(implement_issue, "implement", fake_implement)
-    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
-    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: False)
     monkeypatch.setattr(
-        implement_issue, "verify_implementation", lambda branch, issue_body="", title="": (True, "")
+        implement_issue, "create_branch", lambda issue, repo_dir=None: "autoloop/42-x"
+    )
+    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch, repo_dir=None: False)
+    monkeypatch.setattr(
+        implement_issue,
+        "verify_implementation",
+        lambda branch, issue_body="", title="", repo_dir=None: (True, ""),
     )
     monkeypatch.setattr(implement_issue, "mutation_gate", fake_mutation_gate)
-    monkeypatch.setattr(implement_issue, "review_implementation", lambda issue, branch: (True, ""))
+    monkeypatch.setattr(
+        implement_issue, "review_implementation", lambda issue, branch, **kw: (True, "")
+    )
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: None)
     monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
     monkeypatch.setattr(
@@ -3575,7 +3617,7 @@ def test_implement_single_issue_mutation_gate_called_process_error_triggers_retr
             assert "Mutation gate error" in previous_errors
         return _claude_result()
 
-    def fake_mutation_gate(branch, issue_type):
+    def fake_mutation_gate(branch, issue_type, repo_dir=None):
         gate_call_count[0] += 1
         if gate_call_count[0] == 1:
             raise subprocess.CalledProcessError(
@@ -3588,13 +3630,19 @@ def test_implement_single_issue_mutation_gate_called_process_error_triggers_retr
         lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
     )
     monkeypatch.setattr(implement_issue, "implement", fake_implement)
-    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
-    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: False)
     monkeypatch.setattr(
-        implement_issue, "verify_implementation", lambda branch, issue_body="", title="": (True, "")
+        implement_issue, "create_branch", lambda issue, repo_dir=None: "autoloop/42-x"
+    )
+    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch, repo_dir=None: False)
+    monkeypatch.setattr(
+        implement_issue,
+        "verify_implementation",
+        lambda branch, issue_body="", title="", repo_dir=None: (True, ""),
     )
     monkeypatch.setattr(implement_issue, "mutation_gate", fake_mutation_gate)
-    monkeypatch.setattr(implement_issue, "review_implementation", lambda issue, branch: (True, ""))
+    monkeypatch.setattr(
+        implement_issue, "review_implementation", lambda issue, branch, **kw: (True, "")
+    )
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: None)
     monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
     monkeypatch.setattr(
@@ -3822,10 +3870,14 @@ def test_auto_fix_not_called_without_flag(monkeypatch, tmp_path):
     monkeypatch.setattr(
         implement_issue, "implement", lambda issue, previous_errors=None: _claude_result()
     )
-    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-add-feature")
+    monkeypatch.setattr(
+        implement_issue, "create_branch", lambda issue, repo_dir=None: "autoloop/42-add-feature"
+    )
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: 99)
     monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
-    monkeypatch.setattr(implement_issue, "review_implementation", lambda issue, branch: (True, ""))
+    monkeypatch.setattr(
+        implement_issue, "review_implementation", lambda issue, branch, **kw: (True, "")
+    )
 
     result = implement_single_issue(_FAKE_ISSUE, auto_fix=False)
     assert result is True
@@ -4295,14 +4347,18 @@ def test_implement_single_issue_integrity_guard_labels_on_violation(monkeypatch,
     monkeypatch.setattr(
         implement_issue, "implement", lambda issue, previous_errors=None: _claude_result()
     )
-    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-feat")
+    monkeypatch.setattr(
+        implement_issue, "create_branch", lambda issue, repo_dir=None: "autoloop/42-feat"
+    )
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: 99)
     monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
-    monkeypatch.setattr(implement_issue, "review_implementation", lambda issue, branch: (True, ""))
+    monkeypatch.setattr(
+        implement_issue, "review_implementation", lambda issue, branch, **kw: (True, "")
+    )
     monkeypatch.setattr(
         implement_issue,
         "check_test_integrity",
-        lambda branch: ["Deleted test function: def test_old():"],
+        lambda branch, repo_dir=None: ["Deleted test function: def test_old():"],
     )
 
     result = implement_single_issue(_FAKE_ISSUE)
@@ -4336,11 +4392,15 @@ def test_implement_single_issue_integrity_guard_no_violation_no_label(monkeypatc
     monkeypatch.setattr(
         implement_issue, "implement", lambda issue, previous_errors=None: _claude_result()
     )
-    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-feat")
+    monkeypatch.setattr(
+        implement_issue, "create_branch", lambda issue, repo_dir=None: "autoloop/42-feat"
+    )
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: 99)
     monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
-    monkeypatch.setattr(implement_issue, "review_implementation", lambda issue, branch: (True, ""))
-    monkeypatch.setattr(implement_issue, "check_test_integrity", lambda branch: [])
+    monkeypatch.setattr(
+        implement_issue, "review_implementation", lambda issue, branch, **kw: (True, "")
+    )
+    monkeypatch.setattr(implement_issue, "check_test_integrity", lambda branch, repo_dir=None: [])
 
     result = implement_single_issue(_FAKE_ISSUE)
     assert result is True
@@ -4706,14 +4766,18 @@ def _auto_merge_integration_setup(monkeypatch, tmp_path, auto_merge_decision, au
     monkeypatch.setattr(
         implement_issue, "implement", lambda issue, previous_errors=None: _claude_result()
     )
-    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-add-feature")
+    monkeypatch.setattr(
+        implement_issue, "create_branch", lambda issue, repo_dir=None: "autoloop/42-add-feature"
+    )
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: 99)
     monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
-    monkeypatch.setattr(implement_issue, "review_implementation", lambda issue, branch: (True, ""))
+    monkeypatch.setattr(
+        implement_issue, "review_implementation", lambda issue, branch, **kw: (True, "")
+    )
     monkeypatch.setattr(
         implement_issue,
         "try_auto_merge",
-        lambda branch, pr_number: (auto_merge_decision, auto_merge_gates),
+        lambda branch, pr_number, repo_dir=None: (auto_merge_decision, auto_merge_gates),
     )
 
 
@@ -4800,14 +4864,18 @@ def test_implement_single_issue_auto_merge_skipped_integrity(monkeypatch, tmp_pa
     monkeypatch.setattr(
         implement_issue, "implement", lambda issue, previous_errors=None: _claude_result()
     )
-    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-feat")
+    monkeypatch.setattr(
+        implement_issue, "create_branch", lambda issue, repo_dir=None: "autoloop/42-feat"
+    )
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: 99)
     monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
-    monkeypatch.setattr(implement_issue, "review_implementation", lambda issue, branch: (True, ""))
+    monkeypatch.setattr(
+        implement_issue, "review_implementation", lambda issue, branch, **kw: (True, "")
+    )
     monkeypatch.setattr(
         implement_issue,
         "check_test_integrity",
-        lambda branch: ["Deleted test function: def test_old():"],
+        lambda branch, repo_dir=None: ["Deleted test function: def test_old():"],
     )
 
     try_merge_called = []
@@ -4856,3 +4924,139 @@ def test_log_run_omits_auto_merge_when_none(tmp_path, monkeypatch):
 
     entry = json.loads(log_path.read_text().strip())
     assert "auto_merge" not in entry
+
+
+# --- RepoContext threading tests ---
+
+
+def _make_ctx(tmp_path):
+    """Create a RepoContext rooted at tmp_path for tests."""
+    return RepoContext(tmp_path)
+
+
+def test_implement_single_issue_uses_ctx_repo_dir(monkeypatch, tmp_path):
+    """implement_single_issue threads ctx.repo_dir through file operations."""
+    ctx = _make_ctx(tmp_path)
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
+
+    captured_cwds = []
+
+    def fake_run(cmd, **kwargs):
+        if "cwd" in kwargs and kwargs["cwd"] is not None:
+            captured_cwds.append(kwargs["cwd"])
+        if isinstance(cmd, list) and cmd[:3] == ["git", "rev-list", "--count"]:
+            return type("R", (), {"returncode": 0, "stdout": "1\n", "stderr": ""})()
+        if isinstance(cmd, str):
+            return type("R", (), {"returncode": 0, "stdout": "passed", "stderr": ""})()
+        if isinstance(cmd, list) and cmd[:3] == ["git", "diff", "--name-only"]:
+            return type("R", (), {"returncode": 0, "stdout": "tests/test_x.py\n", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        implement_issue, "implement", lambda issue, previous_errors=None: _claude_result()
+    )
+    monkeypatch.setattr(
+        implement_issue, "create_branch", lambda issue, repo_dir=None: "autoloop/42-feat"
+    )
+    monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: None)
+    monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
+    monkeypatch.setattr(implement_issue, "review_implementation", lambda *a, **kw: (True, ""))
+
+    result = implement_single_issue(_FAKE_ISSUE, ctx=ctx)
+    assert result is True
+    for cwd in captured_cwds:
+        assert Path(cwd) == ctx.repo_dir, (
+            f"subprocess cwd {cwd} does not match ctx.repo_dir {ctx.repo_dir}"
+        )
+
+
+def test_main_with_explicit_ctx_uses_repo_dir(monkeypatch, tmp_path, capsys):
+    """main() uses the provided RepoContext instead of constructing one."""
+    ctx = _make_ctx(tmp_path)
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
+
+    captured_dirs = []
+
+    def fake_detect(project_dir):
+        captured_dirs.append(project_dir)
+        return False
+
+    monkeypatch.setattr(implement_issue, "detect_active_claude_session", fake_detect)
+    monkeypatch.setattr(implement_issue, "get_top_ready_issue", lambda: None)
+    monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
+    monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
+
+    implement_issue.main(ctx=ctx)
+    out = capsys.readouterr().out
+
+    assert len(captured_dirs) == 1
+    assert captured_dirs[0] == str(ctx.repo_dir)
+    assert "No more ready issues." in out
+
+
+def test_acquire_lock_uses_repo_dir(tmp_path):
+    """acquire_lock creates the lockfile at repo_dir, not cwd."""
+    assert acquire_lock(tmp_path) is True
+    lock_path = tmp_path / ".autoloop.lock"
+    assert lock_path.exists()
+
+
+def test_release_lock_uses_repo_dir(tmp_path):
+    """release_lock removes the lockfile from repo_dir, not cwd."""
+    lock_path = tmp_path / ".autoloop.lock"
+    lock_path.write_text(str(os.getpid()))
+    release_lock(tmp_path)
+    assert not lock_path.exists()
+
+
+def test_log_run_uses_repo_dir(tmp_path):
+    """log_run writes to repo_dir/autoloop/run_history.jsonl."""
+    log_run(42, True, 1, 60.0, 1.50, repo_dir=tmp_path)
+    log_path = tmp_path / "autoloop" / "run_history.jsonl"
+    assert log_path.exists()
+    entry = json.loads(log_path.read_text().strip())
+    assert entry["issue"] == 42
+
+
+def test_create_branch_uses_repo_dir(monkeypatch, tmp_path):
+    """create_branch passes repo_dir as cwd to git commands."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
+    captured_cwds = []
+
+    def fake_run(cmd, **kwargs):
+        if "cwd" in kwargs:
+            captured_cwds.append(kwargs["cwd"])
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    create_branch({"number": 1, "title": "Test"}, repo_dir=tmp_path)
+
+    assert all(cwd == tmp_path for cwd in captured_cwds)
+
+
+def test_verify_implementation_uses_repo_dir(monkeypatch, tmp_path):
+    """verify_implementation uses the provided repo_dir for all subprocesses."""
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(verify_cmd="echo ok", test_timeout=30, lint_command=""),
+    )
+    captured_cwds = []
+
+    def fake_run(cmd_or_str, **kwargs):
+        if "cwd" in kwargs:
+            captured_cwds.append(kwargs["cwd"])
+        if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "rev-list", "--count"]:
+            return type("R", (), {"returncode": 0, "stdout": "1\n", "stderr": ""})()
+        if isinstance(cmd_or_str, str):
+            return type("R", (), {"returncode": 0, "stdout": "passed", "stderr": ""})()
+        if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "diff", "--name-only"]:
+            return type("R", (), {"returncode": 0, "stdout": "tests/test_x.py\n", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    valid, _ = implement_issue.verify_implementation("branch", repo_dir=tmp_path)
+
+    assert valid is True
+    assert all(cwd == tmp_path for cwd in captured_cwds)
