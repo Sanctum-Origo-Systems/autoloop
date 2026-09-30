@@ -58,3 +58,16 @@ def test_ci_runs_ruff_format_check():
 def test_ci_triggers_on_merge_group():
     content = _read_ci()
     assert "merge_group" in content
+
+
+def test_ci_bans_path_cwd():
+    """CI must have a step that greps for Path.cwd() in src/autoloop/ and fails if found."""
+    content = _read_ci()
+    assert "Path.cwd()" in content, "CI workflow missing Path.cwd() ban step"
+    assert "src/autoloop/" in content, "Path.cwd() ban must target src/autoloop/"
+
+
+def test_ci_ban_path_cwd_fails_on_match():
+    """The ban step must exit non-zero when grep finds a match."""
+    content = _read_ci()
+    assert "exit 1" in content, "Path.cwd() ban step must exit 1 on match"

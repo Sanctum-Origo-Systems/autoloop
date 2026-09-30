@@ -13,4 +13,10 @@ jobs:
       - run: uv lock --check
       - run: uv run ruff check
       - run: uv run ruff format --check
+      - name: Ban Path.cwd() in src/autoloop/
+        run: |
+          if grep -rn 'Path\.cwd()' src/autoloop/; then
+            echo "::error::Path.cwd() is banned in src/autoloop/ — use the module-level REPO_DIR or a repo_dir parameter instead"
+            exit 1
+          fi
       - run: uv run pytest -q
