@@ -13,4 +13,17 @@ jobs:
       - run: uv lock --check
       - run: uv run ruff check
       - run: uv run ruff format --check
+      - name: check-path-cwd
+        run: |
+          if grep -rn --include='*.py' 'Path\.cwd()' src/autoloop/ \
+            --exclude=cli.py \
+            --exclude=config.py \
+            --exclude=implement_issue.py \
+            --exclude=init.py \
+            --exclude=triage_issues.py \
+            --exclude=auto_close_parent.py \
+            --exclude=create_issue.py; then
+            echo "::error::Disallowed Path.cwd() usage detected"
+            exit 1
+          fi
       - run: uv run pytest -q
