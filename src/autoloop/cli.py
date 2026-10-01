@@ -205,6 +205,8 @@ def main():
         _show_status()
 
     elif args.command == "fix-pr":
+        from pathlib import Path
+
         from autoloop.config import RepoContext, load_config
         from autoloop.fix_pr import fix_pr
         from autoloop.implement_issue import detect_active_claude_session
