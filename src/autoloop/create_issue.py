@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from autoloop.config import AutoLoopConfig
+    from autoloop.config import AutoLoopConfig, RepoContext
 
 DEFAULT_ACCEPTANCE = [
     "New unit tests pass",
@@ -124,7 +124,9 @@ Rules:
 """
 
 
-def suggest_fields(summary: str, issue_type: str, cfg: AutoLoopConfig) -> dict | None:
+def suggest_fields(
+    summary: str, issue_type: str, cfg: AutoLoopConfig, ctx: RepoContext
+) -> dict | None:
     """Call Claude to suggest issue fields based on summary and codebase."""
     if not shutil.which("claude"):
         return None
@@ -133,7 +135,7 @@ def suggest_fields(summary: str, issue_type: str, cfg: AutoLoopConfig) -> dict |
         ["find", "src/", "tests/", "-name", "*.py", "-not", "-path", "*__pycache__*"],
         capture_output=True,
         text=True,
-        cwd=Path.cwd(),
+        cwd=ctx.repo_dir,
     ).stdout
 
     prompt = SUGGEST_PROMPT.format(
@@ -291,6 +293,7 @@ def extract_problem_from_spec(body: str) -> str:
 
 
 def create_issues_from_spec(
+    ctx: RepoContext,
     spec_path: str,
     skip: list[int],
     cfg: AutoLoopConfig,
@@ -554,6 +557,7 @@ def update_issue(number: int, title: str, body: str, cfg: AutoLoopConfig):
 
 
 def build_issue(
+    ctx: RepoContext,
     cfg: AutoLoopConfig,
     issue_type: str | None = None,
     suggest: bool = True,
@@ -571,7 +575,7 @@ def build_issue(
     suggestions = None
     if suggest:
         print("\nGenerating suggestions from codebase...")
-        suggestions = suggest_fields(summary, issue_type, cfg)
+        suggestions = suggest_fields(summary, issue_type, cfg, ctx)
 
     if suggestions:
         print("Suggestions ready. Press Enter to accept each, or 'e' to edit.\n")
@@ -653,9 +657,10 @@ def build_issue(
 
 def main():
     from autoloop import __version__
-    from autoloop.config import load_config
+    from autoloop.config import RepoContext, load_config
 
     cfg = load_config()
+    ctx = RepoContext(repo_dir=Path.cwd())
 
     parser = argparse.ArgumentParser(description="Create or edit a GitHub issue")
     parser.add_argument(
@@ -701,7 +706,7 @@ def main():
     args = parser.parse_args()
 
     if args.from_spec:
-        create_issues_from_spec(args.from_spec, skip=args.skip, cfg=cfg, dry_run=args.dry_run)
+        create_issues_from_spec(ctx, args.from_spec, skip=args.skip, cfg=cfg, dry_run=args.dry_run)
     elif args.edit:
         title, body = edit_issue(args.edit, cfg)
         if args.dry_run:
@@ -711,7 +716,7 @@ def main():
             return
         update_issue(args.edit, title, body, cfg)
     else:
-        title, body = build_issue(cfg, issue_type=args.type, suggest=not args.no_suggest)
+        title, body = build_issue(ctx, cfg, issue_type=args.type, suggest=not args.no_suggest)
         if args.dry_run:
             print("\n--- Issue Markdown ---\n")
             print(f"**Title:** {title}\n")

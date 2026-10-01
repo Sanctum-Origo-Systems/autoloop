@@ -11,7 +11,10 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from autoloop.config import RepoContext
 
 
 class _HasRepo(Protocol):
@@ -175,6 +178,7 @@ def close_parent_chain(gh: GhClient, issue_number: int, max_depth: int = 5) -> l
 
 
 def check_and_close_parent(
+    ctx: RepoContext,
     pr_number: int,
     gh: GhClient | None = None,
     cfg: _HasRepo | None = None,
@@ -200,10 +204,12 @@ def check_and_close_parent(
 
 def main():
     import sys
+    from pathlib import Path
 
-    from autoloop.config import load_config
+    from autoloop.config import RepoContext, load_config
 
-    check_and_close_parent(int(sys.argv[1]), cfg=load_config())
+    ctx = RepoContext(repo_dir=Path.cwd())
+    check_and_close_parent(ctx, int(sys.argv[1]), cfg=load_config())
 
 
 if __name__ == "__main__":
