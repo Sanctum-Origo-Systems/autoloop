@@ -861,25 +861,29 @@ def test_repo_context_fallback_no_remote(tmp_path, fake_home):
 
 
 def test_repo_context_migrates_run_history(tmp_path, fake_home):
-    (tmp_path / "run_history.l").write_text("history data")
+    autoloop_dir = tmp_path / "autoloop"
+    autoloop_dir.mkdir()
+    (autoloop_dir / "run_history.jsonl").write_text("history data")
     remote_url = "https://github.com/acme-corp/widget.git"
 
     with patch("autoloop.config.subprocess.run", side_effect=_mock_git_remote(remote_url)):
         ctx = RepoContext(repo_dir=tmp_path)
 
-    assert (ctx.data_dir / "run_history.l").read_text() == "history data"
-    assert (tmp_path / "run_history.l").exists()
+    assert (ctx.data_dir / "run_history.jsonl").read_text() == "history data"
+    assert (autoloop_dir / "run_history.jsonl").exists()
 
 
 def test_repo_context_migrates_jev_decisions(tmp_path, fake_home):
-    (tmp_path / "jev_decisions.l").write_text("decisions data")
+    autoloop_dir = tmp_path / "autoloop"
+    autoloop_dir.mkdir()
+    (autoloop_dir / "jev_decisions.jsonl").write_text("decisions data")
     remote_url = "https://github.com/acme-corp/widget.git"
 
     with patch("autoloop.config.subprocess.run", side_effect=_mock_git_remote(remote_url)):
         ctx = RepoContext(repo_dir=tmp_path)
 
-    assert (ctx.data_dir / "jev_decisions.l").read_text() == "decisions data"
-    assert (tmp_path / "jev_decisions.l").exists()
+    assert (ctx.data_dir / "jev_decisions.jsonl").read_text() == "decisions data"
+    assert (autoloop_dir / "jev_decisions.jsonl").exists()
 
 
 def test_repo_context_no_migration_files(tmp_path, fake_home):
@@ -888,30 +892,56 @@ def test_repo_context_no_migration_files(tmp_path, fake_home):
     with patch("autoloop.config.subprocess.run", side_effect=_mock_git_remote(remote_url)):
         ctx = RepoContext(repo_dir=tmp_path)
 
-    assert not (ctx.data_dir / "run_history.l").exists()
-    assert not (ctx.data_dir / "jev_decisions.l").exists()
+    assert not (ctx.data_dir / "run_history.jsonl").exists()
+    assert not (ctx.data_dir / "jev_decisions.jsonl").exists()
 
 
 def test_repo_context_migration_idempotent(tmp_path, fake_home):
-    (tmp_path / "run_history.l").write_text("original")
+    autoloop_dir = tmp_path / "autoloop"
+    autoloop_dir.mkdir()
+    (autoloop_dir / "run_history.jsonl").write_text("original")
     remote_url = "https://github.com/acme-corp/widget.git"
 
     with patch("autoloop.config.subprocess.run", side_effect=_mock_git_remote(remote_url)):
         ctx1 = RepoContext(repo_dir=tmp_path)
-        (tmp_path / "run_history.l").write_text("modified after first migration")
+        (autoloop_dir / "run_history.jsonl").write_text("modified after first migration")
         ctx2 = RepoContext(repo_dir=tmp_path)
 
     assert ctx1.data_dir == ctx2.data_dir
-    assert (ctx2.data_dir / "run_history.l").read_text() == "original"
+    assert (ctx2.data_dir / "run_history.jsonl").read_text() == "original"
 
 
 def test_repo_context_migrates_both_files(tmp_path, fake_home):
-    (tmp_path / "run_history.l").write_text("history")
-    (tmp_path / "jev_decisions.l").write_text("decisions")
+    autoloop_dir = tmp_path / "autoloop"
+    autoloop_dir.mkdir()
+    (autoloop_dir / "run_history.jsonl").write_text("history")
+    (autoloop_dir / "jev_decisions.jsonl").write_text("decisions")
     remote_url = "https://github.com/acme-corp/widget.git"
 
     with patch("autoloop.config.subprocess.run", side_effect=_mock_git_remote(remote_url)):
         ctx = RepoContext(repo_dir=tmp_path)
 
-    assert (ctx.data_dir / "run_history.l").read_text() == "history"
-    assert (ctx.data_dir / "jev_decisions.l").read_text() == "decisions"
+    assert (ctx.data_dir / "run_history.jsonl").read_text() == "history"
+    assert (ctx.data_dir / "jev_decisions.jsonl").read_text() == "decisions"
+
+
+def test_repo_context_no_remote_temp_path_no_spam_dir(tmp_path, fake_home):
+    """RepoContext with no git remote and temp path must not create ~/.autoloop/ dir."""
+    with patch("autoloop.config.subprocess.run", side_effect=_mock_git_remote_fail()):
+        ctx = RepoContext(repo_dir=tmp_path)
+
+    assert not ctx.data_dir.exists()
+    autoloop_root = fake_home / ".autoloop"
+    if autoloop_root.exists():
+        children = list(autoloop_root.iterdir())
+        assert children == [], f"Unexpected directories in ~/.autoloop/: {children}"
+
+
+def test_repo_context_no_migration_no_mkdir(tmp_path, fake_home):
+    """data_dir should not be created when there are no files to migrate."""
+    remote_url = "https://github.com/acme-corp/widget.git"
+
+    with patch("autoloop.config.subprocess.run", side_effect=_mock_git_remote(remote_url)):
+        ctx = RepoContext(repo_dir=tmp_path)
+
+    assert not ctx.data_dir.exists()

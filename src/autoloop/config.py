@@ -31,7 +31,6 @@ class RepoContext:
         digest = hashlib.sha256(hash_input.encode()).hexdigest()[:16]
         self.data_dir = Path.home() / ".autoloop" / digest
         self.worktree_dir = self.data_dir / "worktrees"
-        self.data_dir.mkdir(parents=True, exist_ok=True)
         self._migrate_files()
 
     def _get_remote_url(self) -> str | None:
@@ -57,10 +56,11 @@ class RepoContext:
         return ctx
 
     def _migrate_files(self):
-        for filename in ("run_history.l", "jev_decisions.l"):
-            src = self.repo_dir / filename
+        for filename in ("run_history.jsonl", "jev_decisions.jsonl"):
+            src = self.repo_dir / "autoloop" / filename
             dst = self.data_dir / filename
             if src.exists() and not dst.exists():
+                self.data_dir.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dst)
 
 
