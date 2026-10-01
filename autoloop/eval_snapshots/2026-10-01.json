@@ -1,0 +1,35 @@
+{
+  "date": "2026-10-01",
+  "total_implementations": 129,
+  "first_attempt_rate": 0.67,
+  "avg_cost_usd": 1.48,
+  "avg_duration_seconds": 224,
+  "attempt_distribution": {
+    "1": 161,
+    "2": 39,
+    "3+": 26
+  },
+  "human_edit_rate": 0.44,
+  "human_edit_count": 57,
+  "merged_pr_count": 129,
+  "closed_without_merge": 9,
+  "modules": {
+    "other": {
+      "implementations": 11,
+      "first_attempt_rate": 0.64,
+      "avg_cost_usd": 0.51,
+      "human_edit_rate": 0.7,
+      "merged_clean_count": 3
+    },
+    "src/autoloop/": {
+      "implementations": 127,
+      "first_attempt_rate": 0.76,
+      "avg_cost_usd": 1.75,
+      "human_edit_rate": 0.42,
+      "merged_clean_count": 69
+    }
+  },
+  "period_first_attempt_rate": 0.85,
+  "period_avg_cost_usd": 2.44,
+  "period_human_edit_rate": 0.0
+}
