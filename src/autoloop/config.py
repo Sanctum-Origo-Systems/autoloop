@@ -113,6 +113,7 @@ class AutoLoopConfig:
     test_integrity_patterns: list[str] = field(
         default_factory=lambda: ["pytest.mark.skip", "pytest.mark.xfail"]
     )
+    implement_isolation: str = "off"
     project_dir: str = ""
 
 
@@ -229,6 +230,13 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
 
     if "test_integrity_patterns" in data:
         config.test_integrity_patterns = list(data["test_integrity_patterns"])
+
+    implement = data.get("implement", {})
+    if "isolation" in implement:
+        isolation = str(implement["isolation"])
+        if isolation not in ("off", "worktree"):
+            raise ValueError(f"implement.isolation must be 'off' or 'worktree', got '{isolation}'")
+        config.implement_isolation = isolation
 
     if "triage_labels" in data:
         config.triage_labels = list(data["triage_labels"])
