@@ -209,17 +209,36 @@ def main():
 
     elif args.command == "fix-pr":
         from autoloop.config import load_config
-        from autoloop.fix_pr import fix_pr
+        from autoloop.implement_issue import detect_active_claude_session
 
         cfg = load_config()
+        if cfg.implement_isolation != "worktree":
+            session_detected = detect_active_claude_session(cfg.project_dir)
+            if session_detected is True:
+                print(
+                    "Active Claude Code session detected in this directory.\n"
+                    "Close it, or move the Claude Code session to a parent folder."
+                )
+                sys.exit(1)
+        from autoloop.fix_pr import fix_pr
+
         success = fix_pr(ctx, args.pr_number, cfg)
         if not success:
             sys.exit(1)
 
     elif args.command == "review-pr":
         from autoloop.config import load_config
+        from autoloop.implement_issue import detect_active_claude_session
 
         cfg = load_config()
+        if cfg.implement_isolation != "worktree":
+            session_detected = detect_active_claude_session(cfg.project_dir)
+            if session_detected is True:
+                print(
+                    "Active Claude Code session detected in this directory.\n"
+                    "Close it, or move the Claude Code session to a parent folder."
+                )
+                sys.exit(1)
         repo_dir = ctx.repo_dir
         if cfg.implement_isolation == "worktree":
             pr_head = subprocess.run(
@@ -239,9 +258,10 @@ def main():
             if pr_head.returncode == 0:
                 try:
                     branch_name = json.loads(pr_head.stdout)["headRefName"]
-                    from autoloop.fix_pr import ensure_pr_worktree
+                    from autoloop.fix_pr import checkout_branch, ensure_pr_worktree
 
                     repo_dir = ensure_pr_worktree(ctx, branch_name)
+                    checkout_branch(branch_name, repo_dir)
                 except (json.JSONDecodeError, KeyError):
                     pass
         result = review_pr(args.pr_number, cfg, repo_dir=repo_dir)

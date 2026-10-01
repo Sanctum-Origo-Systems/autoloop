@@ -1460,8 +1460,8 @@ class TestReviewPrMcpSubprocess:
 class TestReviewPrWorktreeIsolation:
     """Verify review-pr handles worktree isolation correctly."""
 
-    def test_cli_review_pr_no_session_detection(self, tmp_path, monkeypatch):
-        """The review-pr CLI command must not call detect_active_claude_session."""
+    def test_cli_review_pr_session_detection_when_isolation_off(self, tmp_path, monkeypatch):
+        """review-pr calls detect_active_claude_session when isolation is off."""
         monkeypatch.chdir(tmp_path)
         cfg = _cfg()
         pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
@@ -1478,14 +1478,42 @@ class TestReviewPrWorktreeIsolation:
             patch("autoloop.config.load_config", return_value=cfg),
             patch(
                 "autoloop.implement_issue.detect_active_claude_session",
+                return_value=False,
             ) as mock_detect,
+        ):
+            main()
+
+        mock_detect.assert_called_once()
+
+    def test_cli_review_pr_no_session_detection_when_worktree(self, tmp_path, monkeypatch):
+        """review-pr skips session detection when isolation is worktree."""
+        monkeypatch.chdir(tmp_path)
+        cfg = _cfg(implement_isolation="worktree")
+        wt_path = tmp_path / "worktree"
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
+        review_json = json.dumps({"approved": True, "summary": "ok"})
+        dispatch = _make_dispatcher(pr_data)
+
+        with (
+            patch("subprocess.run", side_effect=dispatch),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(text=review_json),
+            ),
+            patch("sys.argv", ["autoloop", "review-pr", "42"]),
+            patch("autoloop.config.load_config", return_value=cfg),
+            patch(
+                "autoloop.implement_issue.detect_active_claude_session",
+            ) as mock_detect,
+            patch("autoloop.fix_pr.ensure_pr_worktree", return_value=wt_path),
+            patch("autoloop.fix_pr.checkout_branch", return_value=True),
         ):
             main()
 
         mock_detect.assert_not_called()
 
-    def test_worktree_creates_worktree_for_pr_branch(self, tmp_path, monkeypatch):
-        """When isolation='worktree', review-pr creates a worktree via RepoContext."""
+    def test_worktree_creates_worktree_and_checks_out_branch(self, tmp_path, monkeypatch):
+        """When isolation='worktree', review-pr creates a worktree and checks out the PR branch."""
         monkeypatch.chdir(tmp_path)
         cfg = _cfg(implement_isolation="worktree")
         wt_path = tmp_path / "worktree"
@@ -1502,12 +1530,14 @@ class TestReviewPrWorktreeIsolation:
             patch("sys.argv", ["autoloop", "review-pr", "42"]),
             patch("autoloop.config.load_config", return_value=cfg),
             patch("autoloop.fix_pr.ensure_pr_worktree", return_value=wt_path) as mock_wt,
+            patch("autoloop.fix_pr.checkout_branch", return_value=True) as mock_checkout,
         ):
             main()
 
         mock_wt.assert_called_once()
         _, branch = mock_wt.call_args[0]
         assert branch == "fix/42"
+        mock_checkout.assert_called_once_with("fix/42", wt_path)
 
     def test_isolation_off_uses_repo_dir(self, tmp_path, monkeypatch):
         """When isolation='off', review-pr uses ctx.repo_dir, not a worktree."""
@@ -1525,6 +1555,10 @@ class TestReviewPrWorktreeIsolation:
             ),
             patch("sys.argv", ["autoloop", "review-pr", "42"]),
             patch("autoloop.config.load_config", return_value=cfg),
+            patch(
+                "autoloop.implement_issue.detect_active_claude_session",
+                return_value=False,
+            ),
             patch(
                 "autoloop.fix_pr.ensure_pr_worktree",
             ) as mock_wt,

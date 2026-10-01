@@ -18,7 +18,12 @@ def _mock_ctx(repo_dir=None, data_dir=None):
 
 
 def _cfg(**overrides):
-    defaults = {"repo": "test-owner/test-repo", "triage_model": "sonnet", "project_dir": ""}
+    defaults = {
+        "repo": "test-owner/test-repo",
+        "triage_model": "sonnet",
+        "project_dir": "",
+        "implement_isolation": "off",
+    }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
 
