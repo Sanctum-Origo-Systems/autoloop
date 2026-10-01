@@ -339,7 +339,6 @@ def main():
             pr: With publish, create a branch and PR instead of committing to main.
             repo_dir: Target repository directory. Defaults to server's working directory.
         """
-        from autoloop.config import RepoContext
         from autoloop.eval import (
             compare_snapshots,
             compute_snapshot,
