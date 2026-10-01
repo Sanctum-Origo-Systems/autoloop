@@ -673,11 +673,14 @@ def list_issues_with_labels(cfg: AutoLoopConfig, labels: list[str]) -> list[dict
     return results
 
 
-def flag_duplicate(number: int, duplicates: list[dict], cfg: AutoLoopConfig):
+def flag_duplicate(number: int, duplicates: list[dict], cfg: AutoLoopConfig, priority: str = ""):
     """Label issue needs-human and comment about potential duplicates."""
     dup_lines = "\n".join(
         f"- Potential duplicate of #{d['number']} — {d['reason']}" for d in duplicates
     )
+    labels = "needs-human"
+    if priority:
+        labels += f",{priority}"
     subprocess.run(
         [
             "gh",
@@ -687,7 +690,7 @@ def flag_duplicate(number: int, duplicates: list[dict], cfg: AutoLoopConfig):
             "--repo",
             cfg.repo,
             "--add-label",
-            "needs-human",
+            labels,
         ],
     )
     subprocess.run(
@@ -1146,10 +1149,17 @@ def triage_issue(
         )
         existing = list_issues_with_labels(cfg, ["ready", "in-progress"])
         existing = [e for e in existing if e["number"] != issue["number"]]
+        candidate_parent = _extract_parent_number(body)
+        if candidate_parent:
+            existing = [
+                e
+                for e in existing
+                if _extract_parent_number(e.get("body") or "") != candidate_parent
+            ]
         duplicates = detect_duplicate_issues(issue["title"], candidate_files, existing)
         if duplicates:
             print(f"  #{issue['number']}: potential duplicate detected, routing to needs-human")
-            flag_duplicate(issue["number"], duplicates, cfg)
+            flag_duplicate(issue["number"], duplicates, cfg, verdict.get("priority", ""))
             return results
 
         approve_issue(issue["number"], verdict["priority"], verdict["reason"], cfg)
