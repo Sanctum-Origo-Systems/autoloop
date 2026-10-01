@@ -1406,8 +1406,47 @@ def test_create_branch_calls_in_order(monkeypatch):
 
     assert calls[0] == ["git", "checkout", "main"]
     assert calls[1] == ["git", "pull", "origin", "main"]
-    assert calls[2][0:3] == ["git", "checkout", "-b"]
+    assert calls[2][:4] == ["git", "push", "origin", "--delete"]
     assert branch in calls[2]
+    assert calls[3][0:3] == ["git", "checkout", "-B"]
+    assert branch in calls[3]
+
+
+def test_create_branch_succeeds_when_branch_already_exists(monkeypatch):
+    """Regression: stale branch from a closed PR should not block re-implementation."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
+    calls = []
+    issue = {"number": 99, "title": "Re-implement after closed PR"}
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    branch = create_branch(issue)
+
+    assert branch == "autoloop/99-re-implement-after-closed-pr"
+    delete_calls = [c for c in calls if c[:4] == ["git", "push", "origin", "--delete"]]
+    assert len(delete_calls) == 1
+    assert branch in delete_calls[0]
+    checkout_calls = [c for c in calls if c[:3] == ["git", "checkout", "-B"]]
+    assert len(checkout_calls) == 1
+    assert branch in checkout_calls[0]
+
+
+def test_create_branch_ignores_remote_delete_failure(monkeypatch):
+    """Remote branch may not exist; the delete should fail silently."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
+    issue = {"number": 50, "title": "Fresh branch"}
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:4] == ["git", "push", "origin", "--delete"]:
+            return type("R", (), {"returncode": 1, "stderr": "not found"})()
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    branch = create_branch(issue)
+    assert branch == "autoloop/50-fresh-branch"
 
 
 # --- ensure_clean_main tests ---

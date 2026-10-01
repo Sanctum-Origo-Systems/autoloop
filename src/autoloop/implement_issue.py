@@ -548,11 +548,16 @@ def dependencies_met(issue: dict) -> bool:
 
 
 def create_branch(issue: dict, repo_dir: Path | None = None) -> str:
-    """Create feature branch from latest main."""
+    """Create feature branch from latest main, cleaning up any stale branch first."""
     branch = build_branch_name(issue)
     subprocess.run(["git", "checkout", "main"], cwd=repo_dir, check=True)
     subprocess.run(["git", "pull", "origin", "main"], cwd=repo_dir, check=True)
-    subprocess.run(["git", "checkout", "-b", branch], cwd=repo_dir, check=True)
+    subprocess.run(
+        ["git", "push", "origin", "--delete", branch],
+        cwd=repo_dir,
+        capture_output=True,
+    )
+    subprocess.run(["git", "checkout", "-B", branch], cwd=repo_dir, check=True)
     return branch
 
 
