@@ -120,6 +120,23 @@ def check_jev(ctx: RepoContext) -> tuple[bool, str]:
     )
 
 
+def check_worktree_isolation(ctx: RepoContext) -> tuple[bool, str]:
+    """Report worktree isolation status when enabled."""
+    from autoloop.config import load_config
+
+    config_path = ctx.repo_dir / "autoloop.toml"
+    try:
+        cfg = load_config(config_path)
+    except Exception:
+        return False, "could not load autoloop.toml to read isolation config"
+
+    if cfg.implement_isolation != "worktree":
+        return True, ""
+
+    worktree_path = ctx.worktree_dir
+    return True, f"Worktree isolation: enabled (path: {worktree_path})"
+
+
 def check_verify_cmd(ctx: RepoContext) -> tuple[bool, str]:
     """Run the repo's configured verify_cmd and report pass/fail."""
     from autoloop.config import load_config
@@ -160,7 +177,7 @@ def check_verify_cmd(ctx: RepoContext) -> tuple[bool, str]:
 
 def get_checks(ctx: RepoContext) -> list[Check]:
     """Return the default set of doctor checks."""
-    return [
+    checks = [
         Check(
             name="autoloop.toml",
             fn=lambda: check_autoloop_toml(ctx),
@@ -202,6 +219,24 @@ def get_checks(ctx: RepoContext) -> list[Check]:
             fix_hint="set the API key env var, or set jev.mode = 'off' in autoloop.toml",
         ),
     ]
+
+    from autoloop.config import load_config
+
+    config_path = ctx.repo_dir / "autoloop.toml"
+    try:
+        cfg = load_config(config_path)
+        if cfg.implement_isolation == "worktree":
+            checks.append(
+                Check(
+                    name="Worktree isolation",
+                    fn=lambda: check_worktree_isolation(ctx),
+                    fix_hint='set implement.isolation = "off" in autoloop.toml to disable',
+                ),
+            )
+    except Exception:
+        pass
+
+    return checks
 
 
 def run_checks(checks: list[Check]) -> list[Result]:

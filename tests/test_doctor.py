@@ -16,6 +16,7 @@ from autoloop.doctor import (
     check_gh_cli_installed,
     check_jev,
     check_verify_cmd,
+    check_worktree_isolation,
     get_checks,
     run_checks,
 )
@@ -440,3 +441,39 @@ def test_check_jev_no_config(repo_ctx):
     passed, msg = check_jev(repo_ctx)
     assert passed is False
     assert "could not load" in msg
+
+
+# --- Worktree isolation check ---
+
+
+def test_check_worktree_isolation_enabled(repo_ctx):
+    toml_file = repo_ctx.repo_dir / "autoloop.toml"
+    toml_file.write_text('repo = "acme/widgets"\n\n[implement]\nisolation = "worktree"\n')
+    passed, msg = check_worktree_isolation(repo_ctx)
+    assert passed is True
+    assert "Worktree isolation: enabled" in msg
+    assert str(repo_ctx.worktree_dir) in msg
+
+
+def test_check_worktree_isolation_off(repo_ctx):
+    toml_file = repo_ctx.repo_dir / "autoloop.toml"
+    toml_file.write_text('repo = "acme/widgets"\n')
+    passed, msg = check_worktree_isolation(repo_ctx)
+    assert passed is True
+    assert msg == ""
+
+
+def test_get_checks_includes_worktree_when_enabled(repo_ctx):
+    toml_file = repo_ctx.repo_dir / "autoloop.toml"
+    toml_file.write_text('repo = "acme/widgets"\n\n[implement]\nisolation = "worktree"\n')
+    checks = get_checks(repo_ctx)
+    names = [c.name for c in checks]
+    assert "Worktree isolation" in names
+
+
+def test_get_checks_excludes_worktree_when_off(repo_ctx):
+    toml_file = repo_ctx.repo_dir / "autoloop.toml"
+    toml_file.write_text('repo = "acme/widgets"\n')
+    checks = get_checks(repo_ctx)
+    names = [c.name for c in checks]
+    assert "Worktree isolation" not in names
