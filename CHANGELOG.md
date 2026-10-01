@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.10.0
+
+### Session Isolation Architecture
+- feat: add RepoContext dataclass with data_dir resolution and one-time migration (#301)
+- feat: thread RepoContext through all modules (#305-#313)
+- feat: wire cli.py to construct and dispatch RepoContext (#313)
+- feat: add implement.isolation config field and worktree lifecycle helpers (#299)
+- feat: route fix-pr and review-pr through worktree when isolation = worktree (#300)
+- fix: correct RepoContext migration filenames and remove eager mkdir (#341)
+- fix: remove remaining Path.cwd() from claude_runner.py and implement_issue.py (#332)
+- fix: update Path.cwd() CI gate to whitelist entry points (#333)
+- fix: review-pr worktree checks out PR branch and restore session detection (#334)
+- chore: enable worktree isolation on autoloop repo (#346)
+- chore: add worktree isolation smoke test to doctor output (#344)
+
+### Pipeline Improvements
+- feat: add session detection to triage, review-pr, fix-pr, and plan (#292)
+- feat: add merge_group trigger to CI workflow (#296)
+- fix: exclude sibling sub-issues from duplicate detection and assign priority on duplicate route (#319)
+- fix: clean up stale branches in create_branch (#335)
+- fix: eval trend always recomputes period stats at render time (#297)
+- docs: update README with session isolation, external storage, worktree isolation (#343)
+
 ## v0.9.0
 
 - feat: wire auto-merge step into implement pipeline (#245)
