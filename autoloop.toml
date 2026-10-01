@@ -44,6 +44,10 @@ triage_labels = [
     "needs-human",
 ]
 
+# Worktree isolation — run implement/review-pr/fix-pr in a persistent worktree
+[implement]
+isolation = "worktree"
+
 # Jev decision model (experimental, off by default)
 # Override with env var JEV_MODE=shadow to enable
 [jev]
