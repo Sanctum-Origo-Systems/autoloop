@@ -337,10 +337,12 @@ def test_review_pr_subprocess_uses_cwd(mcp_tools, tmp_path, monkeypatch):
     with patch("subprocess.run", side_effect=tracking_run):
         asyncio.run(mcp_tools["autoloop_review_pr"](pr_number=99, repo_dir=str(tmp_path)))
 
-    assert len(captured_calls) == 1
-    call_args, call_kwargs = captured_calls[0]
-    assert call_args[0] == ["autoloop", "review-pr", "99", "--json"]
-    assert call_kwargs["cwd"] == tmp_path
+    review_calls = [
+        (a, k) for a, k in captured_calls if a[0] == ["autoloop", "review-pr", "99", "--json"]
+    ]
+    assert len(review_calls) == 1
+    call_args, call_kwargs = review_calls[0]
+    assert call_kwargs["cwd"] == tmp_path.resolve()
 
 
 def test_review_pr_failure_returns_status(mcp_tools, tmp_path, monkeypatch):
@@ -487,7 +489,7 @@ def test_status_without_repo_dir_uses_cwd(mcp_tools, tmp_path, monkeypatch):
     ):
         monkeypatch.delenv(var, raising=False)
 
-    monkeypatch.setattr("autoloop.mcp_server.Path.cwd", lambda: tmp_path)
+    monkeypatch.chdir(tmp_path)
 
     def fake_run(cmd, **kwargs):
         if cmd[0] == "gh":
@@ -708,7 +710,7 @@ def test_eval_snapshot_default(mcp_tools, tmp_path):
         + "\n"
     )
 
-    with patch("autoloop.config.RepoContext", side_effect=_make_ctx):
+    with patch("autoloop.mcp_server.RepoContext", side_effect=_make_ctx):
         result = mcp_tools["autoloop_eval"](repo_dir=str(tmp_path))
 
     assert "Eval Snapshot" in result
@@ -721,7 +723,7 @@ def test_eval_snapshot_default(mcp_tools, tmp_path):
 
 def test_eval_snapshot_no_history(mcp_tools, tmp_path):
     """autoloop_eval returns empty snapshot when no run history exists."""
-    with patch("autoloop.config.RepoContext", side_effect=_make_ctx):
+    with patch("autoloop.mcp_server.RepoContext", side_effect=_make_ctx):
         result = mcp_tools["autoloop_eval"](repo_dir=str(tmp_path))
 
     assert "Eval Snapshot" in result
@@ -745,7 +747,7 @@ def test_eval_trend(mcp_tools, tmp_path):
             )
         )
 
-    with patch("autoloop.config.RepoContext", side_effect=_make_ctx):
+    with patch("autoloop.mcp_server.RepoContext", side_effect=_make_ctx):
         result = mcp_tools["autoloop_eval"](trend=True, repo_dir=str(tmp_path))
 
     assert "Eval Trend" in result
@@ -753,7 +755,7 @@ def test_eval_trend(mcp_tools, tmp_path):
 
 def test_eval_trend_empty(mcp_tools, tmp_path):
     """autoloop_eval with trend=True and no snapshots returns appropriate message."""
-    with patch("autoloop.config.RepoContext", side_effect=_make_ctx):
+    with patch("autoloop.mcp_server.RepoContext", side_effect=_make_ctx):
         result = mcp_tools["autoloop_eval"](trend=True, repo_dir=str(tmp_path))
 
     assert "No snapshots found" in result
@@ -777,7 +779,7 @@ def test_eval_compare_no_previous(mcp_tools, tmp_path):
         + "\n"
     )
 
-    with patch("autoloop.config.RepoContext", side_effect=_make_ctx):
+    with patch("autoloop.mcp_server.RepoContext", side_effect=_make_ctx):
         result = mcp_tools["autoloop_eval"](compare=True, repo_dir=str(tmp_path))
 
     assert "No previous snapshot to compare against" in result
@@ -817,7 +819,7 @@ def test_eval_compare_with_previous(mcp_tools, tmp_path):
         + "\n"
     )
 
-    with patch("autoloop.config.RepoContext", side_effect=_make_ctx):
+    with patch("autoloop.mcp_server.RepoContext", side_effect=_make_ctx):
         result = mcp_tools["autoloop_eval"](compare=True, repo_dir=str(tmp_path))
 
     assert "Comparison:" in result
@@ -849,7 +851,7 @@ def test_eval_publish(mcp_tools, tmp_path):
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     with (
-        patch("autoloop.config.RepoContext", side_effect=_make_ctx),
+        patch("autoloop.mcp_server.RepoContext", side_effect=_make_ctx),
         patch("autoloop.mcp_server.subprocess.run", fake_run),
     ):
         result = mcp_tools["autoloop_eval"](publish=True, repo_dir=str(tmp_path))
@@ -893,7 +895,7 @@ def test_eval_publish_false_no_commit(mcp_tools, tmp_path):
         + "\n"
     )
 
-    with patch("autoloop.config.RepoContext", side_effect=_make_ctx):
+    with patch("autoloop.mcp_server.RepoContext", side_effect=_make_ctx):
         result = mcp_tools["autoloop_eval"](repo_dir=str(tmp_path))
 
     assert "EVAL.md" not in result
@@ -902,9 +904,9 @@ def test_eval_publish_false_no_commit(mcp_tools, tmp_path):
 
 def test_eval_uses_cwd_when_no_repo_dir(mcp_tools, tmp_path, monkeypatch):
     """autoloop_eval uses cwd when repo_dir is omitted."""
-    monkeypatch.setattr("autoloop.mcp_server.Path.cwd", lambda: tmp_path)
+    monkeypatch.chdir(tmp_path)
 
-    with patch("autoloop.config.RepoContext", side_effect=_make_ctx):
+    with patch("autoloop.mcp_server.RepoContext", side_effect=_make_ctx):
         result = mcp_tools["autoloop_eval"]()
 
     assert "Eval Snapshot" in result
@@ -947,7 +949,7 @@ def test_eval_with_config_loads_repo(mcp_tools, tmp_path, monkeypatch):
         return []
 
     with (
-        patch("autoloop.config.RepoContext", side_effect=_make_ctx),
+        patch("autoloop.mcp_server.RepoContext", side_effect=_make_ctx),
         patch("autoloop.eval.fetch_pr_data", fake_fetch),
     ):
         mcp_tools["autoloop_eval"](repo_dir=str(tmp_path))
@@ -984,7 +986,7 @@ def test_eval_publish_pr(mcp_tools, tmp_path):
         return type("R", (), {"returncode": 0, "stdout": stdout, "stderr": ""})()
 
     with (
-        patch("autoloop.config.RepoContext", side_effect=_make_ctx),
+        patch("autoloop.mcp_server.RepoContext", side_effect=_make_ctx),
         patch("autoloop.eval.subprocess.run", fake_run),
     ):
         result = mcp_tools["autoloop_eval"](publish=True, pr=True, repo_dir=str(tmp_path))
@@ -1040,7 +1042,7 @@ def test_eval_publish_push_failure_suggests_pr(mcp_tools, tmp_path):
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     with (
-        patch("autoloop.config.RepoContext", side_effect=_make_ctx),
+        patch("autoloop.mcp_server.RepoContext", side_effect=_make_ctx),
         patch("autoloop.mcp_server.subprocess.run", fake_run),
     ):
         result = mcp_tools["autoloop_eval"](publish=True, repo_dir=str(tmp_path))
