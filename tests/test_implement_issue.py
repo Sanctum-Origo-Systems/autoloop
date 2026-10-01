@@ -31,6 +31,7 @@ from autoloop.implement_issue import (
     detect_active_claude_session,
     detect_issue_type,
     ensure_clean_main,
+    ensure_worktree,
     extract_linked_issue_number,
     get_issue_by_number,
     has_design_comment,
@@ -49,6 +50,8 @@ from autoloop.implement_issue import (
     post_timeout_failure,
     priority_rank,
     release_lock,
+    reset_worktree_branch,
+    resolve_working_dir,
     review_implementation,
     run_auto_fix_loop,
     scan_test_integrity_violations,
@@ -5060,3 +5063,118 @@ def test_verify_implementation_uses_repo_dir(monkeypatch, tmp_path):
 
     assert valid is True
     assert all(cwd == tmp_path for cwd in captured_cwds)
+
+
+# --- Worktree lifecycle helper tests ---
+
+
+def test_ensure_worktree_creates_worktree(monkeypatch, tmp_path):
+    """ensure_worktree calls git worktree add when path doesn't exist."""
+    ctx = RepoContext.for_data_dir(tmp_path / "data", repo_dir=tmp_path)
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["cwd"] = kwargs.get("cwd")
+        (ctx.worktree_dir / "autoloop/42-add-feature").mkdir(parents=True, exist_ok=True)
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    result = ensure_worktree(ctx, "autoloop/42-add-feature")
+
+    assert result == ctx.worktree_dir / "autoloop/42-add-feature"
+    assert captured["cmd"][0:3] == ["git", "worktree", "add"]
+    assert str(ctx.worktree_dir / "autoloop/42-add-feature") in captured["cmd"]
+    assert captured["cwd"] == ctx.repo_dir
+
+
+def test_ensure_worktree_skips_when_exists(monkeypatch, tmp_path):
+    """ensure_worktree skips git worktree add when path already exists."""
+    ctx = RepoContext.for_data_dir(tmp_path / "data", repo_dir=tmp_path)
+    wt_path = ctx.worktree_dir / "autoloop/42-add-feature"
+    wt_path.mkdir(parents=True)
+
+    called = [False]
+
+    def fake_run(cmd, **kwargs):
+        called[0] = True
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    result = ensure_worktree(ctx, "autoloop/42-add-feature")
+
+    assert result == wt_path
+    assert called[0] is False
+
+
+def test_ensure_worktree_path_under_worktree_dir(tmp_path):
+    """ensure_worktree returns a path under ctx.worktree_dir, not under cwd."""
+    ctx = RepoContext.for_data_dir(tmp_path / "data", repo_dir=tmp_path)
+    wt_path = ctx.worktree_dir / "autoloop/42-test"
+    wt_path.mkdir(parents=True)
+
+    result = ensure_worktree(ctx, "autoloop/42-test")
+    assert str(result).startswith(str(ctx.worktree_dir))
+
+
+def test_reset_worktree_branch_runs_checkout(monkeypatch, tmp_path):
+    """reset_worktree_branch runs git checkout -B inside the worktree."""
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["cwd"] = kwargs.get("cwd")
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    reset_worktree_branch(tmp_path, "autoloop/42-add-feature")
+
+    assert captured["cmd"] == ["git", "checkout", "-B", "autoloop/42-add-feature", "origin/main"]
+    assert captured["cwd"] == tmp_path
+
+
+def test_resolve_working_dir_off_returns_cwd(monkeypatch, tmp_path):
+    """resolve_working_dir returns cwd when isolation is 'off'."""
+    monkeypatch.chdir(tmp_path)
+    ctx = RepoContext.for_data_dir(tmp_path / "data", repo_dir=tmp_path)
+    result = resolve_working_dir("off", ctx, "autoloop/42-test")
+
+    assert result == Path.cwd()
+
+
+def test_resolve_working_dir_worktree_returns_worktree_path(monkeypatch, tmp_path):
+    """resolve_working_dir creates/reuses worktree when isolation is 'worktree'."""
+    ctx = RepoContext.for_data_dir(tmp_path / "data", repo_dir=tmp_path)
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        wt_path = ctx.worktree_dir / "autoloop/42-test"
+        wt_path.mkdir(parents=True, exist_ok=True)
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    result = resolve_working_dir("worktree", ctx, "autoloop/42-test")
+
+    assert result == ctx.worktree_dir / "autoloop/42-test"
+    assert any(c[0:3] == ["git", "worktree", "add"] for c in calls)
+    assert any("checkout" in c[1] for c in calls if len(c) > 1)
+
+
+def test_resolve_working_dir_worktree_does_not_create_under_cwd(monkeypatch, tmp_path):
+    """The worktree path should never be under cwd."""
+    data_dir = tmp_path / "data"
+    cwd = tmp_path / "project"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    ctx = RepoContext.for_data_dir(data_dir, repo_dir=cwd)
+
+    def fake_run(cmd, **kwargs):
+        wt_path = ctx.worktree_dir / "autoloop/42-test"
+        wt_path.mkdir(parents=True, exist_ok=True)
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    result = resolve_working_dir("worktree", ctx, "autoloop/42-test")
+
+    assert not str(result).startswith(str(cwd))

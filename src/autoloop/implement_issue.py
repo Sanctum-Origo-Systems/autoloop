@@ -41,6 +41,45 @@ Likely causes:
  3. The inner claude invocation failed to start (check claude CLI auth)"""
 
 
+# --- Worktree lifecycle helpers ---
+
+
+def ensure_worktree(ctx: RepoContext, branch: str) -> Path:
+    """Create a persistent worktree for *branch* under ctx.worktree_dir if it doesn't exist."""
+    wt_path = ctx.worktree_dir / branch
+    if wt_path.exists():
+        return wt_path
+    ctx.worktree_dir.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "worktree", "add", str(wt_path), "-b", branch, "origin/main"],
+        cwd=ctx.repo_dir,
+        check=True,
+    )
+    return wt_path
+
+
+def reset_worktree_branch(worktree_path: Path, branch: str) -> None:
+    """Reset the worktree branch to the latest origin/main."""
+    subprocess.run(
+        ["git", "checkout", "-B", branch, "origin/main"],
+        cwd=worktree_path,
+        check=True,
+    )
+
+
+def resolve_working_dir(isolation: str, ctx: RepoContext, branch: str) -> Path:
+    """Return the working directory based on isolation mode.
+
+    When isolation is 'worktree', creates/reuses a worktree and resets the branch.
+    When isolation is 'off', returns Path.cwd().
+    """
+    if isolation == "worktree":
+        wt_path = ensure_worktree(ctx, branch)
+        reset_worktree_branch(wt_path, branch)
+        return wt_path
+    return Path.cwd()
+
+
 # --- Pure functions (testable without mocking) ---
 
 
