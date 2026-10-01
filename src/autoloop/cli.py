@@ -157,16 +157,19 @@ def main():
 
     if args.command == "version":
         print(f"autoloop {__version__}")
+        return
 
-    elif args.command == "init":
+    from autoloop.config import RepoContext
+
+    ctx = RepoContext(repo_dir=Path.cwd()) if args.command not in ("init", "status") else None
+
+    if args.command == "init":
         from autoloop.init import run_init
 
         run_init(args.repo, args.reviewer, args.verify_cmd, args.dry_run, args.skip_labels)
 
     elif args.command == "plan":
-        from pathlib import Path
-
-        from autoloop.config import RepoContext, load_config
+        from autoloop.config import load_config
         from autoloop.create_issue import create_issues_from_spec
         from autoloop.implement_issue import detect_active_claude_session
 
@@ -178,13 +181,12 @@ def main():
                 "Close it, or move the Claude Code session to a parent folder."
             )
             sys.exit(1)
-        ctx = RepoContext(repo_dir=Path.cwd())
         create_issues_from_spec(ctx, args.from_spec, skip=args.skip, cfg=cfg, dry_run=args.dry_run)
 
     elif args.command == "triage":
         from autoloop.triage_issues import main as triage_main
 
-        triage_main(issue=args.issue, drain=args.drain, max_rounds=args.max_rounds)
+        triage_main(ctx, issue=args.issue, drain=args.drain, max_rounds=args.max_rounds)
 
     elif args.command == "implement":
         import autoloop.implement_issue as impl
@@ -195,6 +197,7 @@ def main():
             cfg.max_pr_review_rounds = args.max_pr_review_rounds
         impl.cfg = cfg
         impl.main(
+            ctx,
             issue=args.issue,
             max_issues=args.max_issues,
             require_design=args.require_design,
@@ -205,9 +208,7 @@ def main():
         _show_status()
 
     elif args.command == "fix-pr":
-        from pathlib import Path
-
-        from autoloop.config import RepoContext, load_config
+        from autoloop.config import load_config
         from autoloop.fix_pr import fix_pr
         from autoloop.implement_issue import detect_active_claude_session
 
@@ -219,7 +220,6 @@ def main():
                 "Close it, or move the Claude Code session to a parent folder."
             )
             sys.exit(1)
-        ctx = RepoContext(repo_dir=Path.cwd())
         success = fix_pr(ctx, args.pr_number, cfg)
         if not success:
             sys.exit(1)
@@ -236,7 +236,7 @@ def main():
                 "Close it, or move the Claude Code session to a parent folder."
             )
             sys.exit(1)
-        result = review_pr(args.pr_number, cfg)
+        result = review_pr(args.pr_number, cfg, repo_dir=ctx.repo_dir)
         if args.json:
             json.dump(result, sys.stdout)
             print()
@@ -244,13 +244,10 @@ def main():
             sys.exit(1)
 
     elif args.command == "auto-close-parent":
-        from pathlib import Path
-
         from autoloop.auto_close_parent import check_and_close_parent
-        from autoloop.config import RepoContext, load_config
+        from autoloop.config import load_config
 
         cfg = load_config()
-        ctx = RepoContext(repo_dir=Path.cwd())
         result = check_and_close_parent(ctx, args.pr_number, cfg=cfg)
         if result:
             print(f"Closed parent issue #{result}")
@@ -258,11 +255,10 @@ def main():
             print("No parent issue to close.")
 
     elif args.command == "eval":
-        from autoloop.config import RepoContext, load_config
+        from autoloop.config import load_config
         from autoloop.eval import main as eval_main
 
         cfg = load_config()
-        ctx = RepoContext(repo_dir=Path.cwd())
         eval_main(
             compare=args.compare,
             trend=args.trend,
@@ -278,19 +274,16 @@ def main():
         )
 
     elif args.command == "doctor":
-        from autoloop.config import RepoContext
         from autoloop.doctor import get_checks, run_checks
 
-        ctx = RepoContext(repo_dir=Path.cwd())
         results = run_checks(get_checks(ctx))
         if any(not r.passed for r in results):
             sys.exit(1)
 
     elif args.command == "preflight":
-        from autoloop.config import RepoContext, load_config
+        from autoloop.config import load_config
         from autoloop.preflight import run_preflight
 
-        ctx = RepoContext(repo_dir=Path.cwd())
         cfg = load_config()
         results = run_preflight(cfg, ctx)
         any_failed = False
