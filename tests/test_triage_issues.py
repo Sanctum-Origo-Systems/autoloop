@@ -2573,6 +2573,274 @@ def test_triage_issue_uses_discovered_files_for_duplicate_check(monkeypatch):
     assert any("needs-human" in c[c.index("--add-label") + 1] for c in label_calls)
 
 
+def test_triage_issue_excludes_sibling_sub_issues_from_duplicate_check(monkeypatch):
+    """Sub-issues sharing a parent should not flag each other as duplicates."""
+    cfg = _cfg()
+
+    def fake_load(repo_dir):
+        return "src/autoloop/config.py\n", "# CLAUDE.md"
+
+    monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
+
+    def fake_run_claude(prompt, model, timeout):
+        return ClaudeResult(
+            json.dumps(
+                {
+                    "verdict": "ready",
+                    "points": 2,
+                    "priority": "p1",
+                    "reason": "template complete",
+                    "files_missing": False,
+                }
+            ),
+            0.01,
+            100,
+            50,
+            0,
+            0,
+            True,
+        )
+
+    monkeypatch.setattr("autoloop.triage_issues.run_claude", fake_run_claude)
+
+    sibling_issue = {
+        "number": 310,
+        "title": "thread RepoContext through config.py",
+        "body": (
+            "## Files to Modify\n- src/autoloop/config.py\n\n## Type\nrefactor\n\n"
+            "## Context\nParent issue: #300\nSub-issue of #300."
+        ),
+        "labels": [{"name": "ready"}],
+    }
+
+    def fake_list_labeled(cfg, labels):
+        return [sibling_issue]
+
+    monkeypatch.setattr("autoloop.triage_issues.list_issues_with_labels", fake_list_labeled)
+
+    calls: list[list[str]] = []
+
+    class FakeResult:
+        returncode = 0
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return FakeResult()
+
+    candidate = {
+        "number": 311,
+        "title": "thread RepoContext through triage_issues.py and config.py",
+        "body": (
+            "## Files to Modify\n- src/autoloop/config.py\n- src/autoloop/triage_issues.py\n\n"
+            "## Type\nrefactor\n\n## Context\nParent issue: #300\nSub-issue of #300."
+        ),
+    }
+
+    ctx = _mock_ctx()
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import triage_issue
+
+        triage_issue(ctx, candidate, cfg)
+
+    label_calls = [c for c in calls if "edit" in c and "--add-label" in c]
+    assert any("ready" in c[c.index("--add-label") + 1] for c in label_calls)
+    assert not any("needs-human" in c[c.index("--add-label") + 1] for c in label_calls)
+
+
+def test_triage_issue_genuine_duplicate_still_fires_without_shared_parent(monkeypatch):
+    """Issues with no shared parent that overlap should still be flagged as duplicates."""
+    cfg = _cfg()
+
+    def fake_load(repo_dir):
+        return "src/autoloop/config.py\n", "# CLAUDE.md"
+
+    monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
+
+    def fake_run_claude(prompt, model, timeout):
+        return ClaudeResult(
+            json.dumps(
+                {
+                    "verdict": "ready",
+                    "points": 2,
+                    "priority": "p1",
+                    "reason": "template complete",
+                    "files_missing": False,
+                }
+            ),
+            0.01,
+            100,
+            50,
+            0,
+            0,
+            True,
+        )
+
+    monkeypatch.setattr("autoloop.triage_issues.run_claude", fake_run_claude)
+
+    existing_issue = {
+        "number": 50,
+        "title": "thread RepoContext through config.py",
+        "body": (
+            "## Files to Modify\n- src/autoloop/config.py\n\n## Type\nrefactor\n\n"
+            "## Context\nParent issue: #40"
+        ),
+        "labels": [{"name": "ready"}],
+    }
+
+    def fake_list_labeled(cfg, labels):
+        return [existing_issue]
+
+    monkeypatch.setattr("autoloop.triage_issues.list_issues_with_labels", fake_list_labeled)
+
+    calls: list[list[str]] = []
+
+    class FakeResult:
+        returncode = 0
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return FakeResult()
+
+    candidate = {
+        "number": 60,
+        "title": "thread RepoContext through config.py",
+        "body": (
+            "## Files to Modify\n- src/autoloop/config.py\n\n## Type\nrefactor\n\n"
+            "## Context\nParent issue: #55"
+        ),
+    }
+
+    ctx = _mock_ctx()
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import triage_issue
+
+        triage_issue(ctx, candidate, cfg)
+
+    label_calls = [c for c in calls if "edit" in c and "--add-label" in c]
+    assert any("needs-human" in c[c.index("--add-label") + 1] for c in label_calls)
+    assert not any("ready" in c[c.index("--add-label") + 1] for c in label_calls)
+
+
+def test_triage_issue_duplicate_assigns_priority_label(monkeypatch):
+    """Priority label should be assigned even when routing to needs-human for duplicates."""
+    cfg = _cfg()
+
+    def fake_load(repo_dir):
+        return "src/autoloop/config.py\n", "# CLAUDE.md"
+
+    monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
+
+    def fake_run_claude(prompt, model, timeout):
+        return ClaudeResult(
+            json.dumps(
+                {
+                    "verdict": "ready",
+                    "points": 2,
+                    "priority": "p0",
+                    "reason": "template complete",
+                    "files_missing": False,
+                }
+            ),
+            0.01,
+            100,
+            50,
+            0,
+            0,
+            True,
+        )
+
+    monkeypatch.setattr("autoloop.triage_issues.run_claude", fake_run_claude)
+
+    existing_issue = {
+        "number": 89,
+        "title": "add review_model config fields",
+        "body": "## Files to Modify\n- src/autoloop/config.py\n\n## Type\nfeature",
+        "labels": [{"name": "ready"}],
+    }
+
+    def fake_list_labeled(cfg, labels):
+        return [existing_issue]
+
+    monkeypatch.setattr("autoloop.triage_issues.list_issues_with_labels", fake_list_labeled)
+
+    calls: list[list[str]] = []
+
+    class FakeResult:
+        returncode = 0
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return FakeResult()
+
+    candidate = {
+        "number": 92,
+        "title": "add review_model field to AutoLoopConfig",
+        "body": "## Files to Modify\n- src/autoloop/config.py\n\n## Type\nfeature",
+    }
+
+    ctx = _mock_ctx()
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import triage_issue
+
+        triage_issue(ctx, candidate, cfg)
+
+    label_calls = [c for c in calls if "edit" in c and "--add-label" in c]
+    assert len(label_calls) == 1
+    label_value = label_calls[0][label_calls[0].index("--add-label") + 1]
+    assert "needs-human" in label_value
+    assert "p0" in label_value
+
+
+def test_flag_duplicate_includes_priority_label():
+    """flag_duplicate should add the priority label alongside needs-human."""
+    cfg = _cfg(repo="acme/widgets")
+    calls: list[list[str]] = []
+
+    class FakeResult:
+        returncode = 0
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return FakeResult()
+
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import flag_duplicate
+
+        flag_duplicate(
+            42,
+            [{"number": 89, "reason": "overlapping scope"}],
+            cfg,
+            priority="p1",
+        )
+
+    edit_call = [c for c in calls if "edit" in c][0]
+    label_value = edit_call[edit_call.index("--add-label") + 1]
+    assert "needs-human" in label_value
+    assert "p1" in label_value
+
+
+def test_flag_duplicate_no_priority_omits_it():
+    """flag_duplicate with no priority should only add needs-human."""
+    cfg = _cfg(repo="acme/widgets")
+    calls: list[list[str]] = []
+
+    class FakeResult:
+        returncode = 0
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return FakeResult()
+
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import flag_duplicate
+
+        flag_duplicate(42, [{"number": 89, "reason": "overlap"}], cfg)
+
+    edit_call = [c for c in calls if "edit" in c][0]
+    label_value = edit_call[edit_call.index("--add-label") + 1]
+    assert label_value == "needs-human"
+
+
 # --- fetch_single_issue ---
 
 
