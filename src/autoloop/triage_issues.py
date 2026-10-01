@@ -1212,7 +1212,7 @@ def triage_issue(
     return results
 
 
-def main(issue=None, drain=False, max_rounds=None, ctx=None):
+def main(ctx=None, issue=None, drain=False, max_rounds=None):
     from autoloop.config import RepoContext, load_config
     from autoloop.implement_issue import detect_active_claude_session
 
