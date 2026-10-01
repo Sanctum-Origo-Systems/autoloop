@@ -1455,3 +1455,80 @@ class TestReviewPrMcpSubprocess:
         except (json.JSONDecodeError, ValueError):
             error = result.stderr.strip() or "Review failed (no details available)"
         assert error == "Config file not found"
+
+
+class TestReviewPrWorktreeIsolation:
+    """Verify review-pr handles worktree isolation correctly."""
+
+    def test_cli_review_pr_no_session_detection(self, tmp_path, monkeypatch):
+        """The review-pr CLI command must not call detect_active_claude_session."""
+        monkeypatch.chdir(tmp_path)
+        cfg = _cfg()
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
+        review_json = json.dumps({"approved": True, "summary": "ok"})
+        dispatch = _make_dispatcher(pr_data)
+
+        with (
+            patch("subprocess.run", side_effect=dispatch),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(text=review_json),
+            ),
+            patch("sys.argv", ["autoloop", "review-pr", "42"]),
+            patch("autoloop.config.load_config", return_value=cfg),
+            patch(
+                "autoloop.implement_issue.detect_active_claude_session",
+            ) as mock_detect,
+        ):
+            main()
+
+        mock_detect.assert_not_called()
+
+    def test_worktree_creates_worktree_for_pr_branch(self, tmp_path, monkeypatch):
+        """When isolation='worktree', review-pr creates a worktree via RepoContext."""
+        monkeypatch.chdir(tmp_path)
+        cfg = _cfg(implement_isolation="worktree")
+        wt_path = tmp_path / "worktree"
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
+        review_json = json.dumps({"approved": True, "summary": "ok"})
+        dispatch = _make_dispatcher(pr_data)
+
+        with (
+            patch("subprocess.run", side_effect=dispatch),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(text=review_json),
+            ),
+            patch("sys.argv", ["autoloop", "review-pr", "42"]),
+            patch("autoloop.config.load_config", return_value=cfg),
+            patch("autoloop.fix_pr.ensure_pr_worktree", return_value=wt_path) as mock_wt,
+        ):
+            main()
+
+        mock_wt.assert_called_once()
+        _, branch = mock_wt.call_args[0]
+        assert branch == "fix/42"
+
+    def test_isolation_off_uses_repo_dir(self, tmp_path, monkeypatch):
+        """When isolation='off', review-pr uses ctx.repo_dir, not a worktree."""
+        monkeypatch.chdir(tmp_path)
+        cfg = _cfg()
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
+        review_json = json.dumps({"approved": True, "summary": "ok"})
+        dispatch = _make_dispatcher(pr_data)
+
+        with (
+            patch("subprocess.run", side_effect=dispatch),
+            patch(
+                "autoloop.claude_runner.run_claude",
+                return_value=_claude_result(text=review_json),
+            ),
+            patch("sys.argv", ["autoloop", "review-pr", "42"]),
+            patch("autoloop.config.load_config", return_value=cfg),
+            patch(
+                "autoloop.fix_pr.ensure_pr_worktree",
+            ) as mock_wt,
+        ):
+            main()
+
+        mock_wt.assert_not_called()

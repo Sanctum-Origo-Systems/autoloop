@@ -15,6 +15,7 @@ from autoloop.fix_pr import (
     checkout_branch,
     commit_fixes,
     continue_rebase,
+    ensure_pr_worktree,
     fix_pr,
     force_push,
     get_pr_info,
@@ -40,6 +41,7 @@ def _cfg(**overrides):
         "test_timeout": 60,
         "verify_cmd": "echo ok",
         "lint_command": "echo lint-ok",
+        "implement_isolation": "off",
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -1193,3 +1195,159 @@ def test_checkout_branch_uses_repo_dir(tmp_path):
 
     for cwd in captured_cwds:
         assert cwd == repo_dir
+
+
+# --- ensure_pr_worktree ---
+
+
+def test_ensure_pr_worktree_creates_new(tmp_path):
+    """ensure_pr_worktree creates a detached worktree when it doesn't exist."""
+    ctx = SimpleNamespace(
+        repo_dir=tmp_path / "repo",
+        worktree_dir=tmp_path / "worktrees",
+    )
+    ctx.repo_dir.mkdir()
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((list(cmd), kwargs))
+        return _ok()
+
+    with patch("autoloop.fix_pr.subprocess.run", fake_run):
+        result = ensure_pr_worktree(ctx, "autoloop/42-fix")
+
+    assert result == tmp_path / "worktrees" / "autoloop/42-fix"
+    assert (tmp_path / "worktrees").exists()
+    assert len(calls) == 1
+    assert calls[0][0][:3] == ["git", "worktree", "add"]
+    assert "--detach" in calls[0][0]
+    assert str(result) in calls[0][0]
+
+
+def test_ensure_pr_worktree_reuses_existing(tmp_path):
+    """ensure_pr_worktree returns existing path without creating a new worktree."""
+    wt_path = tmp_path / "worktrees" / "autoloop/42-fix"
+    wt_path.mkdir(parents=True)
+    ctx = SimpleNamespace(
+        repo_dir=tmp_path / "repo",
+        worktree_dir=tmp_path / "worktrees",
+    )
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return _ok()
+
+    with patch("autoloop.fix_pr.subprocess.run", fake_run):
+        result = ensure_pr_worktree(ctx, "autoloop/42-fix")
+
+    assert result == wt_path
+    assert len(calls) == 0
+
+
+# --- fix_pr worktree isolation ---
+
+
+def test_fix_pr_worktree_uses_worktree_path(tmp_path, capsys):
+    """When implement_isolation='worktree', fix_pr uses worktree path for all cwd."""
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    wt_dir = tmp_path / "worktrees"
+    wt_path = wt_dir / "autoloop/42-fix"
+    wt_path.mkdir(parents=True)
+
+    ctx = SimpleNamespace(repo_dir=repo_dir, worktree_dir=wt_dir)
+    cfg = _cfg(implement_isolation="worktree")
+
+    captured_cwds = []
+
+    def fake_run(cmd, **kwargs):
+        if "cwd" in kwargs and kwargs["cwd"] is not None:
+            captured_cwds.append(Path(kwargs["cwd"]))
+        if isinstance(cmd, str):
+            return _ok(stdout="ok")
+        return _ok()
+
+    with (
+        patch("autoloop.fix_pr.get_pr_info", return_value=_fake_pr_info()),
+        patch("autoloop.fix_pr.is_behind_main", return_value=False),
+        patch("autoloop.fix_pr.subprocess.run", fake_run),
+    ):
+        result = fix_pr(ctx, 42, cfg)
+
+    assert result is True
+    for cwd_used in captured_cwds:
+        assert cwd_used == wt_path, (
+            f"Expected cwd={wt_path}, got cwd={cwd_used}. "
+            "fix_pr with worktree isolation should use worktree path."
+        )
+
+
+# --- No session detection in fix_pr ---
+
+
+def test_no_session_detection_in_fix_pr_module():
+    """fix_pr.py must not reference detect_active_claude_session."""
+    import inspect
+
+    import autoloop.fix_pr as mod
+
+    source = inspect.getsource(mod)
+    assert "detect_active_claude_session" not in source
+
+
+# --- implement_issue session detection skipped when worktree ---
+
+
+def test_implement_main_skips_session_detection_when_worktree(tmp_path):
+    """implement_issue.main() skips session detection when isolation is 'worktree'."""
+    import autoloop.implement_issue as impl
+    from autoloop.config import AutoLoopConfig
+
+    old_cfg = impl.cfg
+    try:
+        cfg = AutoLoopConfig(implement_isolation="worktree")
+        impl.cfg = cfg
+        ctx = SimpleNamespace(repo_dir=tmp_path)
+
+        with (
+            patch.object(impl, "detect_active_claude_session") as mock_detect,
+            patch.object(impl, "acquire_lock", return_value=True),
+            patch.object(impl, "release_lock"),
+            patch.object(impl, "cleanup_merged_labels"),
+            patch.object(impl, "unblock_ready_issues"),
+            patch.object(impl, "get_top_ready_issue", return_value=None),
+        ):
+            impl.main(ctx=ctx, max_issues=1)
+
+        mock_detect.assert_not_called()
+    finally:
+        impl.cfg = old_cfg
+
+
+def test_implement_main_runs_session_detection_when_off(tmp_path):
+    """implement_issue.main() runs session detection when isolation is 'off'."""
+    import autoloop.implement_issue as impl
+    from autoloop.config import AutoLoopConfig
+
+    old_cfg = impl.cfg
+    try:
+        cfg = AutoLoopConfig(implement_isolation="off")
+        impl.cfg = cfg
+        ctx = SimpleNamespace(repo_dir=tmp_path)
+
+        with (
+            patch.object(impl, "detect_active_claude_session", return_value=False) as mock_detect,
+            patch.object(impl, "acquire_lock", return_value=True),
+            patch.object(impl, "release_lock"),
+            patch.object(impl, "cleanup_merged_labels"),
+            patch.object(impl, "unblock_ready_issues"),
+            patch.object(impl, "get_top_ready_issue", return_value=None),
+        ):
+            impl.main(ctx=ctx, max_issues=1)
+
+        mock_detect.assert_called_once()
+    finally:
+        impl.cfg = old_cfg

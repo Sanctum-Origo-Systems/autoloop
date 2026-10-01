@@ -1819,13 +1819,14 @@ def main(
         ctx = RepoContext(repo_dir)
 
     logging.debug("main: resolved project_dir=%s from ctx", ctx.repo_dir)
-    session_detected = detect_active_claude_session(str(ctx.repo_dir))
-    if session_detected is True:
-        print(
-            "Active Claude Code session detected in this directory.\n"
-            "Close it, or move the Claude Code session to a parent folder."
-        )
-        return
+    if cfg.implement_isolation != "worktree":
+        session_detected = detect_active_claude_session(str(ctx.repo_dir))
+        if session_detected is True:
+            print(
+                "Active Claude Code session detected in this directory.\n"
+                "Close it, or move the Claude Code session to a parent folder."
+            )
+            return
 
     if not acquire_lock(ctx.repo_dir):
         print("Another implementation is running. Exiting.")

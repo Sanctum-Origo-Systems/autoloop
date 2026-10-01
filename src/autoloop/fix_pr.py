@@ -61,6 +61,20 @@ class PrState:
     failing_checks: list[str] = field(default_factory=list)
 
 
+def ensure_pr_worktree(ctx: RepoContext, branch: str) -> Path:
+    """Create or reuse a git worktree for a PR branch."""
+    wt_path = ctx.worktree_dir / branch
+    if wt_path.exists():
+        return wt_path
+    ctx.worktree_dir.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "worktree", "add", "--detach", str(wt_path)],
+        cwd=ctx.repo_dir,
+        check=True,
+    )
+    return wt_path
+
+
 def get_pr_info(pr_number: int, repo: str) -> PrState | None:
     """Fetch PR metadata: branch, state, mergeable status, and check results."""
     result = subprocess.run(
@@ -404,6 +418,9 @@ def fix_pr(ctx: RepoContext, pr_number: int, cfg: AutoLoopConfig) -> bool:
     if pr.state != "OPEN":
         print(f"  PR #{pr_number} is {pr.state.lower()}, nothing to fix.")
         return False
+
+    if cfg.implement_isolation == "worktree":
+        repo_dir = ensure_pr_worktree(ctx, pr.branch)
 
     print(f"  Branch: {pr.branch}")
 
