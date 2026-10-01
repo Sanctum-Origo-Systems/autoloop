@@ -609,7 +609,7 @@ def evaluate_issue(issue: dict, cfg: AutoLoopConfig, repo_dir: Path) -> tuple[di
         + f"\n\nIssue #{issue['number']}: {issue['title']}\n\n"
         + (issue.get("body") or "")
     )
-    result = run_claude(prompt, cfg.triage_model, cfg.triage_timeout)
+    result = run_claude(prompt, cfg.triage_model, cfg.triage_timeout, repo_dir=repo_dir)
     if not result.success:
         verdict = {
             "verdict": "rejected",
@@ -632,7 +632,7 @@ def discover_files(
         body=issue["body"] or "",
     )
 
-    result = run_claude(prompt, cfg.triage_model, cfg.triage_timeout)
+    result = run_claude(prompt, cfg.triage_model, cfg.triage_timeout, repo_dir=repo_dir)
     if not result.success:
         return [], result
 
@@ -745,11 +745,11 @@ def reject_issue(number: int, reason: str, cfg: AutoLoopConfig):
 
 
 def rewrite_issue_body(
-    issue: dict, reason: str, cfg: AutoLoopConfig
+    issue: dict, reason: str, cfg: AutoLoopConfig, *, repo_dir: Path | None = None
 ) -> tuple[str | None, ClaudeResult]:
     """Ask Claude to rewrite a rejected issue body to address the reason."""
     prompt = REWRITE_PROMPT.format(reason=reason, body=issue.get("body") or "")
-    result = run_claude(prompt, cfg.triage_model, cfg.triage_timeout)
+    result = run_claude(prompt, cfg.triage_model, cfg.triage_timeout, repo_dir=repo_dir)
     if not result.success:
         return None, result
     return parse_rewritten_body(result.text), result
@@ -821,6 +821,8 @@ def suggest_sub_issue_fields(
     parent_summary: str,
     step: dict,
     cfg: AutoLoopConfig,
+    *,
+    repo_dir: Path | None = None,
 ) -> dict | None:
     """Ask Claude for a specific Expected Behavior + Acceptance Criteria."""
     if not shutil.which("claude"):
@@ -836,7 +838,7 @@ def suggest_sub_issue_fields(
         verify_cmd=cfg.verify_cmd,
         lint_cmd=cfg.lint_command,
     )
-    result = run_claude(prompt, cfg.triage_model, cfg.triage_timeout)
+    result = run_claude(prompt, cfg.triage_model, cfg.triage_timeout, repo_dir=repo_dir)
     if not result.success:
         return None
     return parse_sub_issue_response(result.text)
@@ -848,6 +850,8 @@ def create_sub_issues(
     cfg: AutoLoopConfig,
     parent_summary: str = "",
     parent_labels: list[dict] | None = None,
+    *,
+    repo_dir: Path | None = None,
 ) -> list[int]:
     """Create sub-issues from a decomposition and return their numbers."""
     parent_type = detect_issue_type(parent_summary)
@@ -865,7 +869,9 @@ def create_sub_issues(
         elif parent_deps:
             deps = parent_deps
 
-        fields = suggest_sub_issue_fields(parent_number, parent_summary, step, cfg)
+        fields = suggest_sub_issue_fields(
+            parent_number, parent_summary, step, cfg, repo_dir=repo_dir
+        )
         if fields:
             expected = fields.get("expected_behavior") or step["title"]
             extra_criteria = "\n".join(fields.get("acceptance_criteria", []))
@@ -935,6 +941,8 @@ def decompose_issue(
     cfg: AutoLoopConfig,
     parent_summary: str = "",
     parent_labels: list[dict] | None = None,
+    *,
+    repo_dir: Path | None = None,
 ):
     """Label the parent needs-decomposition, create sub-issues, post summary."""
     validated = dict(result)
@@ -974,7 +982,9 @@ def decompose_issue(
             comment,
         ],
     )
-    sub_issues = create_sub_issues(number, validated, cfg, parent_summary, parent_labels)
+    sub_issues = create_sub_issues(
+        number, validated, cfg, parent_summary, parent_labels, repo_dir=repo_dir
+    )
     if sub_issues:
         subprocess.run(
             [
@@ -1089,7 +1099,9 @@ def triage_issue(
 
     if verdict["verdict"] == "rejected":
         if auto_fix:
-            new_body, rewrite_result = rewrite_issue_body(issue, verdict["reason"], cfg)
+            new_body, rewrite_result = rewrite_issue_body(
+                issue, verdict["reason"], cfg, repo_dir=ctx.repo_dir
+            )
             results.append(rewrite_result)
             if new_body:
                 apply_rewrite(issue["number"], new_body, cfg)
@@ -1205,6 +1217,7 @@ def triage_issue(
                 cfg,
                 issue.get("body") or "",
                 issue.get("labels", []),
+                repo_dir=ctx.repo_dir,
             )
             if _pass_stats is not None:
                 _pass_stats["decomposed"] += 1

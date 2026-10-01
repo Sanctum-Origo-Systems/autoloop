@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import subprocess
-from pathlib import Path
 
 import autoloop.claude_runner as claude_runner
 from autoloop.claude_runner import ClaudeResult, run_claude
@@ -77,13 +76,13 @@ def test_run_claude_missing_usage_defaults_to_zero(monkeypatch):
     assert result.cache_creation_tokens == 0
 
 
-def test_run_claude_uses_repo_dir_as_cwd(monkeypatch):
+def test_run_claude_defaults_cwd_to_none(monkeypatch):
     fake_run, captured = _fake_run(stdout=json.dumps(_FULL_RESPONSE))
     monkeypatch.setattr(claude_runner.subprocess, "run", fake_run)
 
     run_claude("p", "opus", 10)
 
-    assert captured["kwargs"]["cwd"] == Path.cwd()
+    assert captured["kwargs"]["cwd"] is None
 
 
 def test_run_claude_no_module_level_repo_dir():
@@ -93,13 +92,12 @@ def test_run_claude_no_module_level_repo_dir():
     )
 
 
-def test_run_claude_resolves_cwd_at_call_time(tmp_path, monkeypatch):
-    """run_claude should use Path.cwd() at call time, not a frozen constant."""
+def test_run_claude_uses_repo_dir_as_cwd(tmp_path, monkeypatch):
+    """run_claude should pass repo_dir through to subprocess as cwd."""
     fake_run, captured = _fake_run(stdout=json.dumps(_FULL_RESPONSE))
     monkeypatch.setattr(claude_runner.subprocess, "run", fake_run)
-    monkeypatch.setattr("autoloop.claude_runner.Path.cwd", lambda: tmp_path)
 
-    run_claude("p", "opus", 10)
+    run_claude("p", "opus", 10, repo_dir=tmp_path)
 
     assert captured["kwargs"]["cwd"] == tmp_path
 

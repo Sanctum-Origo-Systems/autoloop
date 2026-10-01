@@ -531,7 +531,7 @@ def review_pr(pr_number, cfg, repo_dir: Path | None = None):
             file_count=len(changed_files),
             diff=diff[: cfg.diff_truncation],
         )
-        result = run_claude(prompt, cfg.review_model, cfg.impl_timeout)
+        result = run_claude(prompt, cfg.review_model, cfg.impl_timeout, repo_dir=repo_dir)
         if result.success:
             review_passed, review_feedback = impl.parse_review_response(result.text)
         else:
