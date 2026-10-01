@@ -688,7 +688,7 @@ def design_issue(issue: dict, repo_dir: Path | None = None) -> str:
         body=issue.get("body", "") or "",
         conventions=claude_md,
     )
-    return run_claude(prompt, cfg.impl_model, cfg.impl_timeout).text
+    return run_claude(prompt, cfg.impl_model, cfg.impl_timeout, repo_dir=repo_dir).text
 
 
 def design_required(issue: dict, require_design: bool = False) -> bool:
@@ -786,7 +786,9 @@ def post_attempt_failure(number: int, attempt: int, errors: str):
     )
 
 
-def implement(issue: dict, previous_errors: str | None = None) -> ClaudeResult:
+def implement(
+    issue: dict, previous_errors: str | None = None, *, repo_dir: Path | None = None
+) -> ClaudeResult:
     """Run Claude to implement the issue. Optionally includes prior failure context."""
     prompt = build_implementation_prompt(issue)
     if previous_errors:
@@ -797,7 +799,7 @@ def implement(issue: dict, previous_errors: str | None = None) -> ClaudeResult:
             f"Fix these specific issues. Do not start from scratch"
             f" — build on what's already there.\n"
         )
-    return run_claude(prompt, cfg.impl_model, cfg.impl_timeout)
+    return run_claude(prompt, cfg.impl_model, cfg.impl_timeout, repo_dir=repo_dir)
 
 
 def is_branch_empty(branch: str, repo_dir: Path | None = None) -> bool:
@@ -1097,7 +1099,7 @@ def review_implementation(
         file_count=len(changed_files),
         diff=diff[:8000],
     )
-    result = run_claude(prompt, cfg.impl_model, cfg.impl_timeout)
+    result = run_claude(prompt, cfg.impl_model, cfg.impl_timeout, repo_dir=repo_dir)
     if not result.success:
         approved, feedback = False, "Review call failed (timeout or non-zero exit)."
     else:
@@ -1140,7 +1142,8 @@ def review_implementation(
         if pr_number is not None:
             record["pr"] = pr_number
         try:
-            ctx = RepoContext.for_data_dir(Path.cwd() / "autoloop")
+            base = repo_dir or Path()
+            ctx = RepoContext.for_data_dir(base / "autoloop")
             log_decision(record, ctx)
         except Exception:
             logging.exception("Failed to log Jev auto-merge decision")
@@ -1595,7 +1598,7 @@ def implement_single_issue(
         timeout_failure = False
         for attempt in range(1, cfg.max_retries + 1):
             print(f"  Attempt {attempt}/{cfg.max_retries}...")
-            result = implement(issue, previous_errors=last_errors)
+            result = implement(issue, previous_errors=last_errors, repo_dir=repo_dir)
             claude_results.append(result)
             final_attempt = attempt
 

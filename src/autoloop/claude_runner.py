@@ -22,7 +22,9 @@ class ClaudeResult:
     timed_out: bool = False
 
 
-def run_claude(prompt: str, model: str, timeout: int) -> ClaudeResult:
+def run_claude(
+    prompt: str, model: str, timeout: int, *, repo_dir: Path | None = None
+) -> ClaudeResult:
     """Run `claude -p` with JSON output and parse the response.
 
     Returns ClaudeResult(success=False) on timeout or non-zero exit without
@@ -32,7 +34,7 @@ def run_claude(prompt: str, model: str, timeout: int) -> ClaudeResult:
     try:
         result = subprocess.run(
             ["claude", "-p", "--model", model, "--output-format", "json", prompt],
-            cwd=Path.cwd(),
+            cwd=repo_dir,
             capture_output=True,
             text=True,
             timeout=timeout,

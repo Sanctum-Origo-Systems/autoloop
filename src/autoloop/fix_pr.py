@@ -187,7 +187,7 @@ def resolve_conflicts_with_claude(
     from autoloop.claude_runner import run_claude
 
     prompt = CONFLICT_PROMPT.format(files="\n".join(f"- {f}" for f in conflicting_files))
-    result = run_claude(prompt, cfg.impl_model, cfg.impl_timeout)
+    result = run_claude(prompt, cfg.impl_model, cfg.impl_timeout, repo_dir=repo_dir)
     if not result.success:
         return False
 
@@ -244,7 +244,9 @@ def run_lint_fix(cfg: AutoLoopConfig, repo_dir: Path) -> tuple[bool, str]:
     return check_result.returncode == 0, output
 
 
-def fix_checks_with_claude(errors: str, cfg: AutoLoopConfig) -> bool:
+def fix_checks_with_claude(
+    errors: str, cfg: AutoLoopConfig, *, repo_dir: Path | None = None
+) -> bool:
     """Use Claude to fix failing test/lint issues. Returns True if successful."""
     from autoloop.claude_runner import run_claude
 
@@ -253,7 +255,7 @@ def fix_checks_with_claude(errors: str, cfg: AutoLoopConfig) -> bool:
         verify_cmd=cfg.verify_cmd,
         lint_cmd=cfg.lint_command,
     )
-    result = run_claude(prompt, cfg.impl_model, cfg.impl_timeout)
+    result = run_claude(prompt, cfg.impl_model, cfg.impl_timeout, repo_dir=repo_dir)
     return result.success
 
 
@@ -379,13 +381,13 @@ def _handle_checks(cfg: AutoLoopConfig, repo_dir: Path) -> bool:
             print("  Lint auto-fixed.")
         else:
             print("  Lint auto-fix insufficient. Asking Claude...")
-            if not fix_checks_with_claude(lint_output, cfg):
+            if not fix_checks_with_claude(lint_output, cfg, repo_dir=repo_dir):
                 print("  Claude could not fix lint issues.")
                 return False
 
     if not test_ok:
         print("  Tests failed. Asking Claude to fix...")
-        if not fix_checks_with_claude(test_output, cfg):
+        if not fix_checks_with_claude(test_output, cfg, repo_dir=repo_dir):
             print("  Claude could not fix test failures.")
             return False
 

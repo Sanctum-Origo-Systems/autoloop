@@ -620,7 +620,7 @@ def test_evaluate_issue_uses_cfg_triage_model(monkeypatch):
 
     monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
 
-    def fake_run_claude(prompt, model, timeout):
+    def fake_run_claude(prompt, model, timeout, **kwargs):
         captured["model"] = model
         captured["timeout"] = timeout
         return ClaudeResult(
@@ -661,7 +661,7 @@ def test_evaluate_issue_uses_cfg_triage_timeout(monkeypatch):
 
     captured = {}
 
-    def fake_run_claude(prompt, model, timeout):
+    def fake_run_claude(prompt, model, timeout, **kwargs):
         captured["timeout"] = timeout
         return ClaudeResult(
             json.dumps({"verdict": "ready", "points": 1, "priority": "p1", "reason": "ok"}),
@@ -692,7 +692,7 @@ def test_evaluate_issue_uses_cfg_tree_truncation(monkeypatch):
 
     captured = {}
 
-    def fake_run_claude(prompt, model, timeout):
+    def fake_run_claude(prompt, model, timeout, **kwargs):
         captured["prompt"] = prompt
         return ClaudeResult(
             json.dumps({"verdict": "ready", "points": 1, "priority": "p1", "reason": "ok"}),
@@ -1376,7 +1376,7 @@ def test_triage_issue_caps_depth_2_routes_to_needs_human(monkeypatch):
 
     monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
 
-    def fake_run_claude(prompt, model, timeout):
+    def fake_run_claude(prompt, model, timeout, **kwargs):
         return ClaudeResult(
             json.dumps(
                 {
@@ -1437,7 +1437,7 @@ def test_triage_issue_caps_depth_1_small_points_routes_to_ready(monkeypatch):
 
     monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
 
-    def fake_run_claude(prompt, model, timeout):
+    def fake_run_claude(prompt, model, timeout, **kwargs):
         return ClaudeResult(
             json.dumps(
                 {
@@ -1496,7 +1496,7 @@ def test_triage_issue_allows_decomposition_depth_0(monkeypatch):
 
     monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
 
-    def fake_run_claude(prompt, model, timeout):
+    def fake_run_claude(prompt, model, timeout, **kwargs):
         return ClaudeResult(
             json.dumps(
                 {
@@ -1555,7 +1555,7 @@ def test_triage_issue_custom_max_decomposition_depth(monkeypatch):
 
     monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
 
-    def fake_run_claude(prompt, model, timeout):
+    def fake_run_claude(prompt, model, timeout, **kwargs):
         return ClaudeResult(
             json.dumps(
                 {
@@ -1861,7 +1861,7 @@ def test_triage_issue_collapsed_decomposition_routes_to_ready(monkeypatch):
 
     monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
 
-    def fake_run_claude(prompt, model, timeout):
+    def fake_run_claude(prompt, model, timeout, **kwargs):
         return ClaudeResult(
             json.dumps(
                 {
@@ -1987,7 +1987,7 @@ def test_suggest_sub_issue_fields_passes_project_commands(monkeypatch):
     cfg = _cfg(verify_cmd="npm test", lint_command="eslint .")
     captured = {}
 
-    def fake_run_claude(prompt, model, timeout):
+    def fake_run_claude(prompt, model, timeout, **kwargs):
         captured["prompt"] = prompt
         return ClaudeResult(
             json.dumps(
@@ -2306,7 +2306,7 @@ def test_triage_issue_detects_duplicate_routes_to_needs_human(monkeypatch):
 
     monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
 
-    def fake_run_claude(prompt, model, timeout):
+    def fake_run_claude(prompt, model, timeout, **kwargs):
         return ClaudeResult(
             json.dumps(
                 {
@@ -2379,7 +2379,7 @@ def test_triage_issue_no_duplicate_approves_normally(monkeypatch):
 
     monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
 
-    def fake_run_claude(prompt, model, timeout):
+    def fake_run_claude(prompt, model, timeout, **kwargs):
         return ClaudeResult(
             json.dumps(
                 {
@@ -2440,7 +2440,7 @@ def test_triage_issue_duplicate_check_excludes_self(monkeypatch):
 
     monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
 
-    def fake_run_claude(prompt, model, timeout):
+    def fake_run_claude(prompt, model, timeout, **kwargs):
         return ClaudeResult(
             json.dumps(
                 {
@@ -2508,7 +2508,7 @@ def test_triage_issue_uses_discovered_files_for_duplicate_check(monkeypatch):
 
     monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
 
-    def fake_run_claude(prompt, model, timeout):
+    def fake_run_claude(prompt, model, timeout, **kwargs):
         return ClaudeResult(
             json.dumps(
                 {
@@ -2582,7 +2582,7 @@ def test_triage_issue_excludes_sibling_sub_issues_from_duplicate_check(monkeypat
 
     monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
 
-    def fake_run_claude(prompt, model, timeout):
+    def fake_run_claude(prompt, model, timeout, **kwargs):
         return ClaudeResult(
             json.dumps(
                 {
@@ -2656,7 +2656,7 @@ def test_triage_issue_genuine_duplicate_still_fires_without_shared_parent(monkey
 
     monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
 
-    def fake_run_claude(prompt, model, timeout):
+    def fake_run_claude(prompt, model, timeout, **kwargs):
         return ClaudeResult(
             json.dumps(
                 {
@@ -2730,7 +2730,7 @@ def test_triage_issue_duplicate_assigns_priority_label(monkeypatch):
 
     monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
 
-    def fake_run_claude(prompt, model, timeout):
+    def fake_run_claude(prompt, model, timeout, **kwargs):
         return ClaudeResult(
             json.dumps(
                 {
@@ -3338,7 +3338,7 @@ def test_triage_issue_jev_off_no_jev_call(monkeypatch, tmp_path):
 
     monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
 
-    def fake_run_claude(prompt, model, timeout):
+    def fake_run_claude(prompt, model, timeout, **kwargs):
         return ClaudeResult(
             json.dumps(
                 {
@@ -3389,7 +3389,7 @@ def test_triage_issue_jev_shadow_logs_decision(monkeypatch, tmp_path):
 
     monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
 
-    def fake_run_claude(prompt, model, timeout):
+    def fake_run_claude(prompt, model, timeout, **kwargs):
         return ClaudeResult(
             json.dumps(
                 {
@@ -3451,7 +3451,7 @@ def test_triage_issue_jev_shadow_uses_incumbent_verdict(monkeypatch, tmp_path):
 
     monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
 
-    def fake_run_claude(prompt, model, timeout):
+    def fake_run_claude(prompt, model, timeout, **kwargs):
         return ClaudeResult(
             json.dumps({"verdict": "rejected", "reason": "template incomplete"}),
             0.01,
@@ -3503,7 +3503,7 @@ def test_triage_issue_jev_shadow_failure_continues(monkeypatch, tmp_path):
 
     monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
 
-    def fake_run_claude(prompt, model, timeout):
+    def fake_run_claude(prompt, model, timeout, **kwargs):
         return ClaudeResult(
             json.dumps(
                 {
@@ -3917,7 +3917,7 @@ def test_triage_issue_accepts_repo_context(tmp_path, monkeypatch):
 
     monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
 
-    def fake_run_claude(prompt, model, timeout):
+    def fake_run_claude(prompt, model, timeout, **kwargs):
         return ClaudeResult(
             json.dumps(
                 {
@@ -3968,7 +3968,7 @@ def test_triage_issue_repo_context_overrides_cwd(tmp_path, monkeypatch):
     monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
     monkeypatch.chdir(cwd_dir)
 
-    def fake_run_claude(prompt, model, timeout):
+    def fake_run_claude(prompt, model, timeout, **kwargs):
         return ClaudeResult(
             json.dumps(
                 {
@@ -4016,7 +4016,7 @@ def test_discover_files_uses_repo_dir(tmp_path, monkeypatch):
 
     monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
 
-    def fake_run_claude(prompt, model, timeout):
+    def fake_run_claude(prompt, model, timeout, **kwargs):
         return ClaudeResult(
             json.dumps({"files_to_modify": [{"path": "src/real.py", "reason": "main"}]}),
             0.01,
