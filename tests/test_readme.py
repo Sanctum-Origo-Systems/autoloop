@@ -48,7 +48,7 @@ class TestTldrQuickstart:
 
     def test_session_conflict_warning(self):
         tldr_section = README[README.index("## TLDR") : README.index("---")]
-        assert "Close any Claude Code sessions" in tldr_section
+        assert "Session conflict detection" in tldr_section
         assert "parent folder" in tldr_section
 
 
@@ -94,9 +94,7 @@ class TestQuickStartLocalMode:
         assert "`.claude/settings.json`" in README
 
     def test_concurrent_session_warning(self):
-        assert (
-            "Do not run `autoloop implement`, `triage`, `review-pr`, `fix-pr`, or `plan`" in README
-        )
+        assert "Session detection guards all commands" in README
 
 
 class TestRunningUnattended:

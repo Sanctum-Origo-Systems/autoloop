@@ -24,15 +24,11 @@ autoloop implement --auto-fix             # builds, reviews, fixes if needed
 # Review and merge the PR
 ```
 
-> **Important:** Close any Claude Code sessions in your project directory before
-> running `autoloop implement`, `triage`, `review-pr`, `fix-pr`, or `plan`.
-> These commands launch `claude -p` as a subprocess, and two Claude sessions
-> in the same directory will conflict.
->
-> **Recommended workaround:** Launch your interactive Claude Code session from
-> the parent folder (one level above your project). Copy `.claude/settings.json`
-> and `.mcp.json` to the parent folder so permissions and MCP tools are available.
-> Autoloop runs in the project folder; your chat session runs one level up.
+> **Session conflict detection:** All commands that launch `claude -p` (implement,
+> triage, review-pr, fix-pr, plan) check for active Claude Code sessions and
+> exit with a clear message if one is detected. To avoid conflicts, launch your
+> interactive Claude Code session from the parent folder, or enable
+> [worktree isolation](#worktree-isolation) to run autoloop in a separate working tree.
 
 That's it. Read on for [common workflows](#common-workflows), [configuration](#configuration-reference), [scheduling](#running-unattended), and [issue writing tips](#4-create-an-issue).
 
@@ -164,6 +160,8 @@ This creates three files:
 
 It also creates GitHub labels (`ready`, `rejected`, `in-progress`, etc.) used by the triage system.
 
+Operational data (`run_history.jsonl`, `jev_decisions.jsonl`) is stored outside the repo tree in `~/.autoloop/<id>/`, keyed by git remote URL. This keeps operational data out of your working tree and supports multiple repos on the same machine. Eval snapshots and `EVAL.md` stay in the repo (published via PRs).
+
 Commit the generated files:
 
 ```bash
@@ -176,10 +174,9 @@ git push
 
 - `autoloop init` scaffolds the required `.claude/settings.json` permissions.
   If you skipped init, create one manually (see template).
-- Do not run `autoloop implement`, `triage`, `review-pr`, `fix-pr`, or `plan`
-  while a Claude Code session is open in the same project directory. These
-  commands launch `claude -p` and will conflict. Close the session or launch
-  it from the parent folder.
+- Session detection guards all commands that launch `claude -p`. If a conflict
+  is detected, autoloop exits with a message. Launch your Claude Code session
+  from the parent folder, or enable [worktree isolation](#worktree-isolation).
 
 ### 2. Verify your environment
 
@@ -495,9 +492,28 @@ Example workflow from your phone:
 | `auto_merge_volume_floor` | `10` | Minimum merged-clean PRs required before auto-merge can activate |
 | `auto_merge_promotion_level` | `"module"` | `"repo"` evaluates aggregate repo metrics; `"module"` evaluates each module independently |
 | `max_pr_review_rounds` | `3` | Max rounds of automated PR review+fix when `--auto-fix` is used |
+| `implement.isolation` | `"off"` | `"off"` — run in project directory (default). `"worktree"` — run in a persistent git worktree. See [Worktree Isolation](#worktree-isolation) |
 | `triage_labels` | `["ready", "rejected", ...]` | Labels that indicate an issue has been triaged |
 
 All fields can be overridden by environment variables (e.g. `AUTOLOOP_IMPL_MODEL`, `AUTOLOOP_TIMEOUT`).
+
+## Worktree Isolation
+
+By default, autoloop runs in your project directory. When worktree isolation is enabled, implement, review-pr, and fix-pr operate in a persistent git worktree at `~/.autoloop/<id>/worktrees/<branch>`, leaving your working tree untouched.
+
+```toml
+[implement]
+isolation = "worktree"
+```
+
+Benefits:
+- No session conflicts — autoloop and your interactive Claude Code session can run simultaneously
+- Untracked local files (e.g. `CLAUDE.local.md`) don't leak into the builder's context
+- Dependencies (`.venv`, `node_modules`) persist across runs — no reinstall per issue
+
+The worktree is reset to a clean branch from `origin/main` before each issue. Session detection is skipped for commands that use the worktree since they never touch your tree.
+
+Start with `isolation = "off"` (default). Enable on one repo to validate, then default on once first-attempt rates hold.
 
 ## Graduated Autonomy
 
@@ -562,6 +578,7 @@ Jev is an off-by-default probabilistic decision model that can shadow autoloop's
 | `autoloop review-pr` | Review a PR (mutation gate + semantic review, no merge) |
 | `autoloop status` | Show last run, ready issues, timers |
 | `autoloop auto-close-parent` | Close parent when all sub-issues done |
+| `autoloop eval` | Performance tracking: snapshots, trends, per-module breakdown (zero LLM cost) |
 | `autoloop version` | Print installed version |
 
 ## License
