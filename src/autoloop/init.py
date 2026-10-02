@@ -305,8 +305,9 @@ def create_review_queue_issue(repo: str, dry_run: bool = False) -> int | None:
     pin_result = subprocess.run(pin_cmd, capture_output=True, text=True)
     if pin_result.returncode != 0:
         print(f"  warning: failed to pin issue #{number}: {pin_result.stderr.strip()}")
-
-    print(f"  created and pinned review-queue issue: #{number}")
+        print(f"  created review-queue issue: #{number} (pinning failed)")
+    else:
+        print(f"  created and pinned review-queue issue: #{number}")
     return number
 
 

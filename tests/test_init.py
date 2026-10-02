@@ -414,7 +414,8 @@ class TestCreateReviewQueueIssue:
         assert result == 99
         out = capsys.readouterr().out
         assert "warning: failed to pin" in out
-        assert "created and pinned review-queue issue: #99" in out
+        assert "created review-queue issue: #99 (pinning failed)" in out
+        assert "created and pinned" not in out
 
 
 class TestWriteWorkflow:
