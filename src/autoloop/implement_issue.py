@@ -19,6 +19,7 @@ from pathlib import Path
 
 from autoloop.claude_runner import ClaudeResult, run_claude
 from autoloop.config import AutoLoopConfig, RepoContext, load_config
+from autoloop.review_queue import post_batch_summary
 
 cfg = None
 
@@ -1513,6 +1514,7 @@ def implement_single_issue(
     require_design: bool = False,
     auto_fix: bool = False,
     ctx: RepoContext | None = None,
+    created_prs: list[dict] | None = None,
 ) -> bool:
     """Implement one issue end-to-end. Returns True if PR created successfully."""
     repo_dir = ctx.repo_dir if ctx else None
@@ -1695,6 +1697,15 @@ def implement_single_issue(
         label_in_review(issue["number"])
         print(f"  PR created for #{issue['number']}.")
 
+        if created_prs is not None and pr_number is not None:
+            created_prs.append(
+                {
+                    "pr_number": pr_number,
+                    "issue_number": issue["number"],
+                    "title": issue["title"],
+                }
+            )
+
         if integrity_violations:
             logging.warning(
                 "Test-integrity guard found %d violation(s) in #%s:\n%s",
@@ -1777,6 +1788,7 @@ def implement_targeted_issue(
     require_design: bool = False,
     auto_fix: bool = False,
     ctx: RepoContext | None = None,
+    created_prs: list[dict] | None = None,
 ) -> bool:
     """Implement a specific issue by number, bypassing label and point checks."""
     issue = get_issue_by_number(number)
@@ -1789,7 +1801,11 @@ def implement_targeted_issue(
         return False
 
     success = implement_single_issue(
-        issue, require_design=require_design, auto_fix=auto_fix, ctx=ctx
+        issue,
+        require_design=require_design,
+        auto_fix=auto_fix,
+        ctx=ctx,
+        created_prs=created_prs,
     )
     print(f"\nImplemented {1 if success else 0} issue(s) this run.")
     return success
@@ -1824,10 +1840,17 @@ def main(
         cleanup_merged_labels()
         unblock_ready_issues()
 
+        created_prs: list[dict] = []
+
         if issue is not None:
             implement_targeted_issue(
-                issue, require_design=require_design, auto_fix=auto_fix, ctx=ctx
+                issue,
+                require_design=require_design,
+                auto_fix=auto_fix,
+                ctx=ctx,
+                created_prs=created_prs,
             )
+            post_batch_summary(created_prs, cfg)
             return
 
         implemented = 0
@@ -1839,7 +1862,11 @@ def main(
 
             try:
                 success = implement_single_issue(
-                    top_issue, require_design=require_design, auto_fix=auto_fix, ctx=ctx
+                    top_issue,
+                    require_design=require_design,
+                    auto_fix=auto_fix,
+                    ctx=ctx,
+                    created_prs=created_prs,
                 )
             except SystemicError as exc:
                 print(f"Systemic failure, aborting run: {exc}")
@@ -1848,6 +1875,7 @@ def main(
             if success:
                 implemented += 1
 
+        post_batch_summary(created_prs, cfg)
         print(f"\nImplemented {implemented} issue(s) this run.")
     finally:
         release_lock(ctx.repo_dir)
