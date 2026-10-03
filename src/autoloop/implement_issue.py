@@ -1310,6 +1310,35 @@ def label_in_review(number: int):
 # --- Auto-fix loop ---
 
 
+def _get_last_review_comment(pr_number: int, repo: str) -> str:
+    """Fetch the body of the most recent review-pr comment from a PR."""
+    result = subprocess.run(
+        [
+            "gh",
+            "pr",
+            "view",
+            str(pr_number),
+            "--repo",
+            repo,
+            "--json",
+            "comments",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return ""
+    try:
+        data = json.loads(result.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return ""
+    for comment in reversed(data.get("comments", [])):
+        body = comment.get("body", "")
+        if "review-pr" in body.lower() or "**autoloop" in body.lower():
+            return body
+    return ""
+
+
 def run_auto_fix_loop(
     pr_number: int, issue: dict, cfg: AutoLoopConfig, repo_dir: Path | None = None
 ) -> None:
@@ -1318,7 +1347,6 @@ def run_auto_fix_loop(
     if "needs-human" in labels:
         return
 
-    last_review_output = ""
     for round_num in range(1, cfg.max_pr_review_rounds + 1):
         review = subprocess.run(
             ["autoloop", "review-pr", str(pr_number)],
@@ -1326,7 +1354,6 @@ def run_auto_fix_loop(
             text=True,
             cwd=repo_dir,
         )
-        last_review_output = review.stdout
         print(
             f"  Auto-fix round {round_num}/{cfg.max_pr_review_rounds}: "
             f"review {'passed' if review.returncode == 0 else 'failed'}"
@@ -1367,10 +1394,12 @@ def run_auto_fix_loop(
             "needs-human",
         ],
     )
-    comment = (
-        f"**AutoLoop auto-fix exhausted ({cfg.max_pr_review_rounds} rounds):**\n\n"
-        f"```\n{last_review_output[-2000:]}\n```"
-    )
+    findings = _get_last_review_comment(pr_number, cfg.repo)
+    if findings:
+        body = f"```\n{findings[-2000:]}\n```"
+    else:
+        body = "No review findings available."
+    comment = f"**AutoLoop auto-fix exhausted ({cfg.max_pr_review_rounds} rounds):**\n\n{body}"
     subprocess.run(
         [
             "gh",
