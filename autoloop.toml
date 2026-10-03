@@ -42,6 +42,7 @@ triage_labels = [
     "in-progress",
     "in-review",
     "needs-human",
+    "review-queue",
 ]
 
 # Worktree isolation — run implement/review-pr/fix-pr in a persistent worktree
