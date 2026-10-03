@@ -566,28 +566,11 @@ def build_implementation_prompt(issue: dict, repo_dir: Path | None = None) -> st
     base = repo_dir or Path()
     claude_md = (base / "CLAUDE.md").read_text()
 
-    comments = subprocess.run(
-        [
-            "gh",
-            "issue",
-            "view",
-            str(issue["number"]),
-            "--repo",
-            cfg.repo,
-            "--json",
-            "body,comments",
-        ],
-        capture_output=True,
-        text=True,
-    )
-    full_context = issue["body"] or ""
-    if comments.returncode == 0:
-        data = json.loads(comments.stdout)
-        comment_bodies = [c.get("body", "") for c in data.get("comments", []) if c.get("body")]
-        if comment_bodies:
-            full_context += "\n\n--- Issue Comments ---"
-            for i, body in enumerate(comment_bodies, 1):
-                full_context += f"\n\nComment {i}:\n{body}"
+    from autoloop.triage_issues import fetch_issue_comments, format_comments_for_prompt
+
+    comments = fetch_issue_comments(issue["number"], cfg)
+    comments_text = format_comments_for_prompt(comments, max_chars=cfg.comment_truncation)
+    full_context = (issue["body"] or "") + comments_text
 
     full_context, metric_targets = parse_and_strip_metric_targets(full_context)
     if metric_targets:

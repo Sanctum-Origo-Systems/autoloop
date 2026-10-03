@@ -80,6 +80,7 @@ class AutoLoopConfig:
     diff_truncation: int = 8000
     error_truncation: int = 2000
     spec_truncation: int = 4000
+    comment_truncation: int = 4000
     verify_cmd: str = "uv run pytest"
     lint_command: str = ""
     test_pattern: str = "tests/*.py"
@@ -169,6 +170,7 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
         "diff_truncation",
         "error_truncation",
         "spec_truncation",
+        "comment_truncation",
         "max_pr_review_rounds",
         "max_decomposition_depth",
     ):

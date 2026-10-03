@@ -532,8 +532,11 @@ def jev_triage(issue: dict, cfg: AutoLoopConfig) -> dict:
 # --- Subprocess functions ---
 
 
+TRUSTED_AUTHOR_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
+
+
 def fetch_issue_comments(issue_number: int, cfg: AutoLoopConfig) -> list[str]:
-    """Fetch all comment bodies for an issue via gh issue view."""
+    """Fetch comment bodies for an issue, filtered to trusted author associations."""
     result = subprocess.run(
         [
             "gh",
@@ -552,19 +555,43 @@ def fetch_issue_comments(issue_number: int, cfg: AutoLoopConfig) -> list[str]:
         return []
     try:
         data = json.loads(result.stdout)
-        return [c.get("body", "") for c in data.get("comments", []) if c.get("body")]
+        comments = data.get("comments", [])
+        total = 0
+        bodies: list[str] = []
+        for c in comments:
+            body = c.get("body", "")
+            if not body:
+                continue
+            total += 1
+            if c.get("authorAssociation", "") in TRUSTED_AUTHOR_ASSOCIATIONS:
+                bodies.append(body)
+        skipped = total - len(bodies)
+        if skipped:
+            logging.info(
+                "Issue #%s: included %d comment(s), skipped %d non-collaborator comment(s)",
+                issue_number,
+                len(bodies),
+                skipped,
+            )
+        return bodies
     except (json.JSONDecodeError, AttributeError):
         return []
 
 
-def format_comments_for_prompt(comments: list[str]) -> str:
-    """Format issue comments for inclusion in a prompt."""
+def format_comments_for_prompt(comments: list[str], max_chars: int = 0) -> str:
+    """Format issue comments for inclusion in a prompt.
+
+    When max_chars > 0, truncates the result with a note.
+    """
     if not comments:
         return ""
     parts = ["\n\n--- Issue Comments ---"]
     for i, body in enumerate(comments, 1):
         parts.append(f"\n\nComment {i}:\n{body}")
-    return "".join(parts)
+    text = "".join(parts)
+    if max_chars > 0 and len(text) > max_chars:
+        text = text[:max_chars] + "\n\n[Comments truncated.]"
+    return text
 
 
 def load_project_context(repo_dir: Path) -> tuple[str, str]:
@@ -636,7 +663,7 @@ def evaluate_issue(issue: dict, cfg: AutoLoopConfig, repo_dir: Path) -> tuple[di
     tree, claude_md = load_project_context(repo_dir)
     triage_prompt = build_triage_prompt(cfg)
     comments = fetch_issue_comments(issue["number"], cfg)
-    comments_text = format_comments_for_prompt(comments)
+    comments_text = format_comments_for_prompt(comments, max_chars=cfg.comment_truncation)
     prompt = (
         triage_prompt
         + "\n\nPROJECT STRUCTURE:\n"
