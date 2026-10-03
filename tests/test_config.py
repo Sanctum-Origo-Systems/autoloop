@@ -755,7 +755,8 @@ def test_triage_labels_from_repo_autoloop_toml(monkeypatch):
     assert "ready" in config.triage_labels
     assert "rejected" in config.triage_labels
     assert "needs-human" in config.triage_labels
-    assert len(config.triage_labels) == 6
+    assert "review-queue" in config.triage_labels
+    assert len(config.triage_labels) == 7
 
 
 # --- RepoContext ---
