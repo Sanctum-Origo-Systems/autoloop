@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.12.0
+
+### Review Pipeline
+- feat: wire review_queue into implement — batch PR summary posted after each run (#352)
+- fix: post review comment on PR when initial review passes (#367)
+- fix: fetch review findings from PR comments for exhaustion message (#359)
+- chore: add review-queue to triage_labels exclusion list (#366)
+
 ## v0.11.0
 
 ### Review Queue & Issue Comments
