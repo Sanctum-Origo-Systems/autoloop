@@ -3986,6 +3986,71 @@ def test_auto_fix_loop_logs_per_round(monkeypatch, capsys):
     assert "Auto-fix round 2/3" in output
 
 
+def test_auto_fix_exhaustion_includes_review_findings(monkeypatch):
+    """Exhaustion comment contains the latest review comment from the PR."""
+    test_cfg = _test_cfg(max_pr_review_rounds=2, repo="acme-corp/widget")
+    calls = []
+    review_body = "## Mutation Gate\n- FAIL: missing test for foo()"
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if isinstance(cmd, list) and cmd[:2] == ["autoloop", "review-pr"]:
+            return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+        if isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "view"]:
+            if "--json" in cmd and "comments" in cmd:
+                payload = {
+                    "comments": [
+                        {"body": "unrelated comment"},
+                        {"body": f"**AutoLoop review-pr:** {review_body}"},
+                    ]
+                }
+                return type(
+                    "R", (), {"returncode": 0, "stdout": json.dumps(payload), "stderr": ""}
+                )()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    issue = {"number": 42, "title": "Test", "body": "", "labels": []}
+    run_auto_fix_loop(99, issue, test_cfg)
+
+    comment_calls = [c for c in calls if isinstance(c, list) and c[:3] == ["gh", "pr", "comment"]]
+    assert len(comment_calls) == 1
+    body_idx = comment_calls[0].index("--body") + 1
+    body = comment_calls[0][body_idx]
+    assert review_body in body
+    assert "No review findings available" not in body
+
+
+def test_auto_fix_exhaustion_no_review_comment(monkeypatch):
+    """Exhaustion comment says 'No review findings available' when no review comment exists."""
+    test_cfg = _test_cfg(max_pr_review_rounds=2, repo="acme-corp/widget")
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if isinstance(cmd, list) and cmd[:2] == ["autoloop", "review-pr"]:
+            return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+        if isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "view"]:
+            if "--json" in cmd and "comments" in cmd:
+                payload = {"comments": [{"body": "unrelated comment"}]}
+                return type(
+                    "R", (), {"returncode": 0, "stdout": json.dumps(payload), "stderr": ""}
+                )()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    issue = {"number": 42, "title": "Test", "body": "", "labels": []}
+    run_auto_fix_loop(99, issue, test_cfg)
+
+    comment_calls = [c for c in calls if isinstance(c, list) and c[:3] == ["gh", "pr", "comment"]]
+    assert len(comment_calls) == 1
+    body_idx = comment_calls[0].index("--body") + 1
+    body = comment_calls[0][body_idx]
+    assert "No review findings available" in body
+
+
 def test_auto_fix_skipped_when_review_passes(monkeypatch, tmp_path):
     """When --auto-fix is set but initial review passes, auto-fix loop is not called."""
     monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
