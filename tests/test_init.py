@@ -7,6 +7,7 @@ from autoloop.init import (
     WORKFLOW_TEMPLATE,
     _extract_command_prefixes,
     build_settings_allowlist,
+    create_review_queue_issue,
     infer_test_pattern,
     run_init,
     write_claude_settings,
@@ -318,6 +319,103 @@ class TestWorkflowTemplate:
 
     def test_template_no_format_placeholders(self):
         assert "{version}" not in WORKFLOW_TEMPLATE
+
+
+class TestCreateReviewQueueIssue:
+    @patch("autoloop.init.subprocess.run")
+    def test_creates_and_pins_when_no_existing(self, mock_run, capsys):
+        mock_run.side_effect = [
+            # gh issue list returns empty
+            type(mock_run.return_value)(returncode=0, stdout="[]\n", stderr=""),
+            # gh issue create returns URL
+            type(mock_run.return_value)(
+                returncode=0,
+                stdout="https://github.com/acme/widgets/issues/42\n",
+                stderr="",
+            ),
+            # gh issue pin succeeds
+            type(mock_run.return_value)(returncode=0, stdout="", stderr=""),
+        ]
+
+        result = create_review_queue_issue("acme/widgets")
+        assert result == 42
+
+        calls = mock_run.call_args_list
+        assert len(calls) == 3
+
+        list_cmd = calls[0][0][0]
+        assert "gh" in list_cmd
+        assert "issue" in list_cmd
+        assert "list" in list_cmd
+        assert "--label" in list_cmd
+        assert "review-queue" in list_cmd
+
+        create_cmd = calls[1][0][0]
+        assert "gh" in create_cmd
+        assert "issue" in create_cmd
+        assert "create" in create_cmd
+        assert "--label" in create_cmd
+        assert "review-queue" in create_cmd
+        assert "--title" in create_cmd
+        assert "Review Queue" in create_cmd
+
+        pin_cmd = calls[2][0][0]
+        assert pin_cmd == ["gh", "issue", "pin", "42", "--repo", "acme/widgets"]
+
+        out = capsys.readouterr().out
+        assert "created and pinned review-queue issue: #42" in out
+
+    @patch("autoloop.init.subprocess.run")
+    def test_skips_when_existing_issue(self, mock_run, capsys):
+        mock_run.return_value = type(mock_run.return_value)(
+            returncode=0, stdout='[{"number": 7}]\n', stderr=""
+        )
+
+        result = create_review_queue_issue("acme/widgets")
+        assert result == 7
+
+        mock_run.assert_called_once()
+        out = capsys.readouterr().out
+        assert "already exists: #7" in out
+
+    @patch("autoloop.init.subprocess.run")
+    def test_dry_run_skips_all_commands(self, mock_run, capsys):
+        result = create_review_queue_issue("acme/widgets", dry_run=True)
+        assert result is None
+        mock_run.assert_not_called()
+        out = capsys.readouterr().out
+        assert "[dry-run]" in out
+
+    @patch("autoloop.init.subprocess.run")
+    def test_create_failure_returns_none(self, mock_run, capsys):
+        mock_run.side_effect = [
+            type(mock_run.return_value)(returncode=0, stdout="[]\n", stderr=""),
+            type(mock_run.return_value)(returncode=1, stdout="", stderr="label not found"),
+        ]
+
+        result = create_review_queue_issue("acme/widgets")
+        assert result is None
+        out = capsys.readouterr().out
+        assert "failed to create review-queue issue" in out
+
+    @patch("autoloop.init.subprocess.run")
+    def test_pin_failure_still_returns_number(self, mock_run, capsys):
+        mock_run.side_effect = [
+            type(mock_run.return_value)(returncode=0, stdout="[]\n", stderr=""),
+            type(mock_run.return_value)(
+                returncode=0,
+                stdout="https://github.com/acme/widgets/issues/99\n",
+                stderr="",
+            ),
+            type(mock_run.return_value)(returncode=1, stdout="", stderr="pin error"),
+        ]
+
+        result = create_review_queue_issue("acme/widgets")
+        assert result == 99
+        out = capsys.readouterr().out
+        assert "warning: failed to pin" in out
+        assert "created review-queue issue: #99 (pinning failed)" in out
+        assert "created and pinned" not in out
 
 
 class TestWriteWorkflow:

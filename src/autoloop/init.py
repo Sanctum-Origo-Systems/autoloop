@@ -20,6 +20,7 @@ LABELS = [
     ("needs-human", "D4C5F9", "Blocked, requires human input"),
     ("needs-design", "C2E0C6", "Requires design review before implementation"),
     ("design-required", "C2E0C6", "Issue requires a design doc"),
+    ("review-queue", "0075CA", "Review queue tracking issue"),
     ("p0", "B60205", "Critical priority"),
     ("p1", "D93F0B", "High priority"),
     ("p2", "FBCA04", "Normal priority"),
@@ -242,6 +243,74 @@ def create_labels(repo: str, dry_run: bool = False) -> None:
                 print(f"  failed: {name} — {stderr}")
 
 
+REVIEW_QUEUE_BODY = (
+    "This issue tracks PRs that are ready for human review.\n"
+    "Autoloop posts a comment here whenever a PR passes automated checks.\n"
+    "Pin this issue for quick access."
+)
+
+
+def create_review_queue_issue(repo: str, dry_run: bool = False) -> int | None:
+    """Create and pin a 'Review Queue' issue, or return the existing one.
+
+    Returns the issue number, or None on dry-run.
+    """
+    list_cmd = [
+        "gh",
+        "issue",
+        "list",
+        "--repo",
+        repo,
+        "--label",
+        "review-queue",
+        "--state",
+        "open",
+        "--json",
+        "number",
+    ]
+    if dry_run:
+        print(f"  [dry-run] {' '.join(list_cmd)}")
+        return None
+
+    result = subprocess.run(list_cmd, capture_output=True, text=True)
+    if result.returncode == 0 and result.stdout.strip():
+        issues = json.loads(result.stdout)
+        if issues:
+            number = issues[0]["number"]
+            print(f"  review-queue issue already exists: #{number}")
+            return number
+
+    create_cmd = [
+        "gh",
+        "issue",
+        "create",
+        "--repo",
+        repo,
+        "--title",
+        "Review Queue",
+        "--label",
+        "review-queue",
+        "--body",
+        REVIEW_QUEUE_BODY,
+    ]
+    result = subprocess.run(create_cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"  failed to create review-queue issue: {result.stderr.strip()}")
+        return None
+
+    url = result.stdout.strip()
+    number = int(url.rstrip("/").rsplit("/", 1)[-1])
+
+    pin_cmd = ["gh", "issue", "pin", str(number), "--repo", repo]
+    pin_result = subprocess.run(pin_cmd, capture_output=True, text=True)
+    if pin_result.returncode != 0:
+        print(f"  warning: failed to pin issue #{number}: {pin_result.stderr.strip()}")
+        print(f"  created review-queue issue: #{number} (pinning failed)")
+    else:
+        print(f"  created and pinned review-queue issue: #{number}")
+    return number
+
+
 BASE_ALLOWLIST = [
     "Read",
     "Edit",
@@ -367,6 +436,9 @@ def run_init(
     if not skip_labels:
         print("\nLabels:")
         create_labels(repo, dry_run=dry_run)
+
+    print("\nReview Queue:")
+    create_review_queue_issue(repo, dry_run=dry_run)
 
     print("\nDone! Next steps:")
     print("  1. Review autoloop.toml and .claude/settings.json")
