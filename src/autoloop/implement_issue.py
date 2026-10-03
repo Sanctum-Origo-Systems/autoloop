@@ -19,6 +19,7 @@ from pathlib import Path
 
 from autoloop.claude_runner import ClaudeResult, run_claude
 from autoloop.config import AutoLoopConfig, RepoContext, load_config
+from autoloop.review_queue import post_batch_summary
 
 cfg = None
 
@@ -1542,6 +1543,7 @@ def implement_single_issue(
     require_design: bool = False,
     auto_fix: bool = False,
     ctx: RepoContext | None = None,
+    created_prs: list[dict] | None = None,
 ) -> bool:
     """Implement one issue end-to-end. Returns True if PR created successfully."""
     repo_dir = ctx.repo_dir if ctx else None
@@ -1721,6 +1723,14 @@ def implement_single_issue(
             cache_read_tokens=total_cache_read,
             repo_dir=repo_dir,
         )
+        if pr_number is not None and created_prs is not None:
+            created_prs.append(
+                {
+                    "pr_number": pr_number,
+                    "issue_number": issue["number"],
+                    "title": issue["title"],
+                }
+            )
         label_in_review(issue["number"])
         print(f"  PR created for #{issue['number']}.")
 
@@ -1878,6 +1888,7 @@ def main(
             return
 
         implemented = 0
+        created_prs: list[dict] = []
         while implemented < max_issues:
             top_issue = get_top_ready_issue()
             if not top_issue:
@@ -1886,7 +1897,11 @@ def main(
 
             try:
                 success = implement_single_issue(
-                    top_issue, require_design=require_design, auto_fix=auto_fix, ctx=ctx
+                    top_issue,
+                    require_design=require_design,
+                    auto_fix=auto_fix,
+                    ctx=ctx,
+                    created_prs=created_prs,
                 )
             except SystemicError as exc:
                 print(f"Systemic failure, aborting run: {exc}")
@@ -1894,6 +1909,12 @@ def main(
 
             if success:
                 implemented += 1
+
+        if created_prs:
+            try:
+                post_batch_summary(created_prs, cfg)
+            except Exception:
+                logging.exception("Failed to post review-queue summary")
 
         print(f"\nImplemented {implemented} issue(s) this run.")
     finally:

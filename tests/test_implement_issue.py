@@ -2090,7 +2090,9 @@ def test_main_default_implements_one_issue(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
     monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
 
-    def fake_implement_single(issue, require_design=False, auto_fix=False, ctx=None):
+    def fake_implement_single(
+        issue, require_design=False, auto_fix=False, ctx=None, created_prs=None
+    ):
         call_count[0] += 1
         return True
 
@@ -2172,7 +2174,9 @@ def test_main_continues_to_next_issue_on_non_systemic_failure(monkeypatch, tmp_p
 
     attempted = []
 
-    def fake_implement_single(issue, require_design=False, auto_fix=False, ctx=None):
+    def fake_implement_single(
+        issue, require_design=False, auto_fix=False, ctx=None, created_prs=None
+    ):
         attempted.append(issue["number"])
         return issue["number"] != 10
 
@@ -2213,7 +2217,9 @@ def test_main_continues_past_multiple_non_systemic_failures(monkeypatch, tmp_pat
 
     attempted = []
 
-    def fake_implement_single(issue, require_design=False, auto_fix=False, ctx=None):
+    def fake_implement_single(
+        issue, require_design=False, auto_fix=False, ctx=None, created_prs=None
+    ):
         attempted.append(issue["number"])
         return issue["number"] == 12
 
@@ -2252,7 +2258,9 @@ def test_main_aborts_on_systemic_failure(monkeypatch, tmp_path, capsys):
 
     attempted = []
 
-    def fake_implement_single(issue, require_design=False, auto_fix=False, ctx=None):
+    def fake_implement_single(
+        issue, require_design=False, auto_fix=False, ctx=None, created_prs=None
+    ):
         attempted.append(issue["number"])
         raise SystemicError("git auth failed")
 
@@ -2295,7 +2303,9 @@ def test_main_aborts_on_systemic_after_successful_issue(monkeypatch, tmp_path, c
 
     attempted = []
 
-    def fake_implement_single(issue, require_design=False, auto_fix=False, ctx=None):
+    def fake_implement_single(
+        issue, require_design=False, auto_fix=False, ctx=None, created_prs=None
+    ):
         attempted.append(issue["number"])
         if issue["number"] == 11:
             raise SystemicError("disk full")
@@ -2333,7 +2343,9 @@ def test_main_releases_lock_on_systemic_failure(monkeypatch, tmp_path):
 
     monkeypatch.setattr(implement_issue, "get_top_ready_issue", fake_get_top)
 
-    def fake_implement_single(issue, require_design=False, auto_fix=False, ctx=None):
+    def fake_implement_single(
+        issue, require_design=False, auto_fix=False, ctx=None, created_prs=None
+    ):
         raise SystemicError("auth error")
 
     monkeypatch.setattr(implement_issue, "implement_single_issue", fake_implement_single)
@@ -5476,3 +5488,264 @@ def test_build_implementation_prompt_excludes_non_collaborator_comments(monkeypa
 
     assert "Trusted owner note" in prompt
     assert "Spam from outsider" not in prompt
+
+
+# --- review_queue integration: implement_single_issue populates created_prs ---
+
+
+def test_implement_single_issue_appends_to_created_prs_on_success(monkeypatch, tmp_path):
+    """When a PR is created, implement_single_issue appends its info to created_prs."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
+    monkeypatch.chdir(tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list) and cmd[:3] == ["git", "rev-list", "--count"]:
+            return type("R", (), {"returncode": 0, "stdout": "1\n", "stderr": ""})()
+        if isinstance(cmd, str):
+            return type("R", (), {"returncode": 0, "stdout": "passed", "stderr": ""})()
+        if isinstance(cmd, list) and cmd[:3] == ["git", "diff", "--name-only"]:
+            return type("R", (), {"returncode": 0, "stdout": "tests/test_x.py\n", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        implement_issue, "implement", lambda issue, previous_errors=None, **kw: _claude_result()
+    )
+    monkeypatch.setattr(
+        implement_issue, "create_branch", lambda issue, repo_dir=None: "autoloop/42-add-feature"
+    )
+    monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: 101)
+    monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
+    monkeypatch.setattr(
+        implement_issue, "review_implementation", lambda issue, branch, **kw: (True, "")
+    )
+
+    created_prs = []
+    result = implement_single_issue(_FAKE_ISSUE, created_prs=created_prs)
+    assert result is True
+    assert len(created_prs) == 1
+    assert created_prs[0] == {
+        "pr_number": 101,
+        "issue_number": 42,
+        "title": "Add feature",
+    }
+
+
+def test_implement_single_issue_does_not_append_when_no_pr_number(monkeypatch, tmp_path):
+    """When create_pr returns None, nothing is appended to created_prs."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
+    monkeypatch.chdir(tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list) and cmd[:3] == ["git", "rev-list", "--count"]:
+            return type("R", (), {"returncode": 0, "stdout": "1\n", "stderr": ""})()
+        if isinstance(cmd, str):
+            return type("R", (), {"returncode": 0, "stdout": "passed", "stderr": ""})()
+        if isinstance(cmd, list) and cmd[:3] == ["git", "diff", "--name-only"]:
+            return type("R", (), {"returncode": 0, "stdout": "tests/test_x.py\n", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        implement_issue, "implement", lambda issue, previous_errors=None, **kw: _claude_result()
+    )
+    monkeypatch.setattr(
+        implement_issue, "create_branch", lambda issue, repo_dir=None: "autoloop/42-add-feature"
+    )
+    monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: None)
+    monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
+    monkeypatch.setattr(
+        implement_issue, "review_implementation", lambda issue, branch, **kw: (True, "")
+    )
+
+    created_prs = []
+    implement_single_issue(_FAKE_ISSUE, created_prs=created_prs)
+    assert created_prs == []
+
+
+def test_implement_single_issue_does_not_append_on_failure(monkeypatch, tmp_path):
+    """When implementation fails, created_prs remains empty."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(max_retries=1))
+    monkeypatch.chdir(tmp_path)
+
+    monkeypatch.setattr(
+        implement_issue, "implement", lambda issue, previous_errors=None, **kw: _claude_result()
+    )
+    monkeypatch.setattr(
+        implement_issue, "create_branch", lambda issue, repo_dir=None: "autoloop/42-x"
+    )
+    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch, repo_dir=None: None)
+    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch, repo_dir=None: False)
+    monkeypatch.setattr(
+        implement_issue,
+        "verify_implementation",
+        lambda branch, issue_body="", title="", repo_dir=None: (False, "Tests failed"),
+    )
+    monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
+
+    created_prs = []
+    implement_single_issue(_FAKE_ISSUE, created_prs=created_prs)
+    assert created_prs == []
+
+
+# --- review_queue integration: main() calls post_batch_summary ---
+
+
+def test_main_calls_post_batch_summary_after_batch_with_prs(monkeypatch, tmp_path):
+    """post_batch_summary is called with all PRs created during the batch run."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(implement_issue, "load_config", lambda path=None: _test_cfg())
+    monkeypatch.setattr(
+        implement_issue, "detect_active_claude_session", lambda project_dir=None: False
+    )
+    monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
+    monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
+
+    issues = [
+        {"number": 10, "title": "First feature", "body": "", "labels": []},
+        {"number": 11, "title": "Second feature", "body": "", "labels": []},
+    ]
+    call_idx = [0]
+
+    def fake_get_top():
+        if call_idx[0] < len(issues):
+            issue = issues[call_idx[0]]
+            call_idx[0] += 1
+            return issue
+        return None
+
+    monkeypatch.setattr(implement_issue, "get_top_ready_issue", fake_get_top)
+
+    def fake_implement_single(
+        issue, require_design=False, auto_fix=False, ctx=None, created_prs=None
+    ):
+        if created_prs is not None:
+            created_prs.append(
+                {
+                    "pr_number": 100 + issue["number"],
+                    "issue_number": issue["number"],
+                    "title": issue["title"],
+                }
+            )
+        return True
+
+    monkeypatch.setattr(implement_issue, "implement_single_issue", fake_implement_single)
+
+    post_calls = []
+    monkeypatch.setattr(
+        implement_issue, "post_batch_summary", lambda prs, cfg: post_calls.append(prs)
+    )
+
+    implement_issue.cfg = None
+    implement_issue.main(max_issues=5)
+
+    assert len(post_calls) == 1
+    assert len(post_calls[0]) == 2
+    assert post_calls[0][0] == {
+        "pr_number": 110,
+        "issue_number": 10,
+        "title": "First feature",
+    }
+    assert post_calls[0][1] == {
+        "pr_number": 111,
+        "issue_number": 11,
+        "title": "Second feature",
+    }
+
+
+def test_main_skips_post_batch_summary_when_zero_prs(monkeypatch, tmp_path):
+    """post_batch_summary is not called when no PRs were created."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(implement_issue, "load_config", lambda path=None: _test_cfg())
+    monkeypatch.setattr(
+        implement_issue, "detect_active_claude_session", lambda project_dir=None: False
+    )
+    monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
+    monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
+
+    issues = [{"number": 10, "title": "Failing issue", "body": "", "labels": []}]
+    call_idx = [0]
+
+    def fake_get_top():
+        if call_idx[0] < len(issues):
+            issue = issues[call_idx[0]]
+            call_idx[0] += 1
+            return issue
+        return None
+
+    monkeypatch.setattr(implement_issue, "get_top_ready_issue", fake_get_top)
+
+    def fake_implement_single(
+        issue, require_design=False, auto_fix=False, ctx=None, created_prs=None
+    ):
+        return False
+
+    monkeypatch.setattr(implement_issue, "implement_single_issue", fake_implement_single)
+
+    post_calls = []
+    monkeypatch.setattr(
+        implement_issue, "post_batch_summary", lambda prs, cfg: post_calls.append(prs)
+    )
+
+    implement_issue.cfg = None
+    implement_issue.main(max_issues=5)
+
+    assert post_calls == []
+
+
+def test_main_post_batch_summary_contains_only_current_batch_prs(monkeypatch, tmp_path):
+    """The PR list contains only PRs from the current batch, not prior runs."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(implement_issue, "load_config", lambda path=None: _test_cfg())
+    monkeypatch.setattr(
+        implement_issue, "detect_active_claude_session", lambda project_dir=None: False
+    )
+    monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
+    monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
+
+    issues = [
+        {"number": 20, "title": "Only this one", "body": "", "labels": []},
+    ]
+    call_idx = [0]
+
+    def fake_get_top():
+        if call_idx[0] < len(issues):
+            issue = issues[call_idx[0]]
+            call_idx[0] += 1
+            return issue
+        return None
+
+    monkeypatch.setattr(implement_issue, "get_top_ready_issue", fake_get_top)
+
+    def fake_implement_single(
+        issue, require_design=False, auto_fix=False, ctx=None, created_prs=None
+    ):
+        if created_prs is not None:
+            created_prs.append(
+                {
+                    "pr_number": 200,
+                    "issue_number": 20,
+                    "title": "Only this one",
+                }
+            )
+        return True
+
+    monkeypatch.setattr(implement_issue, "implement_single_issue", fake_implement_single)
+
+    post_calls = []
+    monkeypatch.setattr(
+        implement_issue, "post_batch_summary", lambda prs, cfg: post_calls.append(list(prs))
+    )
+
+    implement_issue.cfg = None
+    implement_issue.main(max_issues=5)
+
+    assert len(post_calls) == 1
+    assert len(post_calls[0]) == 1
+    assert post_calls[0][0]["pr_number"] == 200
+    assert post_calls[0][0]["issue_number"] == 20
