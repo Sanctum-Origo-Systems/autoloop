@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.11.0
+
+### Review Queue & Issue Comments
+- feat: include issue comments in triage and implement context (#348)
+- feat: autoloop init creates and pins review-queue issue (#350)
+- feat: review_queue module — batch PR summary with CI status, gate flags, and review order (#351)
+- fix: filter issue comments by authorAssociation and cap context size (#355)
+
+### Bug Fixes
+- fix: auto-fix loop runs after implementation already passes review — false needs-human labels (#358)
+
 ## v0.10.0
 
 ### Session Isolation Architecture
