@@ -20,7 +20,9 @@ from autoloop.triage_issues import (
     build_triage_prompt,
     detect_duplicate_issues,
     fetch_issue_body,
+    fetch_issue_comments,
     fetch_single_issue,
+    format_comments_for_prompt,
     get_decomposition_depth,
     jev_triage,
     load_project_context,
@@ -4064,3 +4066,171 @@ def test_no_bare_path_cwd_in_triage_functions():
         assert "Path.cwd()" not in source, (
             f"{name}() contains Path.cwd() — use repo_dir or data_dir parameter instead"
         )
+
+
+# --- fetch_issue_comments ---
+
+
+def test_fetch_issue_comments_success():
+    cfg = _cfg(repo="acme/widgets")
+    comments_data = {
+        "comments": [
+            {"body": "First comment"},
+            {"body": "Second comment"},
+        ]
+    }
+
+    class FakeResult:
+        returncode = 0
+        stdout = json.dumps(comments_data)
+
+    with patch("autoloop.triage_issues.subprocess.run", return_value=FakeResult()):
+        result = fetch_issue_comments(42, cfg)
+
+    assert result == ["First comment", "Second comment"]
+
+
+def test_fetch_issue_comments_failure():
+    cfg = _cfg(repo="acme/widgets")
+
+    class FakeResult:
+        returncode = 1
+        stdout = ""
+
+    with patch("autoloop.triage_issues.subprocess.run", return_value=FakeResult()):
+        result = fetch_issue_comments(42, cfg)
+
+    assert result == []
+
+
+def test_fetch_issue_comments_empty():
+    cfg = _cfg(repo="acme/widgets")
+
+    class FakeResult:
+        returncode = 0
+        stdout = json.dumps({"comments": []})
+
+    with patch("autoloop.triage_issues.subprocess.run", return_value=FakeResult()):
+        result = fetch_issue_comments(42, cfg)
+
+    assert result == []
+
+
+def test_fetch_issue_comments_skips_empty_bodies():
+    cfg = _cfg(repo="acme/widgets")
+    comments_data = {
+        "comments": [
+            {"body": "Real comment"},
+            {"body": ""},
+            {"body": "Another comment"},
+        ]
+    }
+
+    class FakeResult:
+        returncode = 0
+        stdout = json.dumps(comments_data)
+
+    with patch("autoloop.triage_issues.subprocess.run", return_value=FakeResult()):
+        result = fetch_issue_comments(42, cfg)
+
+    assert result == ["Real comment", "Another comment"]
+
+
+# --- format_comments_for_prompt ---
+
+
+def test_format_comments_for_prompt_with_comments():
+    result = format_comments_for_prompt(["First", "Second"])
+    assert "--- Issue Comments ---" in result
+    assert "Comment 1:\nFirst" in result
+    assert "Comment 2:\nSecond" in result
+
+
+def test_format_comments_for_prompt_empty():
+    assert format_comments_for_prompt([]) == ""
+
+
+# --- evaluate_issue includes comments ---
+
+
+def test_evaluate_issue_includes_comments_in_prompt(monkeypatch):
+    """Comments fetched from the issue should appear in the triage prompt."""
+    cfg = _cfg()
+
+    def fake_load(repo_dir):
+        return "src/module.py\n", "# CLAUDE.md"
+
+    monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
+
+    def fake_fetch_comments(issue_number, cfg):
+        return ["Scope narrowed to module X only", "Reviewer correction: skip Y"]
+
+    monkeypatch.setattr("autoloop.triage_issues.fetch_issue_comments", fake_fetch_comments)
+
+    captured = {}
+
+    def fake_run_claude(prompt, model, timeout, **kwargs):
+        captured["prompt"] = prompt
+        return ClaudeResult(
+            json.dumps({"verdict": "ready", "points": 1, "priority": "p1", "reason": "ok"}),
+            0.01,
+            100,
+            50,
+            0,
+            0,
+            True,
+        )
+
+    monkeypatch.setattr("autoloop.triage_issues.run_claude", fake_run_claude)
+
+    from autoloop.triage_issues import evaluate_issue
+
+    issue = {"number": 1, "title": "Test", "body": "Issue body here"}
+    evaluate_issue(issue, cfg, Path("/fake/repo"))
+
+    assert "--- Issue Comments ---" in captured["prompt"]
+    assert "Scope narrowed to module X only" in captured["prompt"]
+    assert "Reviewer correction: skip Y" in captured["prompt"]
+
+
+def test_evaluate_issue_comment_changes_requirement_appears_verbatim(monkeypatch):
+    """When a comment changes a requirement, it must appear verbatim in the prompt."""
+    cfg = _cfg()
+
+    def fake_load(repo_dir):
+        return "src/module.py\n", "# CLAUDE.md"
+
+    monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
+
+    requirement_comment = (
+        "Update: the feature should only apply to public methods, "
+        "not private ones. The acceptance criteria in the body are outdated."
+    )
+
+    def fake_fetch_comments(issue_number, cfg):
+        return [requirement_comment]
+
+    monkeypatch.setattr("autoloop.triage_issues.fetch_issue_comments", fake_fetch_comments)
+
+    captured = {}
+
+    def fake_run_claude(prompt, model, timeout, **kwargs):
+        captured["prompt"] = prompt
+        return ClaudeResult(
+            json.dumps({"verdict": "ready", "points": 1, "priority": "p1", "reason": "ok"}),
+            0.01,
+            100,
+            50,
+            0,
+            0,
+            True,
+        )
+
+    monkeypatch.setattr("autoloop.triage_issues.run_claude", fake_run_claude)
+
+    from autoloop.triage_issues import evaluate_issue
+
+    issue = {"number": 10, "title": "Add method filter", "body": "Original body"}
+    evaluate_issue(issue, cfg, Path("/fake/repo"))
+
+    assert requirement_comment in captured["prompt"]

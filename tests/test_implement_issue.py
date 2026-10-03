@@ -5217,3 +5217,78 @@ def test_resolve_working_dir_worktree_does_not_create_under_cwd(monkeypatch, tmp
     result = resolve_working_dir("worktree", ctx, "autoloop/42-test")
 
     assert not str(result).startswith(str(cwd))
+
+
+# --- build_implementation_prompt includes all comments ---
+
+
+def test_build_implementation_prompt_includes_all_comments(monkeypatch, tmp_path):
+    """All issue comments should appear in the prompt, not just tagged bot comments."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(repo="acme-corp/widget"))
+    claude_md = tmp_path / "CLAUDE.md"
+    claude_md.write_text("# Project\nTest project")
+    monkeypatch.chdir(tmp_path)
+
+    comments_json = json.dumps(
+        {
+            "body": "Issue body text",
+            "comments": [
+                {"body": "Auto-triage — Ready (p1): ok"},
+                {"body": "Human clarification: only apply to public methods"},
+                {"body": "Observer escalation: tests still failing on edge case"},
+            ],
+        }
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:3] == ["gh", "issue", "view"]:
+            return type("R", (), {"returncode": 0, "stdout": comments_json, "stderr": ""})()
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    issue = {"number": 10, "title": "Add method filter", "body": "Issue body text"}
+    prompt = implement_issue.build_implementation_prompt(issue)
+
+    assert "--- Issue Comments ---" in prompt
+    assert "Auto-triage — Ready (p1): ok" in prompt
+    assert "Human clarification: only apply to public methods" in prompt
+    assert "Observer escalation: tests still failing on edge case" in prompt
+
+
+def test_build_implementation_prompt_comment_changes_requirement_verbatim(monkeypatch, tmp_path):
+    """A comment that changes a requirement must appear verbatim in the prompt."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(repo="acme-corp/widget"))
+    claude_md = tmp_path / "CLAUDE.md"
+    claude_md.write_text("# Project\nTest project")
+    monkeypatch.chdir(tmp_path)
+
+    requirement_comment = (
+        "Correction: the feature should only process files under src/, "
+        "not the entire repository. The acceptance criteria in the body "
+        "that mention 'all files' are outdated."
+    )
+    comments_json = json.dumps(
+        {
+            "body": "Original issue body mentioning all files",
+            "comments": [
+                {"body": requirement_comment},
+            ],
+        }
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:3] == ["gh", "issue", "view"]:
+            return type("R", (), {"returncode": 0, "stdout": comments_json, "stderr": ""})()
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    issue = {
+        "number": 15,
+        "title": "Process files",
+        "body": "Original issue body mentioning all files",
+    }
+    prompt = implement_issue.build_implementation_prompt(issue)
+
+    assert requirement_comment in prompt

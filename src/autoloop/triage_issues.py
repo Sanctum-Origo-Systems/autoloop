@@ -532,6 +532,41 @@ def jev_triage(issue: dict, cfg: AutoLoopConfig) -> dict:
 # --- Subprocess functions ---
 
 
+def fetch_issue_comments(issue_number: int, cfg: AutoLoopConfig) -> list[str]:
+    """Fetch all comment bodies for an issue via gh issue view."""
+    result = subprocess.run(
+        [
+            "gh",
+            "issue",
+            "view",
+            str(issue_number),
+            "--repo",
+            cfg.repo,
+            "--json",
+            "comments",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return []
+    try:
+        data = json.loads(result.stdout)
+        return [c.get("body", "") for c in data.get("comments", []) if c.get("body")]
+    except (json.JSONDecodeError, AttributeError):
+        return []
+
+
+def format_comments_for_prompt(comments: list[str]) -> str:
+    """Format issue comments for inclusion in a prompt."""
+    if not comments:
+        return ""
+    parts = ["\n\n--- Issue Comments ---"]
+    for i, body in enumerate(comments, 1):
+        parts.append(f"\n\nComment {i}:\n{body}")
+    return "".join(parts)
+
+
 def load_project_context(repo_dir: Path) -> tuple[str, str]:
     """Return the project source tree and CLAUDE.md contents for prompt context."""
     tree = subprocess.run(
@@ -600,6 +635,8 @@ def evaluate_issue(issue: dict, cfg: AutoLoopConfig, repo_dir: Path) -> tuple[di
     """Run Claude to evaluate an issue against the triage prompt."""
     tree, claude_md = load_project_context(repo_dir)
     triage_prompt = build_triage_prompt(cfg)
+    comments = fetch_issue_comments(issue["number"], cfg)
+    comments_text = format_comments_for_prompt(comments)
     prompt = (
         triage_prompt
         + "\n\nPROJECT STRUCTURE:\n"
@@ -608,6 +645,7 @@ def evaluate_issue(issue: dict, cfg: AutoLoopConfig, repo_dir: Path) -> tuple[di
         + claude_md
         + f"\n\nIssue #{issue['number']}: {issue['title']}\n\n"
         + (issue.get("body") or "")
+        + comments_text
     )
     result = run_claude(prompt, cfg.triage_model, cfg.triage_timeout, repo_dir=repo_dir)
     if not result.success:
