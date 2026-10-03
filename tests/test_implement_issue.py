@@ -3710,21 +3710,10 @@ def test_build_implementation_prompt_truncates_body_plus_comments(monkeypatch, t
     claude_md.write_text("# Project\nTest project")
     monkeypatch.chdir(tmp_path)
 
-    comments_json = json.dumps(
-        {
-            "body": "short body",
-            "comments": [
-                {"body": "Implementation Detail: " + "x" * 200},
-            ],
-        }
-    )
+    def fake_fetch_comments(issue_number, cfg):
+        return ["Implementation Detail: " + "x" * 200]
 
-    def fake_run(cmd, **kwargs):
-        if cmd[:3] == ["gh", "issue", "view"]:
-            return type("R", (), {"returncode": 0, "stdout": comments_json, "stderr": ""})()
-        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
-
-    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    monkeypatch.setattr("autoloop.triage_issues.fetch_issue_comments", fake_fetch_comments)
 
     issue = {"number": 7, "title": "Issue with comments", "body": "short body"}
     prompt = implement_issue.build_implementation_prompt(issue)
@@ -5223,29 +5212,20 @@ def test_resolve_working_dir_worktree_does_not_create_under_cwd(monkeypatch, tmp
 
 
 def test_build_implementation_prompt_includes_all_comments(monkeypatch, tmp_path):
-    """All issue comments should appear in the prompt, not just tagged bot comments."""
+    """All trusted issue comments should appear in the prompt."""
     monkeypatch.setattr(implement_issue, "cfg", _test_cfg(repo="acme-corp/widget"))
     claude_md = tmp_path / "CLAUDE.md"
     claude_md.write_text("# Project\nTest project")
     monkeypatch.chdir(tmp_path)
 
-    comments_json = json.dumps(
-        {
-            "body": "Issue body text",
-            "comments": [
-                {"body": "Auto-triage — Ready (p1): ok"},
-                {"body": "Human clarification: only apply to public methods"},
-                {"body": "Observer escalation: tests still failing on edge case"},
-            ],
-        }
-    )
+    def fake_fetch_comments(issue_number, cfg):
+        return [
+            "Auto-triage — Ready (p1): ok",
+            "Human clarification: only apply to public methods",
+            "Observer escalation: tests still failing on edge case",
+        ]
 
-    def fake_run(cmd, **kwargs):
-        if cmd[:3] == ["gh", "issue", "view"]:
-            return type("R", (), {"returncode": 0, "stdout": comments_json, "stderr": ""})()
-        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
-
-    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    monkeypatch.setattr("autoloop.triage_issues.fetch_issue_comments", fake_fetch_comments)
 
     issue = {"number": 10, "title": "Add method filter", "body": "Issue body text"}
     prompt = implement_issue.build_implementation_prompt(issue)
@@ -5268,21 +5248,11 @@ def test_build_implementation_prompt_comment_changes_requirement_verbatim(monkey
         "not the entire repository. The acceptance criteria in the body "
         "that mention 'all files' are outdated."
     )
-    comments_json = json.dumps(
-        {
-            "body": "Original issue body mentioning all files",
-            "comments": [
-                {"body": requirement_comment},
-            ],
-        }
-    )
 
-    def fake_run(cmd, **kwargs):
-        if cmd[:3] == ["gh", "issue", "view"]:
-            return type("R", (), {"returncode": 0, "stdout": comments_json, "stderr": ""})()
-        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+    def fake_fetch_comments(issue_number, cfg):
+        return [requirement_comment]
 
-    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    monkeypatch.setattr("autoloop.triage_issues.fetch_issue_comments", fake_fetch_comments)
 
     issue = {
         "number": 15,
@@ -5292,3 +5262,33 @@ def test_build_implementation_prompt_comment_changes_requirement_verbatim(monkey
     prompt = implement_issue.build_implementation_prompt(issue)
 
     assert requirement_comment in prompt
+
+
+def test_build_implementation_prompt_excludes_non_collaborator_comments(monkeypatch, tmp_path):
+    """Comments from non-collaborators (authorAssociation: NONE) must not reach the prompt."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(repo="acme-corp/widget"))
+    claude_md = tmp_path / "CLAUDE.md"
+    claude_md.write_text("# Project\nTest project")
+    monkeypatch.chdir(tmp_path)
+
+    comments_json = json.dumps(
+        {
+            "comments": [
+                {"body": "Trusted owner note", "authorAssociation": "OWNER"},
+                {"body": "Spam from outsider", "authorAssociation": "NONE"},
+            ],
+        }
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:3] == ["gh", "issue", "view"]:
+            return type("R", (), {"returncode": 0, "stdout": comments_json, "stderr": ""})()
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr("autoloop.triage_issues.subprocess.run", fake_run)
+
+    issue = {"number": 20, "title": "Test filter", "body": "Body text"}
+    prompt = implement_issue.build_implementation_prompt(issue)
+
+    assert "Trusted owner note" in prompt
+    assert "Spam from outsider" not in prompt

@@ -56,6 +56,7 @@ def _cfg(**overrides):
         "verify_cmd": "uv run pytest",
         "lint_command": "uv run ruff check && uv run ruff format --check",
         "tree_truncation": 3000,
+        "comment_truncation": 4000,
         "protected_paths": ["autoloop/"],
         "triage_labels": [
             "ready",
@@ -4075,8 +4076,8 @@ def test_fetch_issue_comments_success():
     cfg = _cfg(repo="acme/widgets")
     comments_data = {
         "comments": [
-            {"body": "First comment"},
-            {"body": "Second comment"},
+            {"body": "First comment", "authorAssociation": "OWNER"},
+            {"body": "Second comment", "authorAssociation": "MEMBER"},
         ]
     }
 
@@ -4120,9 +4121,9 @@ def test_fetch_issue_comments_skips_empty_bodies():
     cfg = _cfg(repo="acme/widgets")
     comments_data = {
         "comments": [
-            {"body": "Real comment"},
-            {"body": ""},
-            {"body": "Another comment"},
+            {"body": "Real comment", "authorAssociation": "OWNER"},
+            {"body": "", "authorAssociation": "OWNER"},
+            {"body": "Another comment", "authorAssociation": "COLLABORATOR"},
         ]
     }
 
@@ -4134,6 +4135,58 @@ def test_fetch_issue_comments_skips_empty_bodies():
         result = fetch_issue_comments(42, cfg)
 
     assert result == ["Real comment", "Another comment"]
+
+
+def test_fetch_issue_comments_filters_non_collaborator():
+    """Comments with authorAssociation NONE are excluded from the result."""
+    cfg = _cfg(repo="acme/widgets")
+    comments_data = {
+        "comments": [
+            {"body": "Trusted comment", "authorAssociation": "OWNER"},
+            {"body": "Spam from outsider", "authorAssociation": "NONE"},
+            {"body": "Collaborator note", "authorAssociation": "COLLABORATOR"},
+            {"body": "Random contributor", "authorAssociation": "CONTRIBUTOR"},
+            {"body": "Member note", "authorAssociation": "MEMBER"},
+        ]
+    }
+
+    class FakeResult:
+        returncode = 0
+        stdout = json.dumps(comments_data)
+
+    with patch("autoloop.triage_issues.subprocess.run", return_value=FakeResult()):
+        result = fetch_issue_comments(42, cfg)
+
+    assert result == ["Trusted comment", "Collaborator note", "Member note"]
+    assert "Spam from outsider" not in result
+    assert "Random contributor" not in result
+
+
+def test_fetch_issue_comments_logs_skipped_count(caplog):
+    """Skipped non-collaborator comments are reported via logging."""
+    import logging
+
+    cfg = _cfg(repo="acme/widgets")
+    comments_data = {
+        "comments": [
+            {"body": "Keeper", "authorAssociation": "OWNER"},
+            {"body": "Dropped", "authorAssociation": "NONE"},
+            {"body": "Also dropped", "authorAssociation": "CONTRIBUTOR"},
+        ]
+    }
+
+    class FakeResult:
+        returncode = 0
+        stdout = json.dumps(comments_data)
+
+    with (
+        patch("autoloop.triage_issues.subprocess.run", return_value=FakeResult()),
+        caplog.at_level(logging.INFO),
+    ):
+        result = fetch_issue_comments(42, cfg)
+
+    assert len(result) == 1
+    assert "skipped 2 non-collaborator" in caplog.text
 
 
 # --- format_comments_for_prompt ---
@@ -4148,6 +4201,20 @@ def test_format_comments_for_prompt_with_comments():
 
 def test_format_comments_for_prompt_empty():
     assert format_comments_for_prompt([]) == ""
+
+
+def test_format_comments_for_prompt_truncates_at_max_chars():
+    long_comment = "x" * 500
+    result = format_comments_for_prompt([long_comment], max_chars=100)
+    assert len(result) <= 100 + len("\n\n[Comments truncated.]")
+    assert "[Comments truncated.]" in result
+    assert "x" * 500 not in result
+
+
+def test_format_comments_for_prompt_no_truncation_within_budget():
+    result = format_comments_for_prompt(["Short"], max_chars=1000)
+    assert "[Comments truncated.]" not in result
+    assert "Short" in result
 
 
 # --- evaluate_issue includes comments ---
