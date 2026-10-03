@@ -1730,6 +1730,24 @@ def implement_single_issue(
 
         if auto_fix and pr_number is not None and not approved:
             run_auto_fix_loop(pr_number, issue, cfg, repo_dir)
+        elif auto_fix and pr_number is not None and approved:
+            comment = (
+                "**Review passed:** mutation gate and semantic review both passed."
+                f"\n\n**Review cost:** ${total_cost:.2f}, "
+                f"tokens: {total_input:,} input / {total_output:,} output"
+            )
+            subprocess.run(
+                [
+                    "gh",
+                    "pr",
+                    "comment",
+                    str(pr_number),
+                    "--repo",
+                    cfg.repo,
+                    "--body",
+                    comment,
+                ],
+            )
 
         if integrity_violations:
             auto_merge_decision, auto_merge_gates = "skipped-integrity", {}

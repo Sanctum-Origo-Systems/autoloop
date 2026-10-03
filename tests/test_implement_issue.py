@@ -4024,6 +4024,49 @@ def test_auto_fix_skipped_when_review_passes(monkeypatch, tmp_path):
     assert len(fix_calls) == 0
 
 
+def test_auto_fix_posts_comment_when_review_passes(monkeypatch, tmp_path):
+    """When --auto-fix is set and initial review passes, a PR comment is posted."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
+    monkeypatch.chdir(tmp_path)
+    calls = []
+
+    def fake_subprocess_run(cmd, **kwargs):
+        calls.append(cmd)
+        if isinstance(cmd, list) and cmd[:3] == ["git", "rev-list", "--count"]:
+            return type("R", (), {"returncode": 0, "stdout": "1\n", "stderr": ""})()
+        if isinstance(cmd, str):
+            return type("R", (), {"returncode": 0, "stdout": "passed", "stderr": ""})()
+        if isinstance(cmd, list) and cmd[:3] == ["git", "diff", "--name-only"]:
+            return type("R", (), {"returncode": 0, "stdout": "tests/test_x.py\n", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(
+        implement_issue, "implement", lambda issue, previous_errors=None, **kw: _claude_result()
+    )
+    monkeypatch.setattr(
+        implement_issue, "create_branch", lambda issue, repo_dir=None: "autoloop/42-add-feature"
+    )
+    monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: 99)
+    monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
+    monkeypatch.setattr(
+        implement_issue, "review_implementation", lambda issue, branch, **kw: (True, "")
+    )
+
+    result = implement_single_issue(_FAKE_ISSUE, auto_fix=True)
+    assert result is True
+
+    comment_calls = [
+        c
+        for c in calls
+        if isinstance(c, list) and len(c) >= 4 and c[:3] == ["gh", "pr", "comment"] and c[3] == "99"
+    ]
+    assert len(comment_calls) == 1
+    body = comment_calls[0][comment_calls[0].index("--body") + 1]
+    assert "Review passed" in body
+    assert "Review cost" in body
+
+
 def test_auto_fix_runs_when_review_fails(monkeypatch, tmp_path):
     """When --auto-fix is set and review fails, auto-fix loop runs after PR creation."""
     monkeypatch.setattr(implement_issue, "cfg", _test_cfg(max_retries=1))
