@@ -1572,6 +1572,7 @@ def implement_single_issue(
         last_errors = None
         empty_branch_failure = False
         timeout_failure = False
+        approved = False
         for attempt in range(1, cfg.max_retries + 1):
             print(f"  Attempt {attempt}/{cfg.max_retries}...")
             result = implement(issue, previous_errors=last_errors, repo_dir=repo_dir)
@@ -1621,6 +1622,9 @@ def implement_single_issue(
                 print(f"  Review failed:\n{feedback}")
                 last_errors = feedback
                 post_attempt_failure(issue["number"], attempt, feedback)
+                if auto_fix:
+                    success = True
+                    break
                 continue
 
             success = True
@@ -1724,7 +1728,7 @@ def implement_single_issue(
                     ],
                 )
 
-        if auto_fix and pr_number is not None:
+        if auto_fix and pr_number is not None and not approved:
             run_auto_fix_loop(pr_number, issue, cfg, repo_dir)
 
         if integrity_violations:
