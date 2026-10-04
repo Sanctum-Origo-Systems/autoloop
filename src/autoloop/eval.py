@@ -445,6 +445,23 @@ def format_comparison(comparison: dict) -> str:
     return "\n".join(lines)
 
 
+def _sample_for_chart(snapshots: list[dict], max_points: int = 12) -> list[dict]:
+    """Sample snapshots for chart display — weekly intervals plus first and last."""
+    if len(snapshots) <= max_points:
+        return snapshots
+    sampled = [snapshots[0]]
+    last_date = snapshots[0]["date"]
+    for s in snapshots[1:-1]:
+        days_since = (
+            datetime.strptime(s["date"], "%Y-%m-%d") - datetime.strptime(last_date, "%Y-%m-%d")
+        ).days
+        if days_since >= 7:
+            sampled.append(s)
+            last_date = s["date"]
+    sampled.append(snapshots[-1])
+    return sampled
+
+
 def _period_impl(snapshot: dict, prev: dict | None) -> int:
     if prev is None:
         return snapshot.get("total_implementations", 0)
@@ -704,8 +721,11 @@ def generate_eval_md(
         lines.append("")
 
     if recent:
-        dates = ", ".join(f'"{s["date"][5:]}"' for s in recent)
-        success_vals = ", ".join(str(round(s.get("first_attempt_rate", 0) * 100)) for s in recent)
+        chart_snaps = _sample_for_chart(recent)
+        dates = ", ".join(f'"{s["date"][5:]}"' for s in chart_snaps)
+        success_vals = ", ".join(
+            str(round(s.get("first_attempt_rate", 0) * 100)) for s in chart_snaps
+        )
         lines.append("```mermaid")
         lines.append("xychart-beta")
         lines.append('    title "First-Attempt Success Rate (UTC)"')
@@ -715,7 +735,7 @@ def generate_eval_md(
         lines.append("```")
         lines.append("")
 
-        cost_vals = ", ".join(f"{s.get('avg_cost_usd', 0):.2f}" for s in recent)
+        cost_vals = ", ".join(f"{s.get('avg_cost_usd', 0):.2f}" for s in chart_snaps)
         lines.append("```mermaid")
         lines.append("xychart-beta")
         lines.append('    title "Avg Cost/PR (UTC)"')
