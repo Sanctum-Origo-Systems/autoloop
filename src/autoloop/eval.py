@@ -453,8 +453,7 @@ def _sample_for_chart(snapshots: list[dict], max_points: int = 12) -> list[dict]
     last_date = snapshots[0]["date"]
     for s in snapshots[1:-1]:
         days_since = (
-            datetime.strptime(s["date"], "%Y-%m-%d")
-            - datetime.strptime(last_date, "%Y-%m-%d")
+            datetime.strptime(s["date"], "%Y-%m-%d") - datetime.strptime(last_date, "%Y-%m-%d")
         ).days
         if days_since >= 7:
             sampled.append(s)
