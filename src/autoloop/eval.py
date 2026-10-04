@@ -704,7 +704,7 @@ def generate_eval_md(
         lines.append("")
 
     if recent:
-        dates = ", ".join(f'"{s["date"]}"' for s in recent)
+        dates = ", ".join(f'"{s["date"][5:]}"' for s in recent)
         success_vals = ", ".join(str(round(s.get("first_attempt_rate", 0) * 100)) for s in recent)
         lines.append("```mermaid")
         lines.append("xychart-beta")

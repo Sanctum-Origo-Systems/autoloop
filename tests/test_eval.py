@@ -1416,8 +1416,8 @@ def test_generate_eval_md_mermaid_success_chart():
     assert "```mermaid" in content
     assert "xychart-beta" in content
     assert 'title "First-Attempt Success Rate (UTC)"' in content
-    assert '"2026-09-07"' in content
-    assert '"2026-09-14"' in content
+    assert '"09-07"' in content
+    assert '"09-14"' in content
     assert 'y-axis "Success %" 0 --> 100' in content
     assert "line [87, 89]" in content
 
