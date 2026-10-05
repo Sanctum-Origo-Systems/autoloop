@@ -11,7 +11,9 @@ from autoloop.eval import (
     _detect_module_prefixes,
     _detect_post_merge_fixups,
     _extract_issue_from_branch,
+    _md_label,
     _publish_via_pr,
+    _sample_for_chart,
     classify_module,
     compare_snapshots,
     compute_snapshot,
@@ -1409,28 +1411,48 @@ def test_generate_eval_md_trend_table_shows_all():
 
 def test_generate_eval_md_mermaid_success_chart():
     snaps = [
-        _make_snapshot(date="2026-09-07", rate=0.87),
-        _make_snapshot(date="2026-09-14", rate=0.89),
+        {
+            **_make_snapshot(date="2026-09-07", rate=0.80, cost=1.50),
+            "attempt_distribution": {"1": 20, "2": 5, "3+": 0},
+            "human_edit_count": 2,
+            "merged_pr_count": 20,
+        },
+        {
+            **_make_snapshot(date="2026-09-14", rate=0.83, cost=1.40),
+            "attempt_distribution": {"1": 25, "2": 7, "3+": 0},
+            "human_edit_count": 3,
+            "merged_pr_count": 25,
+        },
     ]
     content = generate_eval_md(snaps[-1], snaps)
     assert "```mermaid" in content
     assert "xychart-beta" in content
-    assert 'title "First-Attempt Success Rate (UTC)"' in content
-    assert '"09-07"' in content
-    assert '"09-14"' in content
+    assert 'title "First-Attempt Success Rate (2026)"' in content
+    assert '"9/7"' in content
+    assert '"9/14"' in content
     assert 'y-axis "Success %" 0 --> 100' in content
-    assert "line [87, 89]" in content
+    assert "line [80, 71]" in content
 
 
 def test_generate_eval_md_mermaid_cost_chart():
     snaps = [
-        _make_snapshot(date="2026-09-07", cost=1.50),
-        _make_snapshot(date="2026-09-14", cost=1.12),
+        {
+            **_make_snapshot(date="2026-09-07", rate=0.80, cost=1.50),
+            "attempt_distribution": {"1": 20, "2": 5, "3+": 0},
+            "human_edit_count": 2,
+            "merged_pr_count": 20,
+        },
+        {
+            **_make_snapshot(date="2026-09-14", rate=0.83, cost=1.40),
+            "attempt_distribution": {"1": 25, "2": 7, "3+": 0},
+            "human_edit_count": 3,
+            "merged_pr_count": 25,
+        },
     ]
     content = generate_eval_md(snaps[-1], snaps)
-    assert 'title "Avg Cost/PR (UTC)"' in content
-    assert 'y-axis "Cost ($)"' in content
-    assert "line [1.50, 1.12]" in content
+    assert 'title "Avg Cost/PR (2026)"' in content
+    assert 'y-axis "Cost ($)" 0 --> ' in content
+    assert "line [1.50, 1.04]" in content
 
 
 def test_generate_eval_md_mermaid_pie_chart():
@@ -1464,11 +1486,23 @@ def test_generate_eval_md_no_modules_skips_module_sections():
 
 def test_generate_eval_md_mermaid_charts_from_data():
     snaps = [
-        _make_snapshot(date="2026-09-07", rate=0.75, cost=2.00),
-        _make_snapshot(date="2026-09-14", rate=0.90, cost=1.00),
+        {
+            **_make_snapshot(date="2026-09-07", rate=0.80, cost=2.00),
+            "attempt_distribution": {"1": 8, "2": 2, "3+": 0},
+            "human_edit_count": 0,
+            "merged_pr_count": 8,
+        },
+        {
+            **_make_snapshot(date="2026-09-14", rate=0.75, cost=1.50),
+            "attempt_distribution": {"1": 14, "2": 6, "3+": 0},
+            "human_edit_count": 0,
+            "merged_pr_count": 16,
+        },
     ]
     content = generate_eval_md(snaps[-1], snaps)
-    assert "line [75, 90]" in content
+    # Per-period: first=80%, second=6/10=60%
+    assert "line [80, 60]" in content
+    # Per-period cost: first=2.00, second=(1.50*20 - 2.00*10)/10 = 1.00
     assert "line [2.00, 1.00]" in content
 
 
@@ -3238,3 +3272,121 @@ def test_main_period_stats_with_previous(tmp_path, capsys):
     new_snap = json.loads(snap_files[-1].read_text())
     assert new_snap["period_first_attempt_rate"] is not None
     assert new_snap["period_avg_cost_usd"] is not None
+
+
+# --- ISO weekly resampling (#374) ---
+
+
+def test_sample_for_chart_iso_weekly():
+    """One point per ISO week, in chronological order."""
+    snaps = [
+        {"date": "2026-07-06"},  # W28
+        {"date": "2026-07-13"},  # W29
+        {"date": "2026-07-20"},  # W30
+    ]
+    result = _sample_for_chart(snaps)
+    assert len(result) == 3
+    assert result[0]["date"] == "2026-07-06"
+    assert result[2]["date"] == "2026-07-20"
+
+
+def test_sample_for_chart_last_snapshot_per_week():
+    """Multiple snapshots in same ISO week — last one wins."""
+    snaps = [
+        {"date": "2026-09-01"},  # W36 (Tue)
+        {"date": "2026-09-02"},  # W36 (Wed)
+        {"date": "2026-09-03"},  # W36 (Thu)
+        {"date": "2026-09-08"},  # W37
+    ]
+    result = _sample_for_chart(snaps)
+    assert len(result) == 2
+    assert result[0]["date"] == "2026-09-03"
+    assert result[1]["date"] == "2026-09-08"
+
+
+def test_sample_for_chart_empty():
+    assert _sample_for_chart([]) == []
+
+
+def test_md_label_format():
+    assert _md_label("2026-09-07") == "9/7"
+    assert _md_label("2026-01-15") == "1/15"
+    assert _md_label("2026-12-01") == "12/1"
+
+
+def test_chart_labels_md_format():
+    """Chart x-axis labels use M/D format."""
+    snaps = [
+        _make_snapshot(date="2026-09-07"),
+        _make_snapshot(date="2026-09-14"),
+    ]
+    content = generate_eval_md(snaps[-1], snaps)
+    assert '"9/7"' in content
+    assert '"9/14"' in content
+    assert '"09-07"' not in content
+
+
+def test_chart_per_period_not_cumulative():
+    """Chart plots per-period rates, not cumulative values."""
+    snaps = [
+        {
+            **_make_snapshot(date="2026-09-07", rate=0.80, cost=2.00),
+            "attempt_distribution": {"1": 8, "2": 2, "3+": 0},
+            "human_edit_count": 0,
+            "merged_pr_count": 8,
+        },
+        {
+            **_make_snapshot(date="2026-09-14", rate=0.75, cost=1.50),
+            "attempt_distribution": {"1": 14, "2": 6, "3+": 0},
+            "human_edit_count": 0,
+            "merged_pr_count": 16,
+        },
+    ]
+    content = generate_eval_md(snaps[-1], snaps)
+    # Cumulative would be [80, 75]; per-period is [80, 60] (6/10)
+    assert "line [80, 60]" in content
+    assert "line [80, 75]" not in content
+
+
+def test_chart_cost_y_axis_starts_at_zero():
+    """Cost chart y-axis starts at 0."""
+    snaps = [
+        _make_snapshot(date="2026-09-07", cost=1.50),
+        _make_snapshot(date="2026-09-14", cost=1.12),
+    ]
+    content = generate_eval_md(snaps[-1], snaps)
+    assert 'y-axis "Cost ($)" 0 --> ' in content
+
+
+def test_chart_annotations():
+    """Annotation lines appear below each chart when provided."""
+    snaps = [
+        _make_snapshot(date="2026-09-07"),
+        _make_snapshot(date="2026-09-14"),
+    ]
+    content = generate_eval_md(snaps[-1], snaps, annotations=["9/18: model change"])
+    assert "> 9/18: model change" in content
+    occurrences = content.count("> 9/18: model change")
+    assert occurrences == 2
+
+
+def test_chart_no_annotations_by_default():
+    """No annotation lines when annotations parameter is not provided."""
+    snaps = [
+        _make_snapshot(date="2026-09-07"),
+        _make_snapshot(date="2026-09-14"),
+    ]
+    content = generate_eval_md(snaps[-1], snaps)
+    assert "\n> " not in content
+
+
+def test_chart_title_includes_year():
+    """Chart titles include the year from the data."""
+    snaps = [
+        _make_snapshot(date="2026-09-07"),
+        _make_snapshot(date="2026-09-14"),
+    ]
+    content = generate_eval_md(snaps[-1], snaps)
+    assert 'title "First-Attempt Success Rate (2026)"' in content
+    assert 'title "Avg Cost/PR (2026)"' in content
+    assert 'title "First-Attempt Success Rate (UTC)"' not in content
