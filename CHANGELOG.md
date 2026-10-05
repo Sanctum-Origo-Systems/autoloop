@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.12.1
+
+### Eval Dashboard
+- fix: resample eval charts to ISO weekly intervals with per-period values (#374)
+- fix: shorten eval chart x-axis dates to M/D format (#371)
+
 ## v0.12.0
 
 ### Review Pipeline
