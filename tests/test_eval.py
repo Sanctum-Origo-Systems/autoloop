@@ -3063,6 +3063,23 @@ def test_compute_period_stats_no_merged_prs_in_period():
     assert result["period_human_edit_rate"] is None
 
 
+def test_compute_period_stats_negative_cost_clamped_to_zero():
+    prev = _make_full_snapshot(
+        attempt_dist={"1": 80, "2": 8, "3+": 4},
+        cost=0.82,
+        human_edit_count=5,
+        merged_pr_count=90,
+    )
+    curr = _make_full_snapshot(
+        attempt_dist={"1": 81, "2": 8, "3+": 4},
+        cost=0.81,
+        human_edit_count=5,
+        merged_pr_count=91,
+    )
+    result = _compute_period_stats(curr, prev)
+    assert result["period_avg_cost_usd"] >= 0
+
+
 # --- format_trend with period values (#232) ---
 
 

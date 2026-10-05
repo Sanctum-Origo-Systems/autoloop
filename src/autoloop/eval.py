@@ -498,7 +498,7 @@ def _compute_period_stats(snapshot: dict, prev: dict | None) -> dict:
 
     curr_total_cost = snapshot.get("avg_cost_usd", 0) * curr_runs
     prev_total_cost = prev.get("avg_cost_usd", 0) * prev_runs
-    period_avg_cost = round((curr_total_cost - prev_total_cost) / period_runs, 2)
+    period_avg_cost = round(max(0, curr_total_cost - prev_total_cost) / period_runs, 2)
 
     period_edits = snapshot.get("human_edit_count", 0) - prev.get("human_edit_count", 0)
     period_merged = snapshot.get("merged_pr_count", 0) - prev.get("merged_pr_count", 0)
