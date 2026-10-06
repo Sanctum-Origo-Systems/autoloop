@@ -141,6 +141,21 @@ def build_parser():
         help="With --publish, create a branch and PR instead of committing to main",
     )
 
+    # jev-report
+    jev_report_parser = subparsers.add_parser(
+        "jev-report", help="Generate JEV calibration report from decision log"
+    )
+    jev_report_parser.add_argument(
+        "--publish",
+        action="store_true",
+        help="Generate JEV.md and commit to main",
+    )
+    jev_report_parser.add_argument(
+        "--pr",
+        action="store_true",
+        help="With --publish, create a branch and PR instead of committing to main",
+    )
+
     # version (also accessible via --version)
     subparsers.add_parser("version", help="Print installed version")
 
@@ -300,6 +315,11 @@ def main():
             auto_merge_volume_floor=cfg.auto_merge_volume_floor,
             auto_merge_promotion_level=cfg.auto_merge_promotion_level,
         )
+
+    elif args.command == "jev-report":
+        from autoloop.jev_report import main as jev_report_main
+
+        jev_report_main(ctx=ctx, publish=args.publish, pr=args.pr)
 
     elif args.command == "doctor":
         from autoloop.doctor import get_checks, run_checks

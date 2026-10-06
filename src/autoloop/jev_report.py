@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import statistics
+import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
+
+from autoloop.config import RepoContext
 
 
 @dataclass
@@ -284,3 +287,193 @@ def render_jev_md(triage_stats: dict, automerge_stats: dict, counts: dict) -> st
         lines.append("")
 
     return "\n".join(lines)
+
+
+def _publish_via_pr(ctx: RepoContext, jev_path: Path, date: str) -> str:
+    branch_name = f"chore/jev-report-{date}"
+    pr_created = False
+    repo_dir = str(ctx.repo_dir)
+    try:
+        result = subprocess.run(
+            ["git", "checkout", "-b", branch_name],
+            capture_output=True,
+            text=True,
+            cwd=repo_dir,
+        )
+    except FileNotFoundError:
+        return "Error: git not found"
+    if result.returncode != 0:
+        return f"Error: could not create branch {branch_name}"
+
+    try:
+        try:
+            result = subprocess.run(
+                ["git", "add", str(jev_path)],
+                capture_output=True,
+                text=True,
+                cwd=repo_dir,
+            )
+        except FileNotFoundError:
+            return "Error: git not found"
+        if result.returncode != 0:
+            return "Error: git add failed"
+
+        commit_msg = f"chore: update jev report ({date})"
+        try:
+            result = subprocess.run(
+                ["git", "commit", "-m", commit_msg],
+                capture_output=True,
+                text=True,
+                cwd=repo_dir,
+            )
+        except FileNotFoundError:
+            return "Error: git not found"
+        if result.returncode != 0:
+            return "Error: git commit failed"
+
+        try:
+            result = subprocess.run(
+                ["git", "push", "-u", "origin", branch_name],
+                capture_output=True,
+                text=True,
+                cwd=repo_dir,
+            )
+        except FileNotFoundError:
+            return "Error: git not found"
+        if result.returncode != 0:
+            return f"Error: git push failed\n{result.stderr}"
+
+        pr_title = f"chore: update jev report ({date})"
+        try:
+            result = subprocess.run(
+                [
+                    "gh",
+                    "pr",
+                    "create",
+                    "--title",
+                    pr_title,
+                    "--body",
+                    "Automated JEV report update.",
+                ],
+                capture_output=True,
+                text=True,
+                cwd=repo_dir,
+            )
+        except FileNotFoundError:
+            return "Error: gh not found"
+        if result.returncode != 0:
+            return f"Error: PR creation failed\n{result.stderr}"
+
+        pr_created = True
+        return f"PR created: {result.stdout.strip()}"
+    finally:
+        try:
+            subprocess.run(
+                ["git", "checkout", "main"],
+                capture_output=True,
+                cwd=repo_dir,
+            )
+            if not pr_created:
+                subprocess.run(
+                    ["git", "branch", "-D", branch_name],
+                    capture_output=True,
+                    cwd=repo_dir,
+                )
+        except FileNotFoundError:
+            pass
+
+
+def main(*, ctx: RepoContext, publish: bool = False, pr: bool = False):
+    decisions_path = ctx.data_dir / "jev_decisions.jsonl"
+    parsed = parse_jev_decisions(decisions_path)
+
+    all_entries = parsed.backfilled + parsed.live
+    triage_stats = compute_triage_stats(all_entries)
+    automerge_stats = compute_automerge_stats(all_entries)
+
+    timestamps = [e.timestamp for e in all_entries if e.timestamp]
+    if timestamps:
+        date_range = f"{min(timestamps)[:10]} to {max(timestamps)[:10]}"
+    else:
+        date_range = ""
+
+    counts = {
+        "total": len(all_entries),
+        "live": len(parsed.live),
+        "backfilled": len(parsed.backfilled),
+        "date_range": date_range,
+    }
+
+    content = render_jev_md(triage_stats, automerge_stats, counts)
+    jev_path = ctx.repo_dir / "JEV.md"
+    jev_path.write_text(content)
+    print(f"JEV.md written to {jev_path}")
+
+    if not publish:
+        return
+
+    repo_dir = str(ctx.repo_dir)
+
+    try:
+        branch_result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            cwd=repo_dir,
+        )
+    except FileNotFoundError:
+        print("Error: git not found")
+        return
+    if branch_result.returncode != 0 or branch_result.stdout.strip() != "main":
+        print("Error: --publish must be run from the main branch")
+        return
+
+    date = datetime.now().strftime("%Y-%m-%d")
+
+    if pr:
+        print(_publish_via_pr(ctx, jev_path, date))
+        return
+
+    try:
+        add_result = subprocess.run(["git", "add", str(jev_path)], cwd=repo_dir)
+    except FileNotFoundError:
+        print("Error: git not found")
+        return
+    if add_result.returncode != 0:
+        print("Error: git add failed")
+        return
+
+    try:
+        commit_result = subprocess.run(
+            ["git", "commit", "-m", f"chore: update jev report ({date})"],
+            cwd=repo_dir,
+        )
+    except FileNotFoundError:
+        print("Error: git not found")
+        return
+    if commit_result.returncode != 0:
+        print("Error: git commit failed")
+        return
+
+    print(f"JEV.md committed: chore: update jev report ({date})")
+
+    try:
+        push_result = subprocess.run(
+            ["git", "push"],
+            capture_output=True,
+            text=True,
+            cwd=repo_dir,
+        )
+    except FileNotFoundError:
+        print("Error: git not found")
+        return
+    if push_result.returncode != 0:
+        stderr = push_result.stderr
+        if "rule violations" in stderr or "protected branch" in stderr:
+            print(
+                "Error: push failed — branch protection is enabled.\n"
+                "Hint: use --publish --pr to create a PR instead."
+            )
+        else:
+            print(f"Error: git push failed\n{stderr}")
+        return
