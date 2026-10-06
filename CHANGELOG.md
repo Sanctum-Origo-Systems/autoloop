@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.13.0
+
+### Jev Report
+- feat: jev-report CLI subcommand with --publish --pr flags (#380) ($1.58)
+- feat: jev-report core — parse jev_decisions.jsonl, compute triage and auto-merge calibration stats, render JEV.md with Mermaid charts (#379) ($2.57)
+
+### Bug Fixes
+- fix: clamp period cost to zero when avg cost drops between snapshots (#377) ($0.35)
+
+Total: 3 PRs, $4.50
+
 ## v0.12.1
 
 ### Eval Dashboard
