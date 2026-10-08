@@ -1,5 +1,6 @@
 import json
 
+from autoloop.jev import GATE_HIGH, GATE_LOW
 from autoloop.jev_report import (
     JevEntry,
     compute_automerge_stats,
@@ -134,6 +135,10 @@ def _make_automerge_entry(
 
 def _empty_triage_stats():
     return {
+        "n": 0,
+        "agree_count": 0,
+        "disagree_count": 0,
+        "uncertain_count": 0,
         "agreement_rate": 0.0,
         "uncertainty_rate": 0.0,
         "disagreement_breakdown": {},
@@ -144,14 +149,14 @@ def _empty_triage_stats():
 def _empty_automerge_stats():
     return {
         "distribution": {
-            "0.0-0.2": 0,
-            "0.2-0.4": 0,
-            "0.4-0.6": 0,
-            "0.6-0.8": 0,
-            "0.8-1.0": 0,
+            f"<{GATE_LOW}": 0,
+            f"{GATE_LOW}-{GATE_HIGH}": 0,
+            f">={GATE_HIGH}": 0,
         },
         "mean": 0.0,
         "median": 0.0,
+        "n_probabilities": 0,
+        "n_with_outcome": 0,
         "agreement_with_outcome": 0.0,
     }
 
@@ -269,6 +274,10 @@ class TestParseJevDecisions:
 class TestComputeTriageStats:
     def test_empty_entries(self):
         result = compute_triage_stats([])
+        assert result["n"] == 0
+        assert result["agree_count"] == 0
+        assert result["disagree_count"] == 0
+        assert result["uncertain_count"] == 0
         assert result["agreement_rate"] == 0.0
         assert result["disagreement_breakdown"] == {}
         assert result["uncertainty_rate"] == 0.0
@@ -280,6 +289,10 @@ class TestComputeTriageStats:
             _make_triage_entry(well_formed=0.93, needs_decomp=0.08, verdict="ready"),
         ]
         result = compute_triage_stats(entries)
+        assert result["n"] == 2
+        assert result["agree_count"] == 2
+        assert result["disagree_count"] == 0
+        assert result["uncertain_count"] == 0
         assert result["agreement_rate"] == 1.0
         assert result["disagreement_breakdown"] == {}
         assert result["uncertainty_rate"] == 0.0
@@ -293,6 +306,9 @@ class TestComputeTriageStats:
             ),
         ]
         result = compute_triage_stats(entries)
+        assert result["n"] == 1
+        assert result["agree_count"] == 0
+        assert result["disagree_count"] == 1
         assert result["agreement_rate"] == 0.0
         assert result["disagreement_breakdown"] == {"ready-vs-rejected": 1}
 
@@ -305,6 +321,7 @@ class TestComputeTriageStats:
             ),
         ]
         result = compute_triage_stats(entries)
+        assert result["agree_count"] == 1
         assert result["agreement_rate"] == 1.0
 
     def test_low_well_formed_inferred_rejected(self):
@@ -316,6 +333,7 @@ class TestComputeTriageStats:
             ),
         ]
         result = compute_triage_stats(entries)
+        assert result["agree_count"] == 1
         assert result["agreement_rate"] == 1.0
 
     def test_uncertainty_rate_with_would_fallback(self):
@@ -333,6 +351,9 @@ class TestComputeTriageStats:
             ),
         ]
         result = compute_triage_stats(entries)
+        assert result["n"] == 2
+        assert result["agree_count"] == 1
+        assert result["uncertain_count"] == 1
         assert result["uncertainty_rate"] == 0.5
         assert result["agreement_rate"] == 0.5
 
@@ -341,6 +362,7 @@ class TestComputeTriageStats:
             _make_triage_entry(verdict="ready", fallback=True),
         ]
         result = compute_triage_stats(entries)
+        assert result["uncertain_count"] == 1
         assert result["uncertainty_rate"] == 1.0
         assert result["agreement_rate"] == 0.0
 
@@ -359,6 +381,7 @@ class TestComputeTriageStats:
             ),
         ]
         result = compute_triage_stats(entries)
+        assert result["n"] == 1
         assert result["agreement_rate"] == 1.0
 
     def test_all_bias_warning_returns_empty(self):
@@ -371,6 +394,7 @@ class TestComputeTriageStats:
             ),
         ]
         result = compute_triage_stats(entries)
+        assert result["n"] == 0
         assert result["agreement_rate"] == 0.0
         assert result["weekly_trends"] == []
 
@@ -379,6 +403,7 @@ class TestComputeTriageStats:
             _make_automerge_entry(prob=0.75, approved=True),
         ]
         result = compute_triage_stats(entries)
+        assert result["n"] == 0
         assert result["agreement_rate"] == 0.0
         assert result["weekly_trends"] == []
 
@@ -402,6 +427,8 @@ class TestComputeTriageStats:
         assert len(trends) == 2
         assert trends[0]["week"] == "2026-09-28"
         assert trends[1]["week"] == "2026-10-05"
+        assert trends[0]["n"] == 1
+        assert trends[0]["agree_count"] == 1
         assert trends[0]["agreement_rate"] == 1.0
         assert trends[1]["agreement_rate"] == 1.0
 
@@ -424,6 +451,9 @@ class TestComputeTriageStats:
             ),
         ]
         result = compute_triage_stats(entries)
+        assert result["n"] == 3
+        assert result["agree_count"] == 2
+        assert result["disagree_count"] == 1
         assert abs(result["agreement_rate"] - 2 / 3) < 0.001
         assert result["disagreement_breakdown"] == {"ready-vs-rejected": 1}
 
@@ -436,10 +466,20 @@ class TestComputeAutomergeStats:
         result = compute_automerge_stats([])
         assert result["mean"] == 0.0
         assert result["median"] == 0.0
+        assert result["n_probabilities"] == 0
+        assert result["n_with_outcome"] == 0
         assert result["agreement_with_outcome"] == 0.0
         assert all(v == 0 for v in result["distribution"].values())
 
-    def test_distribution_buckets(self):
+    def test_exactly_three_gate_aligned_buckets(self):
+        result = compute_automerge_stats([])
+        keys = list(result["distribution"].keys())
+        assert len(keys) == 3
+        assert keys[0] == f"<{GATE_LOW}"
+        assert keys[1] == f"{GATE_LOW}-{GATE_HIGH}"
+        assert keys[2] == f">={GATE_HIGH}"
+
+    def test_distribution_gate_buckets(self):
         entries = [
             _make_automerge_entry(prob=0.1),
             _make_automerge_entry(prob=0.3),
@@ -448,11 +488,10 @@ class TestComputeAutomergeStats:
             _make_automerge_entry(prob=0.9),
         ]
         result = compute_automerge_stats(entries)
-        assert result["distribution"]["0.0-0.2"] == 1
-        assert result["distribution"]["0.2-0.4"] == 1
-        assert result["distribution"]["0.4-0.6"] == 1
-        assert result["distribution"]["0.6-0.8"] == 1
-        assert result["distribution"]["0.8-1.0"] == 1
+        dist = result["distribution"]
+        assert dist[f"<{GATE_LOW}"] == 2
+        assert dist[f"{GATE_LOW}-{GATE_HIGH}"] == 1
+        assert dist[f">={GATE_HIGH}"] == 2
 
     def test_mean_and_median(self):
         entries = [
@@ -463,6 +502,7 @@ class TestComputeAutomergeStats:
         result = compute_automerge_stats(entries)
         assert abs(result["mean"] - 0.4) < 0.001
         assert abs(result["median"] - 0.4) < 0.001
+        assert result["n_probabilities"] == 3
 
     def test_agreement_with_outcome(self):
         entries = [
@@ -472,6 +512,7 @@ class TestComputeAutomergeStats:
         ]
         result = compute_automerge_stats(entries)
         assert abs(result["agreement_with_outcome"] - 2 / 3) < 0.001
+        assert result["n_with_outcome"] == 3
 
     def test_excludes_triage_entries(self):
         entries = [
@@ -480,6 +521,7 @@ class TestComputeAutomergeStats:
         ]
         result = compute_automerge_stats(entries)
         assert abs(result["mean"] - 0.75) < 0.001
+        assert result["n_probabilities"] == 1
 
     def test_fallback_excluded_from_probability(self):
         entries = [
@@ -488,21 +530,27 @@ class TestComputeAutomergeStats:
         ]
         result = compute_automerge_stats(entries)
         assert abs(result["mean"] - 0.5) < 0.001
+        assert result["n_probabilities"] == 1
 
-    def test_boundary_0_goes_to_first_bucket(self):
+    def test_boundary_0_goes_to_reject_bucket(self):
         entries = [_make_automerge_entry(prob=0.0)]
         result = compute_automerge_stats(entries)
-        assert result["distribution"]["0.0-0.2"] == 1
+        assert result["distribution"][f"<{GATE_LOW}"] == 1
 
-    def test_boundary_02_goes_to_second_bucket(self):
-        entries = [_make_automerge_entry(prob=0.2)]
+    def test_boundary_at_gate_low_goes_to_fallback(self):
+        entries = [_make_automerge_entry(prob=GATE_LOW)]
         result = compute_automerge_stats(entries)
-        assert result["distribution"]["0.2-0.4"] == 1
+        assert result["distribution"][f"{GATE_LOW}-{GATE_HIGH}"] == 1
 
-    def test_boundary_1_goes_to_last_bucket(self):
+    def test_boundary_at_gate_high_goes_to_merge(self):
+        entries = [_make_automerge_entry(prob=GATE_HIGH)]
+        result = compute_automerge_stats(entries)
+        assert result["distribution"][f">={GATE_HIGH}"] == 1
+
+    def test_boundary_1_goes_to_merge_bucket(self):
         entries = [_make_automerge_entry(prob=1.0)]
         result = compute_automerge_stats(entries)
-        assert result["distribution"]["0.8-1.0"] == 1
+        assert result["distribution"][f">={GATE_HIGH}"] == 1
 
     def test_single_entry(self):
         entries = [_make_automerge_entry(prob=0.55, approved=True)]
@@ -510,6 +558,8 @@ class TestComputeAutomergeStats:
         assert abs(result["mean"] - 0.55) < 0.001
         assert abs(result["median"] - 0.55) < 0.001
         assert result["agreement_with_outcome"] == 1.0
+        assert result["n_probabilities"] == 1
+        assert result["n_with_outcome"] == 1
 
 
 # --- render_jev_md ---
@@ -533,81 +583,114 @@ class TestRenderJevMd:
         assert "**Backfilled entries:** 40" in md
         assert "2026-09-25 to 2026-10-05" in md
 
-    def test_contains_triage_section(self):
+    def test_uses_agreement_not_calibration(self):
+        md = render_jev_md(_empty_triage_stats(), _empty_automerge_stats(), _basic_counts())
+        assert "Calibration" not in md
+        assert "## Triage Agreement" in md
+        assert "## Auto-Merge Agreement" in md
+
+    def test_triage_shows_counts_and_confident_stat(self):
         stats = {
-            "agreement_rate": 0.75,
-            "uncertainty_rate": 0.15,
+            "n": 20,
+            "agree_count": 10,
+            "disagree_count": 2,
+            "uncertain_count": 8,
+            "agreement_rate": 0.5,
+            "uncertainty_rate": 0.4,
             "disagreement_breakdown": {"ready-vs-rejected": 2},
             "weekly_trends": [],
         }
         md = render_jev_md(stats, _empty_automerge_stats(), _basic_counts())
-        assert "## Triage Calibration" in md
-        assert "75.0%" in md
-        assert "15.0%" in md
+        assert "**Agreed:** 10 of 20" in md
+        assert "**Disagreed:** 2 of 20" in md
+        assert "**Uncertain (fell back):** 8 of 20" in md
+        assert "**When confident, agreed:** 10 of 12 (83.3%)" in md
         assert "ready-vs-rejected: 2" in md
 
-    def test_contains_automerge_section(self):
+    def test_automerge_shows_n_with_rates(self):
         stats = {
-            "distribution": {
-                "0.0-0.2": 5,
-                "0.2-0.4": 3,
-                "0.4-0.6": 2,
-                "0.6-0.8": 4,
-                "0.8-1.0": 1,
-            },
+            "distribution": _empty_automerge_stats()["distribution"],
             "mean": 0.45,
             "median": 0.42,
-            "agreement_with_outcome": 0.67,
+            "n_probabilities": 15,
+            "n_with_outcome": 12,
+            "agreement_with_outcome": 0.667,
         }
         md = render_jev_md(_empty_triage_stats(), stats, _basic_counts())
-        assert "## Auto-Merge Calibration" in md
-        assert "0.450" in md
-        assert "0.420" in md
-        assert "67.0%" in md
+        assert "(n=15)" in md
+        assert "incumbent decision" in md
+        assert "8/12" in md
 
-    def test_contains_xychart_bar_block(self):
-        stats = {
-            "distribution": {
-                "0.0-0.2": 5,
-                "0.2-0.4": 3,
-                "0.4-0.6": 2,
-                "0.6-0.8": 4,
-                "0.8-1.0": 1,
-            },
-            "mean": 0.5,
-            "median": 0.5,
-            "agreement_with_outcome": 0.5,
-        }
+    def test_contains_xychart_bar_block_with_gate_buckets(self):
+        stats = _empty_automerge_stats()
+        stats["distribution"][f"<{GATE_LOW}"] = 5
+        stats["distribution"][f"{GATE_LOW}-{GATE_HIGH}"] = 3
+        stats["distribution"][f">={GATE_HIGH}"] = 7
+        stats["n_probabilities"] = 15
         md = render_jev_md(_empty_triage_stats(), stats, _basic_counts())
         assert "```mermaid" in md
         assert "xychart-beta" in md
         assert "bar [" in md
-        assert "Auto-Merge Confidence Distribution" in md
+        assert "Action Zone" in md
+        assert f'"{GATE_LOW}-{GATE_HIGH}"' in md
 
-    def test_contains_weekly_trend_chart(self):
+    def test_weekly_trends_rendered_as_table(self):
         triage = {
+            "n": 10,
+            "agree_count": 5,
+            "disagree_count": 0,
+            "uncertain_count": 5,
             "agreement_rate": 0.5,
             "uncertainty_rate": 0.5,
             "disagreement_breakdown": {},
             "weekly_trends": [
                 {
                     "week": "2026-09-23",
-                    "agreement_rate": 0.6,
-                    "uncertainty_rate": 0.3,
+                    "n": 6,
+                    "agree_count": 3,
+                    "uncertain_count": 2,
+                    "agreement_rate": 0.5,
+                    "uncertainty_rate": 0.33,
                 },
                 {
                     "week": "2026-09-30",
-                    "agreement_rate": 0.8,
-                    "uncertainty_rate": 0.1,
+                    "n": 4,
+                    "agree_count": 2,
+                    "uncertain_count": 1,
+                    "agreement_rate": 0.5,
+                    "uncertainty_rate": 0.25,
                 },
             ],
         }
         md = render_jev_md(triage, _empty_automerge_stats(), _basic_counts())
-        mermaid_blocks = md.split("```mermaid")
-        assert len(mermaid_blocks) >= 3
-        trend_block = mermaid_blocks[-1]
-        assert "line [" in trend_block
-        assert "Weekly Agreement & Uncertainty Trends" in trend_block
+        assert "### Weekly Trends" in md
+        assert "| Week | Agreed | Uncertain | n |" in md
+        assert "| 9/23 | 3 | 2 | 6 |" in md
+        assert "| 9/30 | 2 | 1 | 4 |" in md
+        assert "line [" not in md
+
+    def test_no_multiline_chart(self):
+        triage = {
+            "n": 2,
+            "agree_count": 2,
+            "disagree_count": 0,
+            "uncertain_count": 0,
+            "agreement_rate": 1.0,
+            "uncertainty_rate": 0.0,
+            "disagreement_breakdown": {},
+            "weekly_trends": [
+                {
+                    "week": "2026-09-23",
+                    "n": 1,
+                    "agree_count": 1,
+                    "uncertain_count": 0,
+                    "agreement_rate": 1.0,
+                    "uncertainty_rate": 0.0,
+                },
+            ],
+        }
+        md = render_jev_md(triage, _empty_automerge_stats(), _basic_counts())
+        assert "line [" not in md
 
     def test_no_date_range_when_missing(self):
         md = render_jev_md(
@@ -617,21 +700,49 @@ class TestRenderJevMd:
         )
         assert "Date range" not in md
 
-    def test_no_weekly_chart_when_no_trends(self):
+    def test_no_weekly_table_when_no_trends(self):
         md = render_jev_md(
             _empty_triage_stats(),
             _empty_automerge_stats(),
             _basic_counts(),
         )
-        mermaid_blocks = md.split("```mermaid")
-        assert len(mermaid_blocks) == 2
+        assert "Weekly Trends" not in md
 
     def test_empty_disagreement_not_rendered(self):
-        stats = {
-            "agreement_rate": 1.0,
-            "uncertainty_rate": 0.0,
+        stats = _empty_triage_stats()
+        stats["n"] = 1
+        stats["agree_count"] = 1
+        stats["agreement_rate"] = 1.0
+        md = render_jev_md(stats, _empty_automerge_stats(), _basic_counts())
+        assert "Disagreement breakdown" not in md
+
+    def test_backfill_section_rendered_separately(self):
+        backfill_triage = {
+            "n": 5,
+            "agree_count": 3,
+            "disagree_count": 1,
+            "uncertain_count": 1,
+            "agreement_rate": 0.6,
+            "uncertainty_rate": 0.2,
             "disagreement_breakdown": {},
             "weekly_trends": [],
         }
-        md = render_jev_md(stats, _empty_automerge_stats(), _basic_counts())
-        assert "Disagreement breakdown" not in md
+        md = render_jev_md(
+            _empty_triage_stats(),
+            _empty_automerge_stats(),
+            _basic_counts(),
+            backfill_triage_stats=backfill_triage,
+        )
+        assert "## Backfill" in md
+        assert "### Backfill Triage Agreement" in md
+        assert "3 of 5" in md
+
+    def test_no_backfill_section_when_empty(self):
+        md = render_jev_md(
+            _empty_triage_stats(),
+            _empty_automerge_stats(),
+            _basic_counts(),
+            backfill_triage_stats=_empty_triage_stats(),
+            backfill_automerge_stats=_empty_automerge_stats(),
+        )
+        assert "## Backfill" not in md

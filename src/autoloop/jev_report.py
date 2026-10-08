@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from autoloop.config import RepoContext
+from autoloop.jev import GATE_LOW, GATE_HIGH
 
 
 @dataclass
@@ -130,6 +131,9 @@ def _compute_weekly_trends(entries: list[JevEntry]) -> list[dict]:
         trends.append(
             {
                 "week": week,
+                "n": total,
+                "agree_count": agreed,
+                "uncertain_count": uncertain,
                 "agreement_rate": agreed / total if total else 0.0,
                 "uncertainty_rate": uncertain / total if total else 0.0,
             }
@@ -141,6 +145,10 @@ def compute_triage_stats(entries: list[JevEntry]) -> dict:
     triage = [e for e in entries if e.point == "triage" and not e.triage_bias_warning]
     if not triage:
         return {
+            "n": 0,
+            "agree_count": 0,
+            "disagree_count": 0,
+            "uncertain_count": 0,
             "agreement_rate": 0.0,
             "disagreement_breakdown": {},
             "uncertainty_rate": 0.0,
@@ -161,7 +169,12 @@ def compute_triage_stats(entries: list[JevEntry]) -> dict:
             key = f"{jev_verdict}-vs-{inc_verdict}"
             disagreements[key] = disagreements.get(key, 0) + 1
     total = len(triage)
+    disagree_count = sum(disagreements.values())
     return {
+        "n": total,
+        "agree_count": agreements,
+        "disagree_count": disagree_count,
+        "uncertain_count": uncertain,
         "agreement_rate": agreements / total if total else 0.0,
         "disagreement_breakdown": disagreements,
         "uncertainty_rate": uncertain / total if total else 0.0,
@@ -176,24 +189,23 @@ def compute_automerge_stats(entries: list[JevEntry]) -> dict:
         prob = e.jev_call.get("meets_acceptance_criteria")
         if prob is not None:
             probabilities.append(float(prob))
+    gate_low = GATE_LOW
+    gate_high = GATE_HIGH
+    reject_label = f"<{gate_low}"
+    fallback_label = f"{gate_low}-{gate_high}"
+    merge_label = f">={gate_high}"
     buckets = {
-        "0.0-0.2": 0,
-        "0.2-0.4": 0,
-        "0.4-0.6": 0,
-        "0.6-0.8": 0,
-        "0.8-1.0": 0,
+        reject_label: 0,
+        fallback_label: 0,
+        merge_label: 0,
     }
     for p in probabilities:
-        if p < 0.2:
-            buckets["0.0-0.2"] += 1
-        elif p < 0.4:
-            buckets["0.2-0.4"] += 1
-        elif p < 0.6:
-            buckets["0.4-0.6"] += 1
-        elif p < 0.8:
-            buckets["0.6-0.8"] += 1
+        if p < gate_low:
+            buckets[reject_label] += 1
+        elif p < gate_high:
+            buckets[fallback_label] += 1
         else:
-            buckets["0.8-1.0"] += 1
+            buckets[merge_label] += 1
     mean = statistics.mean(probabilities) if probabilities else 0.0
     median = statistics.median(probabilities) if probabilities else 0.0
     agreed = 0
@@ -210,6 +222,8 @@ def compute_automerge_stats(entries: list[JevEntry]) -> dict:
         "distribution": buckets,
         "mean": mean,
         "median": median,
+        "n_probabilities": len(probabilities),
+        "n_with_outcome": total_with_outcome,
         "agreement_with_outcome": (agreed / total_with_outcome if total_with_outcome else 0.0),
     }
 
@@ -221,7 +235,81 @@ def _md_label(date_str: str) -> str:
     return date_str
 
 
-def render_jev_md(triage_stats: dict, automerge_stats: dict, counts: dict) -> str:
+def _render_triage_section(
+    lines: list[str], triage_stats: dict, heading: str = "## Triage Agreement"
+) -> None:
+    lines.append(heading)
+    lines.append("")
+    n = triage_stats.get("n", 0)
+    agree = triage_stats.get("agree_count", 0)
+    disagree = triage_stats.get("disagree_count", 0)
+    uncertain = triage_stats.get("uncertain_count", 0)
+    lines.append(f"- **Agreed:** {agree} of {n}")
+    lines.append(f"- **Disagreed:** {disagree} of {n}")
+    lines.append(f"- **Uncertain (fell back):** {uncertain} of {n}")
+    confident = agree + disagree
+    if confident > 0:
+        rate = agree / confident
+        lines.append(f"- **When confident, agreed:** {agree} of {confident} ({rate:.1%})")
+    if triage_stats.get("disagreement_breakdown"):
+        lines.append("- **Disagreement breakdown:**")
+        for cat, count in sorted(triage_stats["disagreement_breakdown"].items()):
+            lines.append(f"  - {cat}: {count}")
+    lines.append("")
+
+    weekly = triage_stats.get("weekly_trends", [])
+    if weekly:
+        lines.append("### Weekly Trends")
+        lines.append("")
+        lines.append("| Week | Agreed | Uncertain | n |")
+        lines.append("|------|--------|-----------|---|")
+        for w in weekly:
+            wn = w.get("n", 0)
+            wa = w.get("agree_count", 0)
+            wu = w.get("uncertain_count", 0)
+            lines.append(f"| {_md_label(w['week'])} | {wa} | {wu} | {wn} |")
+        lines.append("")
+
+
+def _render_automerge_section(
+    lines: list[str], automerge_stats: dict, heading: str = "## Auto-Merge Agreement"
+) -> None:
+    lines.append(heading)
+    lines.append("")
+    n_prob = automerge_stats.get("n_probabilities", 0)
+    lines.append(f"- **Mean confidence:** {automerge_stats['mean']:.3f} (n={n_prob})")
+    md_conf = automerge_stats["median"]
+    lines.append(f"- **Median confidence:** {md_conf:.3f} (n={n_prob})")
+    awo = automerge_stats["agreement_with_outcome"]
+    n_out = automerge_stats.get("n_with_outcome", 0)
+    lines.append(
+        f"- **Agreement with incumbent decision:** {awo:.1%} ({round(awo * n_out)}/{n_out})"
+    )
+    lines.append("")
+
+    dist = automerge_stats.get("distribution", {})
+    if dist:
+        bucket_labels = ", ".join(f'"{k}"' for k in dist)
+        bucket_values = ", ".join(str(v) for v in dist.values())
+        max_val = max(dist.values(), default=1)
+        lines.append("```mermaid")
+        lines.append("xychart-beta")
+        lines.append('    title "Auto-Merge Confidence by Action Zone"')
+        lines.append(f"    x-axis [{bucket_labels}]")
+        lines.append(f'    y-axis "Count" 0 --> {max_val + 1}')
+        lines.append(f"    bar [{bucket_values}]")
+        lines.append("```")
+        lines.append("")
+
+
+def render_jev_md(
+    triage_stats: dict,
+    automerge_stats: dict,
+    counts: dict,
+    *,
+    backfill_triage_stats: dict | None = None,
+    backfill_automerge_stats: dict | None = None,
+) -> str:
     lines: list[str] = []
     lines.append("# JEV Report")
     lines.append("")
@@ -236,55 +324,24 @@ def render_jev_md(triage_stats: dict, automerge_stats: dict, counts: dict) -> st
         lines.append(f"- **Date range:** {date_range}")
     lines.append("")
 
-    lines.append("## Triage Calibration")
-    lines.append("")
-    ar = triage_stats["agreement_rate"]
-    ur = triage_stats["uncertainty_rate"]
-    lines.append(f"- **Agreement rate:** {ar:.1%}")
-    lines.append(f"- **Uncertainty rate:** {ur:.1%}")
-    if triage_stats.get("disagreement_breakdown"):
-        lines.append("- **Disagreement breakdown:**")
-        for cat, count in sorted(triage_stats["disagreement_breakdown"].items()):
-            lines.append(f"  - {cat}: {count}")
-    lines.append("")
+    _render_triage_section(lines, triage_stats)
+    _render_automerge_section(lines, automerge_stats)
 
-    lines.append("## Auto-Merge Calibration")
-    lines.append("")
-    lines.append(f"- **Mean confidence:** {automerge_stats['mean']:.3f}")
-    md_conf = automerge_stats["median"]
-    lines.append(f"- **Median confidence:** {md_conf:.3f}")
-    awo = automerge_stats["agreement_with_outcome"]
-    lines.append(f"- **Agreement with outcome:** {awo:.1%}")
-    lines.append("")
-
-    dist = automerge_stats.get("distribution", {})
-    if dist:
-        bucket_labels = ", ".join(f'"{k}"' for k in dist)
-        bucket_values = ", ".join(str(v) for v in dist.values())
-        max_val = max(dist.values(), default=1)
-        lines.append("```mermaid")
-        lines.append("xychart-beta")
-        lines.append('    title "Auto-Merge Confidence Distribution"')
-        lines.append(f"    x-axis [{bucket_labels}]")
-        lines.append(f'    y-axis "Count" 0 --> {max_val + 1}')
-        lines.append(f"    bar [{bucket_values}]")
-        lines.append("```")
+    has_backfill = (
+        backfill_triage_stats
+        and backfill_triage_stats.get("n", 0) > 0
+        or backfill_automerge_stats
+        and backfill_automerge_stats.get("n_probabilities", 0) > 0
+    )
+    if has_backfill:
+        lines.append("## Backfill")
         lines.append("")
-
-    weekly = triage_stats.get("weekly_trends", [])
-    if weekly:
-        wl = ", ".join(f'"{_md_label(w["week"])}"' for w in weekly)
-        av = ", ".join(str(round(w["agreement_rate"] * 100)) for w in weekly)
-        uv = ", ".join(str(round(w["uncertainty_rate"] * 100)) for w in weekly)
-        lines.append("```mermaid")
-        lines.append("xychart-beta")
-        lines.append('    title "Weekly Agreement & Uncertainty Trends"')
-        lines.append(f"    x-axis [{wl}]")
-        lines.append('    y-axis "%" 0 --> 100')
-        lines.append(f"    line [{av}]")
-        lines.append(f"    line [{uv}]")
-        lines.append("```")
-        lines.append("")
+        if backfill_triage_stats and backfill_triage_stats.get("n", 0) > 0:
+            _render_triage_section(lines, backfill_triage_stats, "### Backfill Triage Agreement")
+        if backfill_automerge_stats and backfill_automerge_stats.get("n_probabilities", 0) > 0:
+            _render_automerge_section(
+                lines, backfill_automerge_stats, "### Backfill Auto-Merge Agreement"
+            )
 
     return "\n".join(lines)
 
@@ -387,10 +444,13 @@ def main(*, ctx: RepoContext, publish: bool = False, pr: bool = False):
     decisions_path = ctx.data_dir / "jev_decisions.jsonl"
     parsed = parse_jev_decisions(decisions_path)
 
-    all_entries = parsed.backfilled + parsed.live
-    triage_stats = compute_triage_stats(all_entries)
-    automerge_stats = compute_automerge_stats(all_entries)
+    triage_stats = compute_triage_stats(parsed.live)
+    automerge_stats = compute_automerge_stats(parsed.live)
 
+    backfill_triage_stats = compute_triage_stats(parsed.backfilled)
+    backfill_automerge_stats = compute_automerge_stats(parsed.backfilled)
+
+    all_entries = parsed.backfilled + parsed.live
     timestamps = [e.timestamp for e in all_entries if e.timestamp]
     if timestamps:
         date_range = f"{min(timestamps)[:10]} to {max(timestamps)[:10]}"
@@ -404,7 +464,13 @@ def main(*, ctx: RepoContext, publish: bool = False, pr: bool = False):
         "date_range": date_range,
     }
 
-    content = render_jev_md(triage_stats, automerge_stats, counts)
+    content = render_jev_md(
+        triage_stats,
+        automerge_stats,
+        counts,
+        backfill_triage_stats=backfill_triage_stats,
+        backfill_automerge_stats=backfill_automerge_stats,
+    )
     jev_path = ctx.repo_dir / "JEV.md"
     jev_path.write_text(content)
     print(f"JEV.md written to {jev_path}")
