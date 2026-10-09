@@ -191,9 +191,9 @@ def compute_automerge_stats(entries: list[JevEntry]) -> dict:
             probabilities.append(float(prob))
     gate_low = GATE_LOW
     gate_high = GATE_HIGH
-    reject_label = f"<{gate_low}"
-    fallback_label = f"{gate_low}-{gate_high}"
-    merge_label = f">={gate_high}"
+    reject_label = f"Act: reject (below {gate_low})"
+    fallback_label = f"Pipeline ({gate_low}-{gate_high})"
+    merge_label = f"Act: merge ({gate_high}+)"
     buckets = {
         reject_label: 0,
         fallback_label: 0,

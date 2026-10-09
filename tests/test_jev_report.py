@@ -149,9 +149,9 @@ def _empty_triage_stats():
 def _empty_automerge_stats():
     return {
         "distribution": {
-            f"<{GATE_LOW}": 0,
-            f"{GATE_LOW}-{GATE_HIGH}": 0,
-            f">={GATE_HIGH}": 0,
+            f"Act: reject (below {GATE_LOW})": 0,
+            f"Pipeline ({GATE_LOW}-{GATE_HIGH})": 0,
+            f"Act: merge ({GATE_HIGH}+)": 0,
         },
         "mean": 0.0,
         "median": 0.0,
@@ -475,9 +475,9 @@ class TestComputeAutomergeStats:
         result = compute_automerge_stats([])
         keys = list(result["distribution"].keys())
         assert len(keys) == 3
-        assert keys[0] == f"<{GATE_LOW}"
-        assert keys[1] == f"{GATE_LOW}-{GATE_HIGH}"
-        assert keys[2] == f">={GATE_HIGH}"
+        assert keys[0] == f"Act: reject (below {GATE_LOW})"
+        assert keys[1] == f"Pipeline ({GATE_LOW}-{GATE_HIGH})"
+        assert keys[2] == f"Act: merge ({GATE_HIGH}+)"
 
     def test_distribution_gate_buckets(self):
         entries = [
@@ -489,9 +489,9 @@ class TestComputeAutomergeStats:
         ]
         result = compute_automerge_stats(entries)
         dist = result["distribution"]
-        assert dist[f"<{GATE_LOW}"] == 2
-        assert dist[f"{GATE_LOW}-{GATE_HIGH}"] == 1
-        assert dist[f">={GATE_HIGH}"] == 2
+        assert dist[f"Act: reject (below {GATE_LOW})"] == 2
+        assert dist[f"Pipeline ({GATE_LOW}-{GATE_HIGH})"] == 1
+        assert dist[f"Act: merge ({GATE_HIGH}+)"] == 2
 
     def test_mean_and_median(self):
         entries = [
@@ -535,22 +535,22 @@ class TestComputeAutomergeStats:
     def test_boundary_0_goes_to_reject_bucket(self):
         entries = [_make_automerge_entry(prob=0.0)]
         result = compute_automerge_stats(entries)
-        assert result["distribution"][f"<{GATE_LOW}"] == 1
+        assert result["distribution"][f"Act: reject (below {GATE_LOW})"] == 1
 
     def test_boundary_at_gate_low_goes_to_fallback(self):
         entries = [_make_automerge_entry(prob=GATE_LOW)]
         result = compute_automerge_stats(entries)
-        assert result["distribution"][f"{GATE_LOW}-{GATE_HIGH}"] == 1
+        assert result["distribution"][f"Pipeline ({GATE_LOW}-{GATE_HIGH})"] == 1
 
     def test_boundary_at_gate_high_goes_to_merge(self):
         entries = [_make_automerge_entry(prob=GATE_HIGH)]
         result = compute_automerge_stats(entries)
-        assert result["distribution"][f">={GATE_HIGH}"] == 1
+        assert result["distribution"][f"Act: merge ({GATE_HIGH}+)"] == 1
 
     def test_boundary_1_goes_to_merge_bucket(self):
         entries = [_make_automerge_entry(prob=1.0)]
         result = compute_automerge_stats(entries)
-        assert result["distribution"][f">={GATE_HIGH}"] == 1
+        assert result["distribution"][f"Act: merge ({GATE_HIGH}+)"] == 1
 
     def test_single_entry(self):
         entries = [_make_automerge_entry(prob=0.55, approved=True)]
@@ -623,16 +623,16 @@ class TestRenderJevMd:
 
     def test_contains_xychart_bar_block_with_gate_buckets(self):
         stats = _empty_automerge_stats()
-        stats["distribution"][f"<{GATE_LOW}"] = 5
-        stats["distribution"][f"{GATE_LOW}-{GATE_HIGH}"] = 3
-        stats["distribution"][f">={GATE_HIGH}"] = 7
+        stats["distribution"][f"Act: reject (below {GATE_LOW})"] = 5
+        stats["distribution"][f"Pipeline ({GATE_LOW}-{GATE_HIGH})"] = 3
+        stats["distribution"][f"Act: merge ({GATE_HIGH}+)"] = 7
         stats["n_probabilities"] = 15
         md = render_jev_md(_empty_triage_stats(), stats, _basic_counts())
         assert "```mermaid" in md
         assert "xychart-beta" in md
         assert "bar [" in md
         assert "Action Zone" in md
-        assert f'"{GATE_LOW}-{GATE_HIGH}"' in md
+        assert f'"Pipeline ({GATE_LOW}-{GATE_HIGH})"' in md
 
     def test_weekly_trends_rendered_as_table(self):
         triage = {
