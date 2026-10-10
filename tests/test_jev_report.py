@@ -158,6 +158,11 @@ def _empty_automerge_stats():
         "n_probabilities": 0,
         "n_with_outcome": 0,
         "agreement_with_outcome": 0.0,
+        "zone_agreement": {
+            f"Act: reject (below {GATE_LOW})": {"agreed": 0, "total": 0},
+            f"Pipeline ({GATE_LOW}-{GATE_HIGH})": {"agreed": 0, "total": 0},
+            f"Act: merge ({GATE_HIGH}+)": {"agreed": 0, "total": 0},
+        },
     }
 
 
@@ -648,6 +653,7 @@ class TestRenderJevMd:
                     "week": "2026-09-23",
                     "n": 6,
                     "agree_count": 3,
+                    "disagree_count": 1,
                     "uncertain_count": 2,
                     "agreement_rate": 0.5,
                     "uncertainty_rate": 0.33,
@@ -656,6 +662,7 @@ class TestRenderJevMd:
                     "week": "2026-09-30",
                     "n": 4,
                     "agree_count": 2,
+                    "disagree_count": 1,
                     "uncertain_count": 1,
                     "agreement_rate": 0.5,
                     "uncertainty_rate": 0.25,
@@ -664,9 +671,9 @@ class TestRenderJevMd:
         }
         md = render_jev_md(triage, _empty_automerge_stats(), _basic_counts())
         assert "### Weekly Trends" in md
-        assert "| Week | Agreed | Uncertain | n |" in md
-        assert "| 9/23 | 3 | 2 | 6 |" in md
-        assert "| 9/30 | 2 | 1 | 4 |" in md
+        assert "| Week | Agreed | Disagreed | Uncertain | n |" in md
+        assert "| 9/23 | 3 | 1 | 2 | 6 |" in md
+        assert "| 9/30 | 2 | 1 | 1 | 4 |" in md
         assert "line [" not in md
 
     def test_no_multiline_chart(self):
@@ -746,3 +753,189 @@ class TestRenderJevMd:
             backfill_automerge_stats=_empty_automerge_stats(),
         )
         assert "## Backfill" not in md
+
+    def test_verdict_line_appears_first(self):
+        stats = {
+            "n": 25,
+            "agree_count": 20,
+            "disagree_count": 3,
+            "uncertain_count": 2,
+            "agreement_rate": 0.8,
+            "uncertainty_rate": 0.08,
+            "disagreement_breakdown": {},
+            "weekly_trends": [],
+        }
+        md = render_jev_md(stats, _empty_automerge_stats(), _basic_counts())
+        lines = md.split("\n")
+        assert lines[0] == "# JEV Report"
+        assert "**Verdict:**" in lines[2]
+        assert "87%" in lines[2]
+        assert "n=23" in lines[2]
+
+    def test_verdict_too_few_below_min_n(self):
+        stats = {
+            "n": 5,
+            "agree_count": 4,
+            "disagree_count": 1,
+            "uncertain_count": 0,
+            "agreement_rate": 0.8,
+            "uncertainty_rate": 0.0,
+            "disagreement_breakdown": {},
+            "weekly_trends": [],
+        }
+        md = render_jev_md(stats, _empty_automerge_stats(), _basic_counts())
+        assert "too few decisions to judge" in md
+        assert "n=5" in md
+
+    def test_legend_section(self):
+        md = render_jev_md(_empty_triage_stats(), _empty_automerge_stats(), _basic_counts())
+        assert "## Legend" in md
+        assert "Incumbent decision" in md
+        assert "Fell back" in md
+        assert f"Pipeline ({GATE_LOW}" in md
+        assert "Backfilled" in md
+
+    def test_min_n_guard_triage_percent(self):
+        stats = {
+            "n": 10,
+            "agree_count": 8,
+            "disagree_count": 2,
+            "uncertain_count": 0,
+            "agreement_rate": 0.8,
+            "uncertainty_rate": 0.0,
+            "disagreement_breakdown": {},
+            "weekly_trends": [],
+        }
+        md = render_jev_md(stats, _empty_automerge_stats(), _basic_counts())
+        assert "8 of 10 (too few to judge)" in md
+
+    def test_min_n_guard_automerge_percent(self):
+        stats = {
+            "distribution": _empty_automerge_stats()["distribution"],
+            "mean": 0.6,
+            "median": 0.6,
+            "n_probabilities": 10,
+            "n_with_outcome": 8,
+            "agreement_with_outcome": 0.75,
+        }
+        md = render_jev_md(_empty_triage_stats(), stats, _basic_counts())
+        assert "6/8 (too few to judge)" in md
+
+    def test_no_outcomes_yet_automerge(self):
+        automerge = _empty_automerge_stats()
+        automerge["n_probabilities"] = 5
+        md = render_jev_md(_empty_triage_stats(), automerge, _basic_counts())
+        assert "no outcomes yet" in md
+
+    def test_zone_agreement_table(self):
+        automerge = {
+            "distribution": _empty_automerge_stats()["distribution"],
+            "mean": 0.6,
+            "median": 0.6,
+            "n_probabilities": 25,
+            "n_with_outcome": 20,
+            "agreement_with_outcome": 0.8,
+            "zone_agreement": {
+                f"Act: reject (below {GATE_LOW})": {"agreed": 5, "total": 6},
+                f"Pipeline ({GATE_LOW}-{GATE_HIGH})": {"agreed": 3, "total": 4},
+                f"Act: merge ({GATE_HIGH}+)": {"agreed": 8, "total": 10},
+            },
+        }
+        md = render_jev_md(_empty_triage_stats(), automerge, _basic_counts())
+        assert "### Per-Zone Agreement" in md
+        assert f"| Act: merge ({GATE_HIGH}+) | 8 | 10 | 80% |" in md
+
+    def test_generated_at_date(self):
+        md = render_jev_md(
+            _empty_triage_stats(),
+            _empty_automerge_stats(),
+            _basic_counts(),
+            generated_at="2026-10-10 12:00 UTC",
+        )
+        assert "Generated at 2026-10-10 12:00 UTC" in md
+
+    def test_weekly_rows_sum_to_n(self):
+        triage = {
+            "n": 25,
+            "agree_count": 15,
+            "disagree_count": 3,
+            "uncertain_count": 7,
+            "agreement_rate": 0.6,
+            "uncertainty_rate": 0.28,
+            "disagreement_breakdown": {},
+            "weekly_trends": [
+                {
+                    "week": "2026-09-23",
+                    "n": 10,
+                    "agree_count": 6,
+                    "disagree_count": 1,
+                    "uncertain_count": 3,
+                    "agreement_rate": 0.6,
+                    "uncertainty_rate": 0.3,
+                },
+            ],
+        }
+        md = render_jev_md(triage, _empty_automerge_stats(), _basic_counts())
+        for line in md.split("\n"):
+            if line.startswith("| ") and not line.startswith("| Week") and "|--" not in line:
+                cols = [c.strip() for c in line.strip("|").split("|")]
+                if len(cols) == 5:
+                    agreed, disagreed, uncertain, n = (
+                        int(cols[1]),
+                        int(cols[2]),
+                        int(cols[3]),
+                        int(cols[4]),
+                    )
+                    assert agreed + disagreed + uncertain == n
+
+
+# --- compute tests: zone_agreement and disagree_count ---
+
+
+class TestComputeAutomergeZoneAgreement:
+    def test_zone_agreement_computed(self):
+        entries = [
+            _make_automerge_entry(prob=0.8, approved=True),
+            _make_automerge_entry(prob=0.8, approved=False),
+            _make_automerge_entry(prob=0.2, approved=False),
+        ]
+        result = compute_automerge_stats(entries)
+        za = result["zone_agreement"]
+        merge_zone = za[f"Act: merge ({GATE_HIGH}+)"]
+        assert merge_zone["total"] == 2
+        assert merge_zone["agreed"] == 1
+        reject_zone = za[f"Act: reject (below {GATE_LOW})"]
+        assert reject_zone["total"] == 1
+        assert reject_zone["agreed"] == 1
+
+    def test_zone_agreement_empty(self):
+        result = compute_automerge_stats([])
+        za = result["zone_agreement"]
+        for zone_data in za.values():
+            assert zone_data["agreed"] == 0
+            assert zone_data["total"] == 0
+
+
+class TestWeeklyTrendsDisagreeCount:
+    def test_disagree_count_in_weekly_trends(self):
+        entries = [
+            _make_triage_entry(
+                well_formed=0.92,
+                needs_decomp=0.09,
+                verdict="ready",
+                timestamp="2026-09-28T07:00:00+00:00",
+            ),
+            _make_triage_entry(
+                well_formed=0.92,
+                needs_decomp=0.09,
+                verdict="rejected",
+                timestamp="2026-09-28T08:00:00+00:00",
+            ),
+        ]
+        result = compute_triage_stats(entries)
+        trends = result["weekly_trends"]
+        assert len(trends) == 1
+        assert trends[0]["agree_count"] == 1
+        assert trends[0]["disagree_count"] == 1
+        assert trends[0]["uncertain_count"] == 0
+        assert trends[0]["n"] == 2
