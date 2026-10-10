@@ -69,6 +69,8 @@ Issue --> Triage --> Implement --> Review PR
 
 **[View live performance dashboard (EVAL.md)](EVAL.md)** — first-attempt success rate, cost trends, and per-module breakdown. Updated daily.
 
+**[View the decision-model shadow report (JEV.md)](JEV.md)** — how often Jev agrees with triage and auto-merge decisions, and whether it's ready to act. Updated daily.
+
 ---
 
 ## Platform Support
@@ -547,6 +549,8 @@ auto_merge_promotion_level = "repo"
 ```
 
 ## Experimental: Decision Model (Jev)
+
+**[View the shadow report (JEV.md)](JEV.md)** — agreement rates, confidence distribution by action zone, and whether Jev is ready to act.
 
 Jev is an off-by-default probabilistic decision model that can shadow autoloop's triage and auto-merge decisions. In shadow mode it evaluates every decision point alongside the existing pipeline, logs its observations to `autoloop/jev_decisions.jsonl` (via the `jev_log` module), and changes nothing — no behavior is affected unless you explicitly opt in. If you don't use Jev, skip this section entirely.
 
