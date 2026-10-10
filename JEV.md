@@ -1,5 +1,14 @@
 # JEV Report
 
+**Verdict:** Jev agreed on 67% of confident calls (n=9)
+
+## Legend
+
+- **Incumbent decision:** the human/pipeline decision that was actually used
+- **Fell back:** Jev returned an uncertain result and deferred to the incumbent
+- **Pipeline (0.35–0.65):** confidence too close to call; Jev defers to the incumbent
+- **Backfilled:** a decision reconstructed from historical data, not made live
+
 ## Counts
 
 - **Total entries:** 343
@@ -18,11 +27,11 @@
 
 ### Weekly Trends
 
-| Week | Agreed | Uncertain | n |
-|------|--------|-----------|---|
-| 9/21 | 1 | 19 | 21 |
-| 9/28 | 4 | 31 | 37 |
-| 10/5 | 1 | 5 | 6 |
+| Week | Agreed | Disagreed | Uncertain | n |
+|------|--------|-----------|-----------|---|
+| 9/21 | 1 | 1 | 19 | 21 |
+| 9/28 | 4 | 2 | 31 | 37 |
+| 10/5 | 1 | 0 | 5 | 6 |
 
 ## Auto-Merge Agreement
 
@@ -38,6 +47,14 @@ xychart-beta
     bar [15, 96, 73]
 ```
 
+### Per-Zone Agreement
+
+| Zone | Agreed | Total | Agreement |
+|------|--------|-------|-----------|
+| Act: reject (below 0.35) | 2 | 4 | 50% |
+| Pipeline (0.35-0.65) | 19 | 27 | 70% |
+| Act: merge (0.65+) | 13 | 17 | 76% |
+
 ## Backfill
 
 ### Backfill Triage Agreement
@@ -49,15 +66,15 @@ xychart-beta
 
 ### Weekly Trends
 
-| Week | Agreed | Uncertain | n |
-|------|--------|-----------|---|
-| 9/21 | 22 | 6 | 28 |
+| Week | Agreed | Disagreed | Uncertain | n |
+|------|--------|-----------|-----------|---|
+| 9/21 | 22 | 0 | 6 | 28 |
 
 ### Backfill Auto-Merge Agreement
 
 - **Mean confidence:** 0.459 (n=33)
 - **Median confidence:** 0.330 (n=33)
-- **Agreement with incumbent decision:** 0.0% (0/0)
+- **Agreement with incumbent decision:** no outcomes yet
 
 ```mermaid
 xychart-beta
@@ -66,3 +83,7 @@ xychart-beta
     y-axis "Count" 0 --> 21
     bar [20, 0, 13]
 ```
+
+---
+
+*Generated at 2026-10-10 21:41 UTC*
