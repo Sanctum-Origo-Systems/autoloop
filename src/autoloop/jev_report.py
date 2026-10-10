@@ -10,6 +10,8 @@ from pathlib import Path
 from autoloop.config import RepoContext
 from autoloop.jev import GATE_LOW, GATE_HIGH
 
+MIN_N = 20
+
 
 @dataclass
 class JevEntry:
@@ -121,6 +123,7 @@ def _compute_weekly_trends(entries: list[JevEntry]) -> list[dict]:
         total = len(week_entries)
         uncertain = sum(1 for e in week_entries if _is_uncertain(e.jev_call))
         agreed = 0
+        disagreed = 0
         for e in week_entries:
             if _is_uncertain(e.jev_call):
                 continue
@@ -128,11 +131,14 @@ def _compute_weekly_trends(entries: list[JevEntry]) -> list[dict]:
             inc_v = e.incumbent_call.get("verdict", "")
             if jev_v == inc_v:
                 agreed += 1
+            else:
+                disagreed += 1
         trends.append(
             {
                 "week": week,
                 "n": total,
                 "agree_count": agreed,
+                "disagree_count": disagreed,
                 "uncertain_count": uncertain,
                 "agreement_rate": agreed / total if total else 0.0,
                 "uncertainty_rate": uncertain / total if total else 0.0,
@@ -210,6 +216,8 @@ def compute_automerge_stats(entries: list[JevEntry]) -> dict:
     median = statistics.median(probabilities) if probabilities else 0.0
     agreed = 0
     total_with_outcome = 0
+    zone_agreed = {reject_label: 0, fallback_label: 0, merge_label: 0}
+    zone_total = {reject_label: 0, fallback_label: 0, merge_label: 0}
     for e in merge_entries:
         prob = e.jev_call.get("meets_acceptance_criteria")
         approved = e.incumbent_call.get("approved")
@@ -218,6 +226,19 @@ def compute_automerge_stats(entries: list[JevEntry]) -> dict:
             jev_approves = float(prob) >= 0.5
             if jev_approves == approved:
                 agreed += 1
+            if float(prob) < gate_low:
+                zone = reject_label
+            elif float(prob) < gate_high:
+                zone = fallback_label
+            else:
+                zone = merge_label
+            zone_total[zone] += 1
+            if jev_approves == approved:
+                zone_agreed[zone] += 1
+    zone_agreement = {
+        k: {"agreed": zone_agreed[k], "total": zone_total[k]}
+        for k in [reject_label, fallback_label, merge_label]
+    }
     return {
         "distribution": buckets,
         "mean": mean,
@@ -225,6 +246,7 @@ def compute_automerge_stats(entries: list[JevEntry]) -> dict:
         "n_probabilities": len(probabilities),
         "n_with_outcome": total_with_outcome,
         "agreement_with_outcome": (agreed / total_with_outcome if total_with_outcome else 0.0),
+        "zone_agreement": zone_agreement,
     }
 
 
@@ -235,8 +257,37 @@ def _md_label(date_str: str) -> str:
     return date_str
 
 
+def _compute_verdict(triage_stats: dict, min_n: int = MIN_N) -> str:
+    n = triage_stats.get("n", 0)
+    agree = triage_stats.get("agree_count", 0)
+    disagree = triage_stats.get("disagree_count", 0)
+    confident = agree + disagree
+    if n < min_n:
+        return f"**Verdict:** too few decisions to judge (n={n})"
+    if confident == 0:
+        return f"**Verdict:** no confident calls yet (n={n}, all uncertain)"
+    rate = agree / confident
+    return f"**Verdict:** Jev agreed on {rate:.0%} of confident calls (n={confident})"
+
+
+def _render_legend(lines: list[str]) -> None:
+    lines.append("## Legend")
+    lines.append("")
+    lines.append("- **Incumbent decision:** the human/pipeline decision that was actually used")
+    lines.append("- **Fell back:** Jev returned an uncertain result and deferred to the incumbent")
+    lines.append(
+        f"- **Pipeline ({GATE_LOW}–{GATE_HIGH}):**"
+        " confidence too close to call; Jev defers to the incumbent"
+    )
+    lines.append("- **Backfilled:** a decision reconstructed from historical data, not made live")
+    lines.append("")
+
+
 def _render_triage_section(
-    lines: list[str], triage_stats: dict, heading: str = "## Triage Agreement"
+    lines: list[str],
+    triage_stats: dict,
+    heading: str = "## Triage Agreement",
+    min_n: int = MIN_N,
 ) -> None:
     lines.append(heading)
     lines.append("")
@@ -250,7 +301,10 @@ def _render_triage_section(
     confident = agree + disagree
     if confident > 0:
         rate = agree / confident
-        lines.append(f"- **When confident, agreed:** {agree} of {confident} ({rate:.1%})")
+        if n >= min_n:
+            lines.append(f"- **When confident, agreed:** {agree} of {confident} ({rate:.1%})")
+        else:
+            lines.append(f"- **When confident, agreed:** {agree} of {confident} (too few to judge)")
     if triage_stats.get("disagreement_breakdown"):
         lines.append("- **Disagreement breakdown:**")
         for cat, count in sorted(triage_stats["disagreement_breakdown"].items()):
@@ -261,18 +315,22 @@ def _render_triage_section(
     if weekly:
         lines.append("### Weekly Trends")
         lines.append("")
-        lines.append("| Week | Agreed | Uncertain | n |")
-        lines.append("|------|--------|-----------|---|")
+        lines.append("| Week | Agreed | Disagreed | Uncertain | n |")
+        lines.append("|------|--------|-----------|-----------|---|")
         for w in weekly:
             wn = w.get("n", 0)
             wa = w.get("agree_count", 0)
+            wd = w.get("disagree_count", 0)
             wu = w.get("uncertain_count", 0)
-            lines.append(f"| {_md_label(w['week'])} | {wa} | {wu} | {wn} |")
+            lines.append(f"| {_md_label(w['week'])} | {wa} | {wd} | {wu} | {wn} |")
         lines.append("")
 
 
 def _render_automerge_section(
-    lines: list[str], automerge_stats: dict, heading: str = "## Auto-Merge Agreement"
+    lines: list[str],
+    automerge_stats: dict,
+    heading: str = "## Auto-Merge Agreement",
+    min_n: int = MIN_N,
 ) -> None:
     lines.append(heading)
     lines.append("")
@@ -282,9 +340,17 @@ def _render_automerge_section(
     lines.append(f"- **Median confidence:** {md_conf:.3f} (n={n_prob})")
     awo = automerge_stats["agreement_with_outcome"]
     n_out = automerge_stats.get("n_with_outcome", 0)
-    lines.append(
-        f"- **Agreement with incumbent decision:** {awo:.1%} ({round(awo * n_out)}/{n_out})"
-    )
+    if n_out == 0:
+        lines.append("- **Agreement with incumbent decision:** no outcomes yet")
+    elif n_prob < min_n:
+        lines.append(
+            f"- **Agreement with incumbent decision:**"
+            f" {round(awo * n_out)}/{n_out} (too few to judge)"
+        )
+    else:
+        lines.append(
+            f"- **Agreement with incumbent decision:** {awo:.1%} ({round(awo * n_out)}/{n_out})"
+        )
     lines.append("")
 
     dist = automerge_stats.get("distribution", {})
@@ -301,6 +367,24 @@ def _render_automerge_section(
         lines.append("```")
         lines.append("")
 
+    zone_agreement = automerge_stats.get("zone_agreement", {})
+    if zone_agreement and any(v["total"] > 0 for v in zone_agreement.values()):
+        lines.append("### Per-Zone Agreement")
+        lines.append("")
+        lines.append("| Zone | Agreed | Total | Agreement |")
+        lines.append("|------|--------|-------|-----------|")
+        for zone, data in zone_agreement.items():
+            za = data["agreed"]
+            zt = data["total"]
+            if zt == 0:
+                lines.append(f"| {zone} | — | 0 | no outcomes yet |")
+            elif n_prob < min_n:
+                lines.append(f"| {zone} | {za} | {zt} | too few to judge |")
+            else:
+                zr = za / zt
+                lines.append(f"| {zone} | {za} | {zt} | {zr:.0%} |")
+        lines.append("")
+
 
 def render_jev_md(
     triage_stats: dict,
@@ -309,10 +393,16 @@ def render_jev_md(
     *,
     backfill_triage_stats: dict | None = None,
     backfill_automerge_stats: dict | None = None,
+    min_n: int = MIN_N,
+    generated_at: str | None = None,
 ) -> str:
     lines: list[str] = []
     lines.append("# JEV Report")
     lines.append("")
+    lines.append(_compute_verdict(triage_stats, min_n))
+    lines.append("")
+
+    _render_legend(lines)
 
     lines.append("## Counts")
     lines.append("")
@@ -324,8 +414,8 @@ def render_jev_md(
         lines.append(f"- **Date range:** {date_range}")
     lines.append("")
 
-    _render_triage_section(lines, triage_stats)
-    _render_automerge_section(lines, automerge_stats)
+    _render_triage_section(lines, triage_stats, min_n=min_n)
+    _render_automerge_section(lines, automerge_stats, min_n=min_n)
 
     has_backfill = (
         backfill_triage_stats
@@ -337,11 +427,16 @@ def render_jev_md(
         lines.append("## Backfill")
         lines.append("")
         if backfill_triage_stats and backfill_triage_stats.get("n", 0) > 0:
-            _render_triage_section(lines, backfill_triage_stats, "### Backfill Triage Agreement")
+            _render_triage_section(
+                lines, backfill_triage_stats, "### Backfill Triage Agreement", min_n=min_n
+            )
         if backfill_automerge_stats and backfill_automerge_stats.get("n_probabilities", 0) > 0:
             _render_automerge_section(
-                lines, backfill_automerge_stats, "### Backfill Auto-Merge Agreement"
+                lines, backfill_automerge_stats, "### Backfill Auto-Merge Agreement", min_n=min_n
             )
+
+    if generated_at:
+        lines.append(f"---\n\n*Generated at {generated_at}*")
 
     return "\n".join(lines)
 
@@ -470,6 +565,7 @@ def main(*, ctx: RepoContext, publish: bool = False, pr: bool = False):
         counts,
         backfill_triage_stats=backfill_triage_stats,
         backfill_automerge_stats=backfill_automerge_stats,
+        generated_at=datetime.now().strftime("%Y-%m-%d %H:%M UTC"),
     )
     jev_path = ctx.repo_dir / "JEV.md"
     jev_path.write_text(content)
