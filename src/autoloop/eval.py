@@ -471,10 +471,13 @@ def _period_impl(snapshot: dict, prev: dict | None) -> int:
 
 def _compute_period_stats(snapshot: dict, prev: dict | None) -> dict:
     if prev is None:
+        dist = snapshot.get("attempt_distribution")
+        n = sum(dist.get(k, 0) for k in ("1", "2", "3+")) if dist else 0
         return {
             "period_first_attempt_rate": snapshot.get("first_attempt_rate"),
             "period_avg_cost_usd": snapshot.get("avg_cost_usd"),
             "period_human_edit_rate": snapshot.get("human_edit_rate"),
+            "period_n": n,
         }
 
     curr_dist = snapshot.get("attempt_distribution")
@@ -491,6 +494,7 @@ def _compute_period_stats(snapshot: dict, prev: dict | None) -> dict:
             "period_first_attempt_rate": None,
             "period_avg_cost_usd": None,
             "period_human_edit_rate": None,
+            "period_n": 0,
         }
 
     period_first = curr_dist.get("1", 0) - prev_dist.get("1", 0)
@@ -508,6 +512,7 @@ def _compute_period_stats(snapshot: dict, prev: dict | None) -> dict:
         "period_first_attempt_rate": period_first_attempt_rate,
         "period_avg_cost_usd": period_avg_cost,
         "period_human_edit_rate": period_human_edit_rate,
+        "period_n": period_runs,
     }
 
 
@@ -725,51 +730,55 @@ def generate_eval_md(
     if recent:
         chart_snaps = _sample_for_chart(recent)
         if chart_snaps:
-            year = chart_snaps[-1]["date"][:4]
-            dates = ", ".join(f'"{_md_label(s["date"])}"' for s in chart_snaps)
-
-            period_rates = []
-            period_costs = []
+            chart_points: list[dict] = []
             for i, s in enumerate(chart_snaps):
                 prev = chart_snaps[i - 1] if i > 0 else None
                 pstats = _compute_period_stats(s, prev)
                 if not pstats:
-                    pstats = {
-                        "period_first_attempt_rate": s.get("first_attempt_rate"),
-                        "period_avg_cost_usd": s.get("avg_cost_usd"),
-                    }
+                    continue
                 rate = pstats.get("period_first_attempt_rate")
-                period_rates.append(str(round(rate * 100)) if rate is not None else "0")
-                cost = pstats.get("period_avg_cost_usd")
-                period_costs.append(f"{cost:.2f}" if cost is not None else "0.00")
+                if rate is None:
+                    continue
+                chart_points.append(
+                    {
+                        "date": s["date"],
+                        "rate": rate,
+                        "cost": pstats.get("period_avg_cost_usd") or 0.0,
+                        "n": pstats.get("period_n", 0),
+                    }
+                )
 
-            success_vals = ", ".join(period_rates)
-            lines.append("```mermaid")
-            lines.append("xychart-beta")
-            lines.append(f'    title "First-Attempt Success Rate ({year})"')
-            lines.append(f"    x-axis [{dates}]")
-            lines.append('    y-axis "Success %" 0 --> 100')
-            lines.append(f"    line [{success_vals}]")
-            lines.append("```")
-            if annotations:
-                lines.append("")
-                lines.append("> " + " · ".join(annotations))
-            lines.append("")
+            if chart_points:
+                year = chart_points[-1]["date"][:4]
+                dates = ", ".join(f'"{_md_label(p["date"])} (n={p["n"]})"' for p in chart_points)
+                success_vals = ", ".join(str(round(p["rate"] * 100)) for p in chart_points)
 
-            cost_vals = ", ".join(period_costs)
-            cost_nums = [float(c) for c in period_costs]
-            y_max = max(1, int(max(cost_nums, default=0)) + 1)
-            lines.append("```mermaid")
-            lines.append("xychart-beta")
-            lines.append(f'    title "Avg Cost/PR ({year})"')
-            lines.append(f"    x-axis [{dates}]")
-            lines.append(f'    y-axis "Cost ($)" 0 --> {y_max}')
-            lines.append(f"    line [{cost_vals}]")
-            lines.append("```")
-            if annotations:
+                lines.append("```mermaid")
+                lines.append("xychart-beta")
+                lines.append(f'    title "Weekly First-Attempt Success Rate ({year})"')
+                lines.append(f"    x-axis [{dates}]")
+                lines.append('    y-axis "Success %" 0 --> 100')
+                lines.append(f"    bar [{success_vals}]")
+                lines.append("```")
+                if annotations:
+                    lines.append("")
+                    lines.append("> " + " · ".join(annotations))
                 lines.append("")
-                lines.append("> " + " · ".join(annotations))
-            lines.append("")
+
+                cost_vals = ", ".join(f"{p['cost']:.2f}" for p in chart_points)
+                cost_nums = [p["cost"] for p in chart_points]
+                y_max = max(1, int(max(cost_nums, default=0)) + 1)
+                lines.append("```mermaid")
+                lines.append("xychart-beta")
+                lines.append(f'    title "Weekly Avg Cost/PR ({year})"')
+                lines.append(f"    x-axis [{dates}]")
+                lines.append(f'    y-axis "Cost ($)" 0 --> {y_max}')
+                lines.append(f"    bar [{cost_vals}]")
+                lines.append("```")
+                if annotations:
+                    lines.append("")
+                    lines.append("> " + " · ".join(annotations))
+                lines.append("")
 
     if modules:
         lines.append("```mermaid")

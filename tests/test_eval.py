@@ -1320,12 +1320,17 @@ def _make_snapshot(
     total=35,
     modules=None,
 ):
+    first = round(rate * total)
+    rest = total - first
     return {
         "date": date,
         "total_implementations": total,
         "first_attempt_rate": rate,
         "avg_cost_usd": cost,
         "human_edit_rate": hr,
+        "attempt_distribution": {"1": first, "2": rest, "3+": 0},
+        "human_edit_count": 0,
+        "merged_pr_count": total,
         "modules": modules or {},
     }
 
@@ -1427,11 +1432,11 @@ def test_generate_eval_md_mermaid_success_chart():
     content = generate_eval_md(snaps[-1], snaps)
     assert "```mermaid" in content
     assert "xychart-beta" in content
-    assert 'title "First-Attempt Success Rate (2026)"' in content
-    assert '"9/7"' in content
-    assert '"9/14"' in content
+    assert 'title "Weekly First-Attempt Success Rate (2026)"' in content
+    assert '"9/7 (n=25)"' in content
+    assert '"9/14 (n=7)"' in content
     assert 'y-axis "Success %" 0 --> 100' in content
-    assert "line [80, 71]" in content
+    assert "bar [80, 71]" in content
 
 
 def test_generate_eval_md_mermaid_cost_chart():
@@ -1450,9 +1455,9 @@ def test_generate_eval_md_mermaid_cost_chart():
         },
     ]
     content = generate_eval_md(snaps[-1], snaps)
-    assert 'title "Avg Cost/PR (2026)"' in content
+    assert 'title "Weekly Avg Cost/PR (2026)"' in content
     assert 'y-axis "Cost ($)" 0 --> ' in content
-    assert "line [1.50, 1.04]" in content
+    assert "bar [1.50, 1.04]" in content
 
 
 def test_generate_eval_md_mermaid_pie_chart():
@@ -1501,9 +1506,9 @@ def test_generate_eval_md_mermaid_charts_from_data():
     ]
     content = generate_eval_md(snaps[-1], snaps)
     # Per-period: first=80%, second=6/10=60%
-    assert "line [80, 60]" in content
+    assert "bar [80, 60]" in content
     # Per-period cost: first=2.00, second=(1.50*20 - 2.00*10)/10 = 1.00
-    assert "line [2.00, 1.00]" in content
+    assert "bar [2.00, 1.00]" in content
 
 
 # --- repo-level promotion ---
@@ -3332,15 +3337,21 @@ def test_md_label_format():
 
 
 def test_chart_labels_md_format():
-    """Chart x-axis labels use M/D format."""
+    """Chart x-axis labels use M/D format with n count."""
     snaps = [
-        _make_snapshot(date="2026-09-07"),
-        _make_snapshot(date="2026-09-14"),
+        {
+            **_make_snapshot(date="2026-09-07", rate=0.80, total=10),
+            "attempt_distribution": {"1": 8, "2": 2, "3+": 0},
+        },
+        {
+            **_make_snapshot(date="2026-09-14", rate=0.70, total=20),
+            "attempt_distribution": {"1": 14, "2": 6, "3+": 0},
+        },
     ]
     content = generate_eval_md(snaps[-1], snaps)
-    assert '"9/7"' in content
-    assert '"9/14"' in content
-    assert '"09-07"' not in content
+    assert '"9/7 (n=10)"' in content
+    assert '"9/14 (n=10)"' in content
+    assert '"09-07' not in content
 
 
 def test_chart_per_period_not_cumulative():
@@ -3361,8 +3372,8 @@ def test_chart_per_period_not_cumulative():
     ]
     content = generate_eval_md(snaps[-1], snaps)
     # Cumulative would be [80, 75]; per-period is [80, 60] (6/10)
-    assert "line [80, 60]" in content
-    assert "line [80, 75]" not in content
+    assert "bar [80, 60]" in content
+    assert "bar [80, 75]" not in content
 
 
 def test_chart_cost_y_axis_starts_at_zero():
@@ -3404,6 +3415,106 @@ def test_chart_title_includes_year():
         _make_snapshot(date="2026-09-14"),
     ]
     content = generate_eval_md(snaps[-1], snaps)
-    assert 'title "First-Attempt Success Rate (2026)"' in content
-    assert 'title "Avg Cost/PR (2026)"' in content
+    assert 'title "Weekly First-Attempt Success Rate (2026)"' in content
+    assert 'title "Weekly Avg Cost/PR (2026)"' in content
     assert 'title "First-Attempt Success Rate (UTC)"' not in content
+
+
+# --- #392: first-attempt charts don't separate no-data from 0% ---
+
+
+def test_chart_no_bar_for_pending_only_week():
+    """A week with only pending outcomes (no finished runs) shows no bar."""
+    snaps = [
+        {
+            **_make_snapshot(date="2026-09-07", rate=0.80, total=10),
+            "attempt_distribution": {"1": 8, "2": 2, "3+": 0},
+        },
+        {
+            **_make_snapshot(date="2026-09-14", rate=0.80, total=10),
+            "attempt_distribution": {"1": 8, "2": 2, "3+": 0},
+        },
+    ]
+    content = generate_eval_md(snaps[-1], snaps)
+    assert "bar [80]" in content
+    assert "9/14" not in content.split("```")[1]
+
+
+def test_chart_no_false_zero_for_empty_week():
+    """Weeks with no finished outcomes are omitted, not plotted as 0%."""
+    snaps = [
+        {
+            **_make_snapshot(date="2026-09-07", rate=0.80, total=10),
+            "attempt_distribution": {"1": 8, "2": 2, "3+": 0},
+        },
+        {
+            **_make_snapshot(date="2026-09-14", rate=0.80, total=10),
+            "attempt_distribution": {"1": 8, "2": 2, "3+": 0},
+        },
+        {
+            **_make_snapshot(date="2026-09-21", rate=0.70, total=20),
+            "attempt_distribution": {"1": 14, "2": 6, "3+": 0},
+        },
+    ]
+    content = generate_eval_md(snaps[-1], snaps)
+    # Week 2 (09-14) has no new outcomes — should not appear as 0%
+    assert "bar [80, 60]" in content
+    assert ", 0," not in content.split("bar")[1].split("]")[0]
+
+
+def test_chart_bars_show_n():
+    """Each bar label includes the n (count of finished outcomes)."""
+    snaps = [
+        {
+            **_make_snapshot(date="2026-09-07", rate=0.75, total=8),
+            "attempt_distribution": {"1": 6, "2": 2, "3+": 0},
+        },
+        {
+            **_make_snapshot(date="2026-09-14", rate=0.65, total=25),
+            "attempt_distribution": {"1": 14, "2": 3, "3+": 0},
+        },
+    ]
+    content = generate_eval_md(snaps[-1], snaps)
+    assert "(n=8)" in content
+    assert "(n=9)" in content
+
+
+def test_chart_values_match_table():
+    """Chart bar values match the trend table rates for the same week."""
+    snaps = [
+        {
+            **_make_snapshot(date="2026-09-07", rate=0.80, cost=2.00, total=10),
+            "attempt_distribution": {"1": 8, "2": 2, "3+": 0},
+            "human_edit_count": 0,
+            "merged_pr_count": 8,
+        },
+        {
+            **_make_snapshot(date="2026-09-14", rate=0.70, cost=1.50, total=20),
+            "attempt_distribution": {"1": 14, "2": 6, "3+": 0},
+            "human_edit_count": 1,
+            "merged_pr_count": 18,
+        },
+    ]
+    content = generate_eval_md(snaps[-1], snaps)
+    lines = content.split("\n")
+    table_row = [ln for ln in lines if "2026-09-14" in ln][0]
+    assert "60%" in table_row
+    assert "bar [80, 60]" in content
+
+
+def test_chart_zero_percent_shown_when_all_failed():
+    """0% bar IS shown when outcomes exist but all failed."""
+    snaps = [
+        {
+            **_make_snapshot(date="2026-09-07", rate=0.80, total=10),
+            "attempt_distribution": {"1": 8, "2": 2, "3+": 0},
+        },
+        {
+            **_make_snapshot(date="2026-09-14", rate=0.50, total=14),
+            "attempt_distribution": {"1": 8, "2": 4, "3+": 2},
+        },
+    ]
+    content = generate_eval_md(snaps[-1], snaps)
+    # Period: 14-10=4 runs, 8-8=0 first-attempt → 0%
+    assert "bar [80, 0]" in content
+    assert "(n=4)" in content
