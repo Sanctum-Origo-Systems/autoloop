@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.14.0
+
+### Jev Report
+- fix: JEV.md verdict line, legend, min-n guard, and per-zone agreement (#391) ($2.12)
+- fix: escape angle brackets in JEV.md chart bucket labels ($0.00)
+- fix: JEV.md charts answer "can we trust Jev to act?" (#386) ($2.28)
+
+### Eval Dashboard
+- fix: EVAL.md first-attempt charts don't separate no-data from 0% (#392) ($2.70)
+
+### Docs
+- docs: link JEV.md from README next to EVAL.md ($0.00)
+
+Total: 5 PRs, $7.10
+
 ## v0.13.0
 
 ### Jev Report
