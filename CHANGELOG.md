@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.16.0
+
+### Worktree Isolation
+- fix: implement now runs in a per-branch worktree when `implement.isolation = "worktree"`, so the main checkout stays on `main` with its uncommitted work untouched; doctor checks the resolved path (#414) ($1.56)
+
+Total: 1 PR, $1.56
+
 ## v0.15.0
 
 Requires Claude Code with Opus 5.5 support (tested on 2.1.310).
