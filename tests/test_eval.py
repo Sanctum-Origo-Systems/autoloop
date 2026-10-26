@@ -31,6 +31,7 @@ from autoloop.eval import (
     load_snapshot,
     main,
     material_change,
+    migrate_unpublished_snapshots,
     save_snapshot,
 )
 
@@ -3569,3 +3570,273 @@ def test_chart_zero_percent_shown_when_all_failed():
     # Period: 14-10=4 runs, 8-8=0 first-attempt → 0%
     assert "bar [80, 0]" in content
     assert "(n=4)" in content
+
+
+# --- unpublished snapshots live in the data dir (#402) ---
+
+_REAL_RUN = subprocess.run
+_REAL_COMPUTE_SNAPSHOT = compute_snapshot
+
+
+def _make_split_ctx(tmp_path):
+    """RepoContext whose data dir is outside the repo, as in production."""
+    ctx = object.__new__(RepoContext)
+    ctx.repo_dir = tmp_path / "repo"
+    ctx.data_dir = tmp_path / "data"
+    ctx.worktree_dir = ctx.data_dir / "worktrees"
+    ctx.repo_dir.mkdir(parents=True, exist_ok=True)
+    ctx.data_dir.mkdir(parents=True, exist_ok=True)
+    return ctx
+
+
+def _git(ctx, *args):
+    return _REAL_RUN(
+        ["git", *args], cwd=ctx.repo_dir, capture_output=True, text=True, check=True
+    ).stdout
+
+
+def _init_repo(ctx, monkeypatch):
+    for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+        monkeypatch.delenv(var, raising=False)
+    _git(ctx, "init", "-q", "-b", "main")
+    _git(ctx, "config", "user.email", "bot@example.com")
+    _git(ctx, "config", "user.name", "Test Bot")
+    _git(ctx, "config", "commit.gpgsign", "false")
+    (ctx.repo_dir / "README.md").write_text("widget\n")
+    (ctx.repo_dir / "EVAL.md").write_text("# Eval\n")
+    _git(ctx, "add", "README.md", "EVAL.md")
+    _git(ctx, "commit", "-q", "-m", "init")
+
+
+def _runs(total, retried):
+    """`total` implement runs, the first `retried` of which needed a second attempt."""
+    return [
+        {
+            "type": "implement",
+            "issue": i,
+            "success": True,
+            "attempts": 2 if i <= retried else 1,
+            "cost_usd": 1.0,
+            "duration_seconds": 60,
+        }
+        for i in range(1, total + 1)
+    ]
+
+
+def _write_runs(ctx, runs):
+    (ctx.data_dir / "run_history.jsonl").write_text("\n".join(json.dumps(r) for r in runs) + "\n")
+
+
+def _commit_published(ctx, snapshot):
+    path = save_snapshot(snapshot, ctx, published=True)
+    _git(ctx, "add", str(path))
+    _git(ctx, "commit", "-q", "-m", f"chore: update eval report ({snapshot['date']})")
+
+
+def _patch_eval_env(monkeypatch, calls, date_holder):
+    """Run real git, fake `git push` / `gh`, and pin the snapshot date."""
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        if cmd[:2] == ["git", "push"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if cmd[:1] == ["gh"]:
+            stdout = "https://github.com/acme-corp/widget/pull/7\n"
+            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+        return _REAL_RUN(cmd, **kw)
+
+    def fake_compute(runs, pr_data=None, date=None, module_prefixes=None):
+        return _REAL_COMPUTE_SNAPSHOT(runs, pr_data, date=date_holder[0])
+
+    monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
+    monkeypatch.setattr("autoloop.eval.compute_snapshot", fake_compute)
+
+
+def test_save_snapshot_defaults_to_data_dir(tmp_path):
+    ctx = _make_split_ctx(tmp_path)
+    path = save_snapshot({"date": "2026-10-01"}, ctx)
+    assert path == ctx.data_dir / "eval_snapshots" / "2026-10-01.json"
+    assert not (ctx.repo_dir / "autoloop" / "eval_snapshots").exists()
+
+
+def test_save_snapshot_published_goes_to_repo(tmp_path):
+    ctx = _make_split_ctx(tmp_path)
+    path = save_snapshot({"date": "2026-10-01"}, ctx, published=True)
+    assert path == ctx.repo_dir / "autoloop" / "eval_snapshots" / "2026-10-01.json"
+    assert not (ctx.data_dir / "eval_snapshots").exists()
+
+
+def test_load_latest_snapshot_ignores_daily_snapshots(tmp_path):
+    ctx = _make_split_ctx(tmp_path)
+    save_snapshot({"date": "2026-10-01"}, ctx, published=True)
+    save_snapshot({"date": "2026-10-05"}, ctx)
+    assert load_latest_snapshot(ctx)["date"] == "2026-10-01"
+
+
+def test_load_latest_snapshot_none_with_only_daily_snapshots(tmp_path):
+    ctx = _make_split_ctx(tmp_path)
+    save_snapshot({"date": "2026-10-05"}, ctx)
+    assert load_latest_snapshot(ctx) is None
+
+
+def test_load_all_snapshots_unions_dirs_repo_wins(tmp_path):
+    ctx = _make_split_ctx(tmp_path)
+    save_snapshot({"date": "2026-10-01", "source": "daily"}, ctx)
+    save_snapshot({"date": "2026-10-02", "source": "daily"}, ctx)
+    save_snapshot({"date": "2026-10-02", "source": "repo"}, ctx, published=True)
+    save_snapshot({"date": "2026-10-03", "source": "repo"}, ctx, published=True)
+
+    snaps = load_all_snapshots(ctx)
+    assert [s["date"] for s in snaps] == ["2026-10-01", "2026-10-02", "2026-10-03"]
+    assert [s["source"] for s in snaps] == ["daily", "repo", "repo"]
+
+
+def test_load_snapshot_prefers_repo_then_data_dir(tmp_path):
+    ctx = _make_split_ctx(tmp_path)
+    save_snapshot({"date": "2026-10-01", "source": "daily"}, ctx)
+    save_snapshot({"date": "2026-10-01", "source": "repo"}, ctx, published=True)
+    save_snapshot({"date": "2026-10-02", "source": "daily"}, ctx)
+    assert load_snapshot("2026-10-01", ctx)["source"] == "repo"
+    assert load_snapshot("2026-10-02", ctx)["source"] == "daily"
+
+
+def test_migrate_moves_untracked_and_restores_modified(tmp_path, monkeypatch):
+    ctx = _make_split_ctx(tmp_path)
+    _init_repo(ctx, monkeypatch)
+    _commit_published(ctx, {"date": "2026-10-01", "v": "committed"})
+    save_snapshot({"date": "2026-10-01", "v": "edited"}, ctx, published=True)
+    save_snapshot({"date": "2026-10-02", "v": "untracked"}, ctx, published=True)
+    staged = save_snapshot({"date": "2026-10-03", "v": "staged"}, ctx, published=True)
+    _git(ctx, "add", str(staged))
+
+    migrated = migrate_unpublished_snapshots(ctx)
+
+    daily = ctx.data_dir / "eval_snapshots"
+    assert sorted(p.name for p in migrated) == [
+        "2026-10-01.json",
+        "2026-10-02.json",
+        "2026-10-03.json",
+    ]
+    assert json.loads((daily / "2026-10-01.json").read_text())["v"] == "edited"
+    assert json.loads((daily / "2026-10-02.json").read_text())["v"] == "untracked"
+    assert json.loads((daily / "2026-10-03.json").read_text())["v"] == "staged"
+    assert _git(ctx, "status", "--porcelain") == ""
+    assert load_latest_snapshot(ctx) == {"date": "2026-10-01", "v": "committed"}
+
+
+def test_migrate_noop_outside_git_repo(tmp_path):
+    ctx = _make_split_ctx(tmp_path)
+    save_snapshot({"date": "2026-10-01"}, ctx, published=True)
+    assert migrate_unpublished_snapshots(ctx) == []
+    assert (ctx.repo_dir / "autoloop" / "eval_snapshots" / "2026-10-01.json").exists()
+
+
+def test_migrate_handles_git_not_found(tmp_path, monkeypatch):
+    ctx = _make_split_ctx(tmp_path)
+
+    def fake_run(cmd, **kw):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
+    assert migrate_unpublished_snapshots(ctx) == []
+
+
+def test_publish_pr_no_change_day_leaves_tree_clean(tmp_path, monkeypatch, capsys):
+    ctx = _make_split_ctx(tmp_path)
+    _init_repo(ctx, monkeypatch)
+    runs = _runs(50, 0)
+    _commit_published(ctx, _REAL_COMPUTE_SNAPSHOT(runs, [], date="2026-10-01"))
+    _write_runs(ctx, runs)
+
+    calls = []
+    _patch_eval_env(monkeypatch, calls, ["2026-10-02"])
+    main(publish=True, pr=True, ctx=ctx)
+
+    out = capsys.readouterr().out
+    assert "No material change, skipping EVAL.md commit" in out
+    assert _git(ctx, "status", "--porcelain") == ""
+    assert (ctx.data_dir / "eval_snapshots" / "2026-10-02.json").exists()
+    assert not (ctx.repo_dir / "autoloop" / "eval_snapshots" / "2026-10-02.json").exists()
+    assert (ctx.repo_dir / "EVAL.md").read_text() == "# Eval\n"
+    assert _git(ctx, "branch", "--format=%(refname:short)").split() == ["main"]
+    assert not [c for c in calls if c[:1] == ["gh"]]
+
+
+def test_publish_pr_publish_day_commits_snapshot_and_leaves_tree_clean(
+    tmp_path, monkeypatch, capsys
+):
+    ctx = _make_split_ctx(tmp_path)
+    _init_repo(ctx, monkeypatch)
+    _commit_published(ctx, _REAL_COMPUTE_SNAPSHOT(_runs(50, 0), [], date="2026-10-01"))
+    _write_runs(ctx, _runs(50, 10))
+
+    calls = []
+    _patch_eval_env(monkeypatch, calls, ["2026-10-02"])
+    main(publish=True, pr=True, ctx=ctx)
+
+    out = capsys.readouterr().out
+    assert "Material change detected, publishing EVAL.md" in out
+    assert "PR created:" in out
+    assert _git(ctx, "status", "--porcelain") == ""
+
+    branch = "chore/eval-2026-10-02"
+    committed = _git(ctx, "show", "--name-only", "--format=", branch).split()
+    assert sorted(committed) == ["EVAL.md", "autoloop/eval_snapshots/2026-10-02.json"]
+
+    # Once the PR merges, the new snapshot is the baseline.
+    _git(ctx, "merge", "-q", "--ff-only", branch)
+    assert load_latest_snapshot(ctx)["date"] == "2026-10-02"
+
+
+def test_publish_pr_gradual_drift_eventually_publishes(tmp_path, monkeypatch, capsys):
+    """-2 points/day never crosses the threshold day-over-day, but does against the baseline."""
+    ctx = _make_split_ctx(tmp_path)
+    _init_repo(ctx, monkeypatch)
+    _commit_published(ctx, _REAL_COMPUTE_SNAPSHOT(_runs(50, 0), [], date="2026-10-01"))
+
+    calls = []
+    date_holder = ["2026-10-01"]
+    _patch_eval_env(monkeypatch, calls, date_holder)
+
+    for day, retried in (("2026-10-02", 1), ("2026-10-03", 2)):
+        date_holder[0] = day
+        _write_runs(ctx, _runs(50, retried))
+        main(publish=True, pr=True, ctx=ctx)
+        out = capsys.readouterr().out
+        assert "No material change, skipping EVAL.md commit" in out
+        assert _git(ctx, "status", "--porcelain") == ""
+        assert (ctx.repo_dir / "EVAL.md").read_text() == "# Eval\n"
+        assert (ctx.data_dir / "eval_snapshots" / f"{day}.json").exists()
+        assert load_latest_snapshot(ctx)["date"] == "2026-10-01"
+
+    date_holder[0] = "2026-10-04"
+    _write_runs(ctx, _runs(50, 3))
+    main(publish=True, pr=True, ctx=ctx)
+
+    out = capsys.readouterr().out
+    assert "Material change detected, publishing EVAL.md" in out
+    assert "PR created:" in out
+    assert _git(ctx, "status", "--porcelain") == ""
+    committed = _git(ctx, "show", "--name-only", "--format=", "chore/eval-2026-10-04").split()
+    assert "autoloop/eval_snapshots/2026-10-04.json" in committed
+
+
+def test_publish_migrates_legacy_untracked_snapshots(tmp_path, monkeypatch, capsys):
+    """Untracked snapshots left by older versions move to the data dir; history is kept."""
+    ctx = _make_split_ctx(tmp_path)
+    _init_repo(ctx, monkeypatch)
+    runs = _runs(50, 0)
+    _commit_published(ctx, _REAL_COMPUTE_SNAPSHOT(runs, [], date="2026-10-01"))
+    save_snapshot(_REAL_COMPUTE_SNAPSHOT(runs, [], date="2026-10-02"), ctx, published=True)
+    _write_runs(ctx, runs)
+
+    _patch_eval_env(monkeypatch, [], ["2026-10-03"])
+    main(publish=True, pr=True, ctx=ctx)
+
+    assert "No material change" in capsys.readouterr().out
+    assert _git(ctx, "status", "--porcelain") == ""
+    assert [s["date"] for s in load_all_snapshots(ctx)] == [
+        "2026-10-01",
+        "2026-10-02",
+        "2026-10-03",
+    ]

@@ -1010,6 +1010,39 @@ def test_eval_publish_pr(mcp_tools, tmp_path):
     assert len(main_checkouts) == 1
 
 
+def test_eval_publish_commits_repo_snapshot_not_data_dir(mcp_tools, tmp_path):
+    """Publishing commits the repo copy of the snapshot, never the data-dir copy (#402)."""
+    repo_dir = tmp_path / "repo"
+    data_dir = tmp_path / "data"
+    repo_dir.mkdir()
+
+    def make_split_ctx(path):
+        ctx = object.__new__(RepoContext)
+        ctx.repo_dir = Path(path).resolve()
+        ctx.data_dir = data_dir.resolve()
+        ctx.worktree_dir = ctx.data_dir / "worktrees"
+        return ctx
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        stdout = "https://github.com/owner/repo/pull/56\n" if cmd[:1] == ["gh"] else ""
+        return type("R", (), {"returncode": 0, "stdout": stdout, "stderr": ""})()
+
+    with (
+        patch("autoloop.mcp_server.RepoContext", side_effect=make_split_ctx),
+        patch("autoloop.eval.subprocess.run", fake_run),
+    ):
+        mcp_tools["autoloop_eval"](publish=True, pr=True, repo_dir=str(repo_dir))
+
+    snap_adds = [c for c in calls if c[:2] == ["git", "add"]]
+    assert len(snap_adds) == 1
+    snap_arg = next(arg for arg in snap_adds[0] if "eval_snapshots" in arg)
+    assert Path(snap_arg).parent == repo_dir.resolve() / "autoloop" / "eval_snapshots"
+    assert len(list((data_dir / "eval_snapshots").glob("*.json"))) == 1
+
+
 def test_eval_publish_push_failure_suggests_pr(mcp_tools, tmp_path):
     """MCP autoloop_eval non-PR publish detects branch protection on push failure."""
     log_dir = tmp_path / "autoloop"

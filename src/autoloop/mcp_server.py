@@ -384,12 +384,13 @@ def main():
             save_snapshot(current, ctx)
             return format_comparison(comparison)
 
-        snap_path = save_snapshot(current, ctx)
+        save_snapshot(current, ctx)
         result = format_snapshot(current)
 
         if publish:
             from autoloop.eval import _publish_via_pr
 
+            snap_path = save_snapshot(current, ctx, published=True)
             all_snaps = load_all_snapshots(ctx)
             md_content = generate_eval_md(
                 current,

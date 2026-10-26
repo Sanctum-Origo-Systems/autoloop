@@ -162,7 +162,7 @@ This creates three files:
 
 It also creates GitHub labels (`ready`, `rejected`, `in-progress`, etc.) used by the triage system.
 
-Operational data (`run_history.jsonl`, `jev_decisions.jsonl`) is stored outside the repo tree in `~/.autoloop/<id>/`, keyed by git remote URL. This keeps operational data out of your working tree and supports multiple repos on the same machine. Eval snapshots and `EVAL.md` stay in the repo (published via PRs).
+Operational data (`run_history.jsonl`, `jev_decisions.jsonl`) is stored outside the repo tree in `~/.autoloop/<id>/`, keyed by git remote URL. This keeps operational data out of your working tree and supports multiple repos on the same machine. Daily eval snapshots are stored in `~/.autoloop/<id>/eval_snapshots/`. Only published snapshots are committed to `autoloop/eval_snapshots/` together with `EVAL.md` (via PRs with `--publish --pr`). `eval --publish` compares against the last published snapshot and publishes only on a material change, so a no-change run leaves the working tree clean.
 
 Commit the generated files:
 
