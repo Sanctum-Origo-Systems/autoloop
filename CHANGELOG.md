@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.16.1
+
+### Tests
+- fix: isolate the test suite from the real ~/.autoloop data dir (autouse HOME fixture + write guard), so tests no longer leak fixture rows or stray data dirs into production history (#401) ($0.98)
+
+Total: 1 PR, $0.98
+
 ## v0.16.0
 
 ### Worktree Isolation
