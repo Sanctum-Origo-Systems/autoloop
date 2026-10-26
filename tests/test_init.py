@@ -10,6 +10,7 @@ from autoloop.init import (
     create_review_queue_issue,
     infer_test_pattern,
     run_init,
+    update_gitignore,
     write_claude_settings,
     write_workflow,
 )
@@ -191,6 +192,56 @@ class TestRunInitSettings:
         run_init("acme/widgets", verify_cmd="pytest", skip_labels=True)
         out = capsys.readouterr().out
         assert ".claude/settings.json" in out
+
+
+class TestUpdateGitignore:
+    def test_creates_gitignore_with_lock_entry(self, tmp_path):
+        update_gitignore(tmp_path)
+        lines = (tmp_path / ".gitignore").read_text().splitlines()
+        assert ".autoloop.lock" in lines
+
+    def test_appends_lock_entry_preserving_content(self, tmp_path):
+        path = tmp_path / ".gitignore"
+        path.write_text("node_modules/\n*.pyc\n")
+        update_gitignore(tmp_path)
+        content = path.read_text()
+        assert content.startswith("node_modules/\n*.pyc\n")
+        assert ".autoloop.lock" in content.splitlines()
+
+    def test_appends_newline_when_missing_trailing_newline(self, tmp_path):
+        path = tmp_path / ".gitignore"
+        path.write_text("node_modules/")
+        update_gitignore(tmp_path)
+        lines = path.read_text().splitlines()
+        assert lines[0] == "node_modules/"
+        assert ".autoloop.lock" in lines
+
+    def test_idempotent_when_entries_present(self, tmp_path):
+        path = tmp_path / ".gitignore"
+        original = "dist/\n.autoloop.lock\nautoloop/run_history.jsonl\n"
+        path.write_text(original)
+        update_gitignore(tmp_path)
+        assert path.read_text() == original
+
+    def test_repeated_runs_no_duplicates(self, tmp_path):
+        update_gitignore(tmp_path)
+        update_gitignore(tmp_path)
+        update_gitignore(tmp_path)
+        lines = (tmp_path / ".gitignore").read_text().splitlines()
+        assert lines.count(".autoloop.lock") == 1
+        assert lines.count("autoloop/run_history.jsonl") == 1
+
+    def test_similar_entry_does_not_count_as_lock(self, tmp_path):
+        path = tmp_path / ".gitignore"
+        path.write_text("other.autoloop.lock\n")
+        update_gitignore(tmp_path)
+        assert ".autoloop.lock" in path.read_text().splitlines()
+
+    @patch("autoloop.init.create_labels")
+    def test_run_init_gitignores_lock(self, mock_labels, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        run_init("acme/widgets", verify_cmd="pytest", skip_labels=True)
+        assert ".autoloop.lock" in (tmp_path / ".gitignore").read_text().splitlines()
 
 
 class TestInferTestPattern:

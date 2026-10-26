@@ -158,7 +158,7 @@ This creates three files:
 |------|---------|
 | `autoloop.toml` | Pipeline configuration (models, timeouts, verify command) |
 | `.github/workflows/autoloop-cleanup.yml` | CI workflow that cleans labels and auto-closes parent issues on merge |
-| `.gitignore` | Adds `autoloop/run_history.jsonl` |
+| `.gitignore` | Adds `autoloop/run_history.jsonl` and `.autoloop.lock` |
 
 It also creates GitHub labels (`ready`, `rejected`, `in-progress`, etc.) used by the triage system.
 
@@ -196,6 +196,7 @@ Checks that everything is set up correctly before your first run:
 ✓ gh CLI installed and authenticated
 ✓ No active Claude Code session conflict
 ✓ verify_cmd passes ("pytest" → exit 0)
+✓ .autoloop.lock is ignored and untracked
 ```
 
 Each check reports pass or fail with a fix suggestion. Exit code 0 if all pass, 1 if any fail. Run this once after `autoloop init` and again if implementations start failing unexpectedly.

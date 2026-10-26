@@ -1346,6 +1346,46 @@ def test_acquire_lock_succeeds_when_pid_stale(tmp_path):
     assert acquire_lock(tmp_path) is True
 
 
+def test_acquire_lock_logs_holder_pid_when_alive(tmp_path, capsys):
+    lock_path = tmp_path / ".autoloop.lock"
+    lock_path.write_text(str(os.getpid()))
+    assert acquire_lock(tmp_path) is False
+    assert f"Skipping run: lock held by PID {os.getpid()}" in capsys.readouterr().out
+
+
+def test_acquire_lock_permission_error_treated_as_held(tmp_path, monkeypatch, capsys):
+    """Regression: PID owned by another user raises PermissionError from os.kill."""
+    lock_path = tmp_path / ".autoloop.lock"
+    lock_path.write_text("12345")
+
+    def fake_kill(pid, sig):
+        raise PermissionError
+
+    monkeypatch.setattr(implement_issue.os, "kill", fake_kill)
+    assert acquire_lock(tmp_path) is False
+    assert lock_path.read_text() == "12345"
+    assert "Skipping run: lock held by PID 12345" in capsys.readouterr().out
+
+
+def test_acquire_lock_replaces_stale_lock_on_process_lookup_error(tmp_path, monkeypatch):
+    lock_path = tmp_path / ".autoloop.lock"
+    lock_path.write_text("12345")
+
+    def fake_kill(pid, sig):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(implement_issue.os, "kill", fake_kill)
+    assert acquire_lock(tmp_path) is True
+    assert lock_path.read_text().strip() == str(os.getpid())
+
+
+def test_acquire_lock_replaces_invalid_lock_contents(tmp_path):
+    lock_path = tmp_path / ".autoloop.lock"
+    lock_path.write_text("not-a-pid")
+    assert acquire_lock(tmp_path) is True
+    assert lock_path.read_text().strip() == str(os.getpid())
+
+
 def test_release_lock_removes_file(tmp_path):
     lock_path = tmp_path / ".autoloop.lock"
     lock_path.write_text(str(os.getpid()))

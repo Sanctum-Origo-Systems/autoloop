@@ -191,6 +191,38 @@ def check_verify_cmd(ctx: RepoContext) -> tuple[bool, str]:
     return False, msg
 
 
+def check_lockfile_ignored(ctx: RepoContext) -> tuple[bool, str]:
+    """Check that .autoloop.lock is gitignored and not tracked by git."""
+    lock = ".autoloop.lock"
+    try:
+        tracked = subprocess.run(
+            ["git", "ls-files", "--", lock],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=ctx.repo_dir,
+        )
+        if tracked.returncode != 0:
+            return True, "not a git repository, skipping"
+        if tracked.stdout.strip():
+            return False, f"{lock} is tracked by git; run: git rm --cached {lock}"
+
+        ignored = subprocess.run(
+            ["git", "check-ignore", "-q", "--", lock],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=ctx.repo_dir,
+        )
+    except FileNotFoundError:
+        return True, "git not found, skipping"
+    if ignored.returncode == 1:
+        return False, f"{lock} is not ignored by git; add {lock} to .gitignore"
+    if ignored.returncode != 0:
+        return True, "could not run git check-ignore, skipping"
+    return True, f"{lock} is ignored and untracked"
+
+
 def get_checks(ctx: RepoContext) -> list[Check]:
     """Return the default set of doctor checks."""
     checks = [
@@ -233,6 +265,12 @@ def get_checks(ctx: RepoContext) -> list[Check]:
             name="Jev config",
             fn=lambda: check_jev(ctx),
             fix_hint="set the API key env var, or set jev.mode = 'off' in autoloop.toml",
+        ),
+        Check(
+            name=".autoloop.lock gitignored",
+            fn=lambda: check_lockfile_ignored(ctx),
+            fix_hint='run "autoloop init" or add .autoloop.lock to .gitignore; '
+            'if tracked, run "git rm --cached .autoloop.lock"',
         ),
     ]
 

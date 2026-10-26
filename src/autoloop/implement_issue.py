@@ -243,7 +243,11 @@ def acquire_lock(repo_dir: Path) -> bool:
     if lockfile.exists():
         try:
             pid = int(lockfile.read_text().strip())
-            os.kill(pid, 0)
+            try:
+                os.kill(pid, 0)
+            except PermissionError:
+                pass  # PID is alive but owned by another user
+            print(f"Skipping run: lock held by PID {pid}")
             return False
         except (ProcessLookupError, ValueError):
             pass

@@ -143,7 +143,7 @@ jobs:
         run: autoloop auto-close-parent "${{ github.event.pull_request.number }}"
 """
 
-GITIGNORE_ENTRY = "autoloop/run_history.jsonl"
+GITIGNORE_ENTRIES = ("autoloop/run_history.jsonl", ".autoloop.lock")
 
 _PYTEST_KEYWORDS = ("pytest", "py.test")
 _JS_TEST_KEYWORDS = ("npm test", "jest", "vitest", "mocha")
@@ -200,18 +200,19 @@ def write_workflow(target: Path) -> None:
 
 def update_gitignore(target: Path) -> None:
     path = target / ".gitignore"
-    if path.exists():
-        content = path.read_text()
-        if GITIGNORE_ENTRY in content:
-            print(f"  .gitignore already has {GITIGNORE_ENTRY}")
-            return
-        if not content.endswith("\n"):
+    original = path.read_text() if path.exists() else ""
+    existing = {line.strip() for line in original.splitlines()}
+    content = original
+    for entry in GITIGNORE_ENTRIES:
+        if entry in existing:
+            print(f"  .gitignore already has {entry}")
+            continue
+        if content and not content.endswith("\n"):
             content += "\n"
-        content += GITIGNORE_ENTRY + "\n"
+        content += entry + "\n"
+        print(f"  added {entry} to .gitignore")
+    if content != original or not path.exists():
         path.write_text(content)
-    else:
-        path.write_text(GITIGNORE_ENTRY + "\n")
-    print(f"  added {GITIGNORE_ENTRY} to .gitignore")
 
 
 def create_labels(repo: str, dry_run: bool = False) -> None:
