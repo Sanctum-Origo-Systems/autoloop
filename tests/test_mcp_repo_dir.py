@@ -975,7 +975,6 @@ def test_eval_publish(mcp_tools, tmp_path):
 
     def fake_run(cmd, **kwargs):
         captured.append({"cmd": cmd, "kwargs": kwargs})
-        return _FakeProc()
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     with (

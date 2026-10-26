@@ -158,7 +158,7 @@ def test_spawn_log_path_names_autoloop_subcommand(tmp_path):
     path = mod._spawn_log_path(["autoloop", "fix-pr", "7"], str(tmp_path))
 
     assert path.parent == _make_context(str(tmp_path)).data_dir / "mcp-runs"
-    assert re.fullmatch(r"\d{8}T\d{6}Z-fix-pr\.log", path.name)
+    assert re.fullmatch(r"\d{8}T\d{6}\.\d{6}Z-fix-pr\.log", path.name)
 
 
 def test_spawn_reaps_exited_child(tmp_path):

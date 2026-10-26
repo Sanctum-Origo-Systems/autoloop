@@ -105,7 +105,8 @@ def _spawn_log_path(cmd: list[str], cwd: str | None) -> Path:
     """Return the log file path for a spawned run under the target repo's data dir."""
     ctx = _make_context(cwd)
     command = cmd[1] if cmd[0] == "autoloop" and len(cmd) > 1 else Path(cmd[0]).name
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    # Microseconds keep two runs of the same command started in one second apart.
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
     return ctx.data_dir / "mcp-runs" / f"{stamp}-{command}.log"
 
 
