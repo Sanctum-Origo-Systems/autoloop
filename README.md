@@ -592,7 +592,7 @@ Jev is an off-by-default probabilistic decision model that can shadow autoloop's
 | `autoloop review-pr` | Review a PR (mutation gate + semantic review, no merge) |
 | `autoloop status` | Show last run, ready issues, timers |
 | `autoloop auto-close-parent` | Close parent when all sub-issues done |
-| `autoloop prune` | Remove worktrees and local `autoloop/*` branches whose PRs are merged or closed; keeps dirty worktrees, open PRs, and unmerged commits (listed for human review) |
+| `autoloop prune` | Remove worktrees and local `autoloop/*` branches whose PRs are merged or closed; keeps dirty worktrees, open PRs, and unmerged commits (listed for human review). `autoloop implement` runs prune at the start of each run, and autoloop removes a worktree right after it auto-merges that PR |
 | `autoloop eval` | Performance tracking: snapshots, trends, per-module breakdown (zero LLM cost) |
 | `autoloop version` | Print installed version |
 
