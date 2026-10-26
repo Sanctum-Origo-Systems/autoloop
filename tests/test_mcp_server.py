@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import types
 from unittest.mock import patch
 
 import pytest
 
-from autoloop.mcp_server import _make_context
+from autoloop.config import RepoContext
+from autoloop.mcp_server import _make_context, _read_last_runs
 
 
 # --- Fake FastMCP for testing tool registration ---
@@ -142,3 +144,129 @@ def test_no_path_cwd_in_mcp_server():
     src = Path(__file__).resolve().parent.parent / "src" / "autoloop" / "mcp_server.py"
     content = src.read_text()
     assert "Path.cwd()" not in content
+
+
+# --- _read_last_runs reads the data-dir run history ---
+
+
+def _write_rows(path, rows):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+
+def _history_ctx(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    return RepoContext.for_data_dir(tmp_path / "data", repo_dir=repo)
+
+
+LEGACY_ROWS = [
+    {"type": "implement", "issue": 99, "success": True, "timestamp": "t9"},
+    {"type": "review", "pr_number": 999, "success": True, "timestamp": "t9"},
+]
+
+
+def test_read_last_runs_returns_latest_from_data_dir(tmp_path):
+    """The most recent implement and review rows in ctx.data_dir are returned."""
+    ctx = _history_ctx(tmp_path)
+    _write_rows(
+        ctx.data_dir / "run_history.jsonl",
+        [
+            {"type": "implement", "issue": 1, "success": True, "timestamp": "t1"},
+            {"type": "review", "pr_number": 10, "success": True, "timestamp": "t2"},
+            {"type": "implement", "issue": 2, "success": False, "timestamp": "t3"},
+            {"type": "review", "pr_number": 20, "success": False, "timestamp": "t4"},
+        ],
+    )
+
+    last_impl, last_review = _read_last_runs(ctx)
+
+    assert last_impl["issue"] == 2
+    assert last_review["pr_number"] == 20
+
+
+def test_read_last_runs_ignores_legacy_file(tmp_path):
+    """Rows in <repo>/autoloop/run_history.jsonl never override the data-dir rows."""
+    ctx = _history_ctx(tmp_path)
+    _write_rows(ctx.repo_dir / "autoloop" / "run_history.jsonl", LEGACY_ROWS)
+    _write_rows(
+        ctx.data_dir / "run_history.jsonl",
+        [
+            {"type": "implement", "issue": 3, "success": True, "timestamp": "t1"},
+            {"type": "review", "pr_number": 30, "success": True, "timestamp": "t2"},
+        ],
+    )
+
+    last_impl, last_review = _read_last_runs(ctx)
+
+    assert last_impl["issue"] == 3
+    assert last_review["pr_number"] == 30
+
+
+def test_read_last_runs_no_fallback_to_legacy_file(tmp_path):
+    """With only the legacy file present, nothing is returned."""
+    ctx = _history_ctx(tmp_path)
+    _write_rows(ctx.repo_dir / "autoloop" / "run_history.jsonl", LEGACY_ROWS)
+
+    assert _read_last_runs(ctx) == (None, None)
+
+
+def test_read_last_runs_missing_data_dir_file(tmp_path):
+    """A missing data-dir run_history.jsonl returns empty results without raising."""
+    ctx = _history_ctx(tmp_path)
+
+    assert not (ctx.data_dir / "run_history.jsonl").exists()
+    assert _read_last_runs(ctx) == (None, None)
+
+
+def test_status_reports_data_dir_runs(mcp_tools, tmp_path, monkeypatch):
+    """autoloop_status reports the last implement and review rows from ctx.data_dir."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "autoloop.toml").write_text('repo = "acme-corp/widget"\n')
+
+    for var in (
+        "AUTOLOOP_TRIAGE_MODEL",
+        "AUTOLOOP_IMPL_MODEL",
+        "AUTOLOOP_TIMEOUT",
+        "AUTOLOOP_REVIEWER",
+        "AUTOLOOP_REPO",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    _write_rows(
+        _make_context(str(repo)).data_dir / "run_history.jsonl",
+        [
+            {"type": "implement", "issue": 4, "success": True, "cost_usd": 0.5, "timestamp": "t1"},
+            {
+                "type": "review",
+                "pr_number": 40,
+                "success": False,
+                "cost_usd": 0.1,
+                "timestamp": "t2",
+            },
+        ],
+    )
+    _write_rows(repo / "autoloop" / "run_history.jsonl", LEGACY_ROWS)
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "gh":
+            return type("R", (), {"returncode": 0, "stdout": "[]", "stderr": ""})()
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+    with patch("autoloop.mcp_server.subprocess.run", fake_run):
+        result = mcp_tools["autoloop_status"](repo_dir=str(repo))
+
+    assert "Last implement: issue #4 — success — $0.50 — t1" in result
+    assert "Last review: PR #40 — failed — $0.10 — t2" in result
+    assert "#99" not in result
+
+
+def test_no_legacy_run_history_path_in_mcp_server():
+    """mcp_server.py must not reference the legacy autoloop/run_history.jsonl path."""
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parent.parent / "src" / "autoloop" / "mcp_server.py"
+    content = src.read_text()
+    assert '"autoloop" / "run_history.jsonl"' not in content
+    assert "autoloop/run_history.jsonl" not in content

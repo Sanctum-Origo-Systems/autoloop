@@ -5376,11 +5376,6 @@ def test_log_run_appends_one_line_to_ctx_data_dir(repo_ctx):
     assert not (repo_ctx.repo_dir / "autoloop").exists()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="mcp_server._read_last_runs still reads the legacy path; fixed by a sibling "
-    "sub-issue of #436. Remove this marker once it lands.",
-)
 def test_legacy_run_history_path_only_in_init_and_config():
     """Regression (#438): only init.py (gitignore) and config.py (migration) name the legacy path."""
     src = Path(implement_issue.__file__).parent
