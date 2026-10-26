@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import re
+import subprocess
 import sys
+import time
 import types
 from unittest.mock import patch
 
@@ -133,6 +137,90 @@ def test_status_per_repo_isolation(mcp_tools, tmp_path, monkeypatch):
 
     assert len(contexts) == 2
     assert contexts[0].data_dir != contexts[1].data_dir
+
+
+# --- _spawn: reaping, logging, non-blocking ---
+
+
+def _wait_reaped(proc, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while proc.returncode is None and time.monotonic() < deadline:
+        time.sleep(0.05)
+    return proc.returncode
+
+
+def test_spawn_log_path_names_autoloop_subcommand(tmp_path):
+    """Log path lives under data_dir/mcp-runs and is named <UTC timestamp>-<command>.log."""
+    import autoloop.mcp_server as mod
+
+    path = mod._spawn_log_path(["autoloop", "fix-pr", "7"], str(tmp_path))
+
+    assert path.parent == _make_context(str(tmp_path)).data_dir / "mcp-runs"
+    assert re.fullmatch(r"\d{8}T\d{6}Z-fix-pr\.log", path.name)
+
+
+def test_spawn_reaps_exited_child(tmp_path):
+    """A spawned child that exits is reaped, leaving no zombie."""
+    import autoloop.mcp_server as mod
+
+    mod._spawn([sys.executable, "-c", "pass"], cwd=str(tmp_path))
+    proc = mod._spawned[-1]
+
+    assert _wait_reaped(proc) == 0
+    with pytest.raises(ChildProcessError):
+        os.waitpid(proc.pid, os.WNOHANG)
+
+
+def test_spawn_writes_output_to_log(tmp_path):
+    """The child's stdout and stderr land in the log file under data_dir/mcp-runs."""
+    import autoloop.mcp_server as mod
+
+    script = "import sys; print('to-stdout'); print('to-stderr', file=sys.stderr)"
+    log_path = mod._spawn([sys.executable, "-c", script], cwd=str(tmp_path))
+    _wait_reaped(mod._spawned[-1])
+
+    assert log_path.parent == _make_context(str(tmp_path)).data_dir / "mcp-runs"
+    content = log_path.read_text()
+    assert "to-stdout" in content
+    assert "to-stderr" in content
+
+
+def test_spawn_tool_return_contains_log_path(mcp_tools, tmp_path):
+    """An MCP tool's return message includes the log path holding the run's output."""
+    import autoloop.mcp_server as mod
+
+    real_popen = subprocess.Popen
+
+    def popen_stub(cmd, **kwargs):
+        if cmd[0] == "autoloop":
+            cmd = [sys.executable, "-c", "print('preflight-ran')"]
+        return real_popen(cmd, **kwargs)
+
+    with patch("autoloop.mcp_server.subprocess.Popen", popen_stub):
+        result = mcp_tools["autoloop_preflight"](repo_dir=str(tmp_path))
+    _wait_reaped(mod._spawned[-1])
+
+    log_dir = _make_context(str(tmp_path)).data_dir / "mcp-runs"
+    logs = list(log_dir.glob("*-preflight.log"))
+    assert len(logs) == 1
+    assert str(logs[0]) in result
+    assert "preflight-ran" in logs[0].read_text()
+
+
+def test_spawn_returns_without_waiting(tmp_path):
+    """_spawn returns while the child is still running."""
+    import autoloop.mcp_server as mod
+
+    start = time.monotonic()
+    mod._spawn([sys.executable, "-c", "import time; time.sleep(30)"], cwd=str(tmp_path))
+    elapsed = time.monotonic() - start
+    proc = mod._spawned[-1]
+    try:
+        assert elapsed < 10
+        assert proc.returncode is None
+    finally:
+        proc.kill()
+        _wait_reaped(proc)
 
 
 def test_no_path_cwd_in_mcp_server():
