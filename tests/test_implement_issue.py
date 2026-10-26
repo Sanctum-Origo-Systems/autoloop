@@ -833,7 +833,9 @@ def test_implement_uses_cfg_model_and_timeout(monkeypatch):
         captured["timeout"] = kwargs.get("timeout")
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
-    monkeypatch.setattr(implement_issue, "build_implementation_prompt", lambda issue: "prompt")
+    monkeypatch.setattr(
+        implement_issue, "build_implementation_prompt", lambda issue, repo_dir=None: "prompt"
+    )
     monkeypatch.setattr(claude_runner.subprocess, "run", fake_run)
 
     implement({"number": 1, "title": "Test", "body": ""})
@@ -1507,6 +1509,211 @@ def test_implement_single_issue_returns_true_on_success(monkeypatch, tmp_path):
     assert entry["success"] is True
 
 
+def test_implement_single_issue_worktree_uses_resolve_working_dir(monkeypatch, tmp_path):
+    """With isolation=worktree, implement routes all work through the worktree path."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(implement_isolation="worktree"))
+    monkeypatch.chdir(tmp_path)
+
+    worktree_path = tmp_path / "worktrees" / "autoloop/42-add-feature"
+    worktree_path.mkdir(parents=True)
+
+    resolve_calls = []
+
+    def fake_resolve(isolation, ctx, branch):
+        resolve_calls.append({"isolation": isolation, "ctx": ctx, "branch": branch})
+        return worktree_path
+
+    monkeypatch.setattr(implement_issue, "resolve_working_dir", fake_resolve)
+
+    implement_calls = []
+
+    def fake_implement(issue, previous_errors=None, **kwargs):
+        implement_calls.append(kwargs.get("repo_dir"))
+        return _claude_result()
+
+    monkeypatch.setattr(implement_issue, "implement", fake_implement)
+    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch, repo_dir=None: False)
+
+    verify_calls = []
+
+    def fake_verify(branch, issue_body="", title="", repo_dir=None):
+        verify_calls.append(repo_dir)
+        return True, ""
+
+    monkeypatch.setattr(implement_issue, "verify_implementation", fake_verify)
+
+    review_calls = []
+
+    def fake_review(issue, branch, **kw):
+        review_calls.append(kw.get("repo_dir"))
+        return True, ""
+
+    monkeypatch.setattr(implement_issue, "review_implementation", fake_review)
+
+    push_calls = []
+
+    def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list) and cmd[:2] == ["git", "push"] and "-u" in cmd:
+            push_calls.append(kwargs.get("cwd"))
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: None)
+    monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
+
+    ctx = RepoContext.__new__(RepoContext)
+    ctx.repo_dir = tmp_path
+    ctx.data_dir = tmp_path
+    ctx.worktree_dir = tmp_path / "worktrees"
+
+    result = implement_single_issue(_FAKE_ISSUE, ctx=ctx)
+    assert result is True
+
+    assert len(resolve_calls) == 1
+    assert resolve_calls[0]["isolation"] == "worktree"
+    assert resolve_calls[0]["branch"] == "autoloop/42-add-feature"
+
+    assert implement_calls[0] == worktree_path
+    assert verify_calls[0] == worktree_path
+    assert review_calls[0] == worktree_path
+    assert push_calls[0] == worktree_path
+
+
+def test_implement_single_issue_worktree_does_not_checkout_main(monkeypatch, tmp_path):
+    """With isolation=worktree, the main checkout is never switched away from main."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(implement_isolation="worktree"))
+    monkeypatch.chdir(tmp_path)
+
+    worktree_path = tmp_path / "worktrees" / "autoloop/42-add-feature"
+    worktree_path.mkdir(parents=True)
+
+    monkeypatch.setattr(
+        implement_issue, "resolve_working_dir", lambda iso, ctx, branch: worktree_path
+    )
+    monkeypatch.setattr(
+        implement_issue, "implement", lambda issue, previous_errors=None, **kw: _claude_result()
+    )
+    monkeypatch.setattr(
+        implement_issue,
+        "verify_implementation",
+        lambda branch, issue_body="", title="", repo_dir=None: (True, ""),
+    )
+    monkeypatch.setattr(
+        implement_issue, "review_implementation", lambda issue, branch, **kw: (True, "")
+    )
+    monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: None)
+    monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
+
+    checkout_main_calls = []
+
+    def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list) and cmd == ["git", "checkout", "main"]:
+            checkout_main_calls.append(kwargs.get("cwd"))
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    ctx = RepoContext.__new__(RepoContext)
+    ctx.repo_dir = tmp_path
+    ctx.data_dir = tmp_path
+    ctx.worktree_dir = tmp_path / "worktrees"
+
+    implement_single_issue(_FAKE_ISSUE, ctx=ctx)
+
+    post_branch_checkout_calls = [c for c in checkout_main_calls if c != tmp_path]
+    assert post_branch_checkout_calls == [], (
+        "Should not checkout main on the worktree after implementation"
+    )
+
+
+def test_implement_single_issue_worktree_failure_skips_cleanup_branch(monkeypatch, tmp_path):
+    """With isolation=worktree, failure deletes remote branch but does not call cleanup_branch."""
+    monkeypatch.setattr(
+        implement_issue, "cfg", _test_cfg(implement_isolation="worktree", max_retries=1)
+    )
+    monkeypatch.chdir(tmp_path)
+
+    worktree_path = tmp_path / "worktrees" / "autoloop/42-add-feature"
+    worktree_path.mkdir(parents=True)
+
+    monkeypatch.setattr(
+        implement_issue, "resolve_working_dir", lambda iso, ctx, branch: worktree_path
+    )
+    monkeypatch.setattr(
+        implement_issue, "implement", lambda issue, previous_errors=None, **kw: _claude_result()
+    )
+    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch, repo_dir=None: False)
+    monkeypatch.setattr(
+        implement_issue,
+        "verify_implementation",
+        lambda branch, issue_body="", title="", repo_dir=None: (False, "Tests failed"),
+    )
+    monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
+
+    cleanup_calls = []
+    monkeypatch.setattr(
+        implement_issue,
+        "cleanup_branch",
+        lambda branch, repo_dir=None: cleanup_calls.append(branch),
+    )
+
+    remote_delete_calls = []
+
+    def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list) and cmd[:4] == ["git", "push", "origin", "--delete"]:
+            remote_delete_calls.append(cmd)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    ctx = RepoContext.__new__(RepoContext)
+    ctx.repo_dir = tmp_path
+    ctx.data_dir = tmp_path
+    ctx.worktree_dir = tmp_path / "worktrees"
+
+    result = implement_single_issue(_FAKE_ISSUE, ctx=ctx)
+    assert result is False
+    assert cleanup_calls == [], "cleanup_branch should not be called in worktree mode"
+    assert any("autoloop/42-add-feature" in cmd for cmd in remote_delete_calls for cmd in cmd)
+
+
+def test_implement_single_issue_off_isolation_uses_create_branch(monkeypatch, tmp_path):
+    """With isolation=off, implement uses create_branch and repo_dir as before."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(implement_isolation="off"))
+    monkeypatch.chdir(tmp_path)
+
+    create_branch_calls = []
+
+    def fake_create_branch(issue, repo_dir=None):
+        create_branch_calls.append(repo_dir)
+        return "autoloop/42-add-feature"
+
+    monkeypatch.setattr(implement_issue, "create_branch", fake_create_branch)
+    monkeypatch.setattr(
+        implement_issue, "implement", lambda issue, previous_errors=None, **kw: _claude_result()
+    )
+
+    def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list) and cmd[:3] == ["git", "rev-list", "--count"]:
+            return type("R", (), {"returncode": 0, "stdout": "1\n", "stderr": ""})()
+        if isinstance(cmd, str):
+            return type("R", (), {"returncode": 0, "stdout": "passed", "stderr": ""})()
+        if isinstance(cmd, list) and cmd[:3] == ["git", "diff", "--name-only"]:
+            return type("R", (), {"returncode": 0, "stdout": "tests/test_x.py\n", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: None)
+    monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
+    monkeypatch.setattr(
+        implement_issue, "review_implementation", lambda issue, branch, **kw: (True, "")
+    )
+
+    result = implement_single_issue(_FAKE_ISSUE)
+    assert result is True
+    assert len(create_branch_calls) == 1
+
+
 def test_implement_single_issue_uses_cfg_max_retries(monkeypatch, tmp_path):
     monkeypatch.setattr(implement_issue, "cfg", _test_cfg(max_retries=2))
     monkeypatch.chdir(tmp_path)
@@ -1661,7 +1868,11 @@ def test_implement_appends_previous_errors_to_prompt(monkeypatch):
         captured["cmd"] = cmd
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
-    monkeypatch.setattr(implement_issue, "build_implementation_prompt", lambda issue: "BASE_PROMPT")
+    monkeypatch.setattr(
+        implement_issue,
+        "build_implementation_prompt",
+        lambda issue, repo_dir=None: "BASE_PROMPT",
+    )
     monkeypatch.setattr(claude_runner.subprocess, "run", fake_run)
 
     implement({"number": 1, "title": "Test", "body": ""}, previous_errors="test failure output")
@@ -1679,7 +1890,11 @@ def test_implement_no_previous_errors_omits_section(monkeypatch):
         captured["cmd"] = cmd
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
-    monkeypatch.setattr(implement_issue, "build_implementation_prompt", lambda issue: "BASE_PROMPT")
+    monkeypatch.setattr(
+        implement_issue,
+        "build_implementation_prompt",
+        lambda issue, repo_dir=None: "BASE_PROMPT",
+    )
     monkeypatch.setattr(claude_runner.subprocess, "run", fake_run)
 
     implement({"number": 1, "title": "Test", "body": ""})

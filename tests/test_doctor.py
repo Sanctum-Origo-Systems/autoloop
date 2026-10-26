@@ -452,6 +452,7 @@ def test_check_worktree_isolation_enabled(repo_ctx):
     passed, msg = check_worktree_isolation(repo_ctx)
     assert passed is True
     assert "Worktree isolation: enabled" in msg
+    assert "resolved:" in msg
     assert str(repo_ctx.worktree_dir) in msg
 
 
@@ -460,7 +461,7 @@ def test_check_worktree_isolation_off(repo_ctx):
     toml_file.write_text('repo = "acme/widgets"\n')
     passed, msg = check_worktree_isolation(repo_ctx)
     assert passed is True
-    assert msg == ""
+    assert "disabled" in msg
 
 
 def test_get_checks_includes_worktree_when_enabled(repo_ctx):
@@ -477,3 +478,29 @@ def test_get_checks_excludes_worktree_when_off(repo_ctx):
     checks = get_checks(repo_ctx)
     names = [c.name for c in checks]
     assert "Worktree isolation" not in names
+
+
+def test_check_worktree_isolation_dry_run_resolves_path(repo_ctx):
+    """When isolation is on, check reports the resolved worktree path."""
+    toml_file = repo_ctx.repo_dir / "autoloop.toml"
+    toml_file.write_text('repo = "acme/widgets"\n\n[implement]\nisolation = "worktree"\n')
+    passed, msg = check_worktree_isolation(repo_ctx)
+    assert passed is True
+    assert "autoloop/0-doctor-dry-run" in msg
+
+
+def test_check_worktree_isolation_disabled_no_dry_run(repo_ctx):
+    """When isolation is off, check reports disabled and does not run dry-run."""
+    toml_file = repo_ctx.repo_dir / "autoloop.toml"
+    toml_file.write_text('repo = "acme/widgets"\n\n[implement]\nisolation = "off"\n')
+    passed, msg = check_worktree_isolation(repo_ctx)
+    assert passed is True
+    assert "disabled" in msg
+    assert "resolved" not in msg
+
+
+def test_check_worktree_isolation_no_config(repo_ctx):
+    """When autoloop.toml is missing, check fails gracefully."""
+    passed, msg = check_worktree_isolation(repo_ctx)
+    assert passed is False
+    assert "could not load" in msg

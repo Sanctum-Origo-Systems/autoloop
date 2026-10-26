@@ -121,7 +121,7 @@ def check_jev(ctx: RepoContext) -> tuple[bool, str]:
 
 
 def check_worktree_isolation(ctx: RepoContext) -> tuple[bool, str]:
-    """Report worktree isolation status when enabled."""
+    """Verify worktree isolation wiring when enabled."""
     from autoloop.config import load_config
 
     config_path = ctx.repo_dir / "autoloop.toml"
@@ -131,10 +131,17 @@ def check_worktree_isolation(ctx: RepoContext) -> tuple[bool, str]:
         return False, "could not load autoloop.toml to read isolation config"
 
     if cfg.implement_isolation != "worktree":
-        return True, ""
+        return True, "Worktree isolation: disabled"
 
-    worktree_path = ctx.worktree_dir
-    return True, f"Worktree isolation: enabled (path: {worktree_path})"
+    test_branch = "autoloop/0-doctor-dry-run"
+    resolved = ctx.worktree_dir / test_branch
+    if not str(resolved).startswith(str(ctx.worktree_dir)):
+        return (
+            False,
+            f"Worktree isolation: resolved path {resolved} is not under {ctx.worktree_dir}",
+        )
+
+    return True, f"Worktree isolation: enabled (resolved: {resolved})"
 
 
 def check_verify_cmd(ctx: RepoContext) -> tuple[bool, str]:
