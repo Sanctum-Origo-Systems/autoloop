@@ -20,6 +20,7 @@ from autoloop.eval import (
     enrich_pr_data_with_runs,
     fetch_pr_data,
     format_comparison,
+    format_cost_with_n,
     format_eval_md,
     format_rate_with_n,
     format_snapshot,
@@ -33,6 +34,7 @@ from autoloop.eval import (
     main,
     material_change,
     migrate_unpublished_snapshots,
+    module_implement_runs,
     save_snapshot,
     snapshot_implement_runs,
     snapshot_total_prs,
@@ -1301,7 +1303,7 @@ def test_auto_merge_ready_gate_uses_merged_clean_count_in_eval_md():
     }
     snap = _make_snapshot(modules=modules)
     content = generate_eval_md(snap, [snap])
-    assert "| src/mod/ | 95% | $1.00 | 30 | No |" in content
+    assert "| src/mod/ | 95% (n=30 runs) | $1.00 (n=30 runs) | 30 | No |" in content
 
 
 def test_auto_merge_ready_gate_passes_with_clean_merged_in_eval_md():
@@ -1317,7 +1319,7 @@ def test_auto_merge_ready_gate_passes_with_clean_merged_in_eval_md():
     }
     snap = _make_snapshot(modules=modules)
     content = generate_eval_md(snap, [snap])
-    assert "| src/mod/ | 95% | $1.00 | 30 | Yes |" in content
+    assert "| src/mod/ | 95% (n=30 runs) | $1.00 (n=30 runs) | 30 | Yes |" in content
 
 
 def test_compute_snapshot_merged_clean_count_excludes_human_edits():
@@ -1425,8 +1427,11 @@ def test_generate_eval_md_module_table():
     content = generate_eval_md(snap, [snap])
     assert "## Per-Module Breakdown" in content
     assert "| Module | Success | Avg Cost | Impl | Auto-merge ready? |" in content
-    assert "| src/autoloop/ | 92% | $1.05 | 25 | Yes |" in content
-    assert "| src/other/ | 70% | $2.00 | 10 | No |" in content
+    assert "| src/autoloop/ | 92% (n=25 runs) | $1.05 (n=25 runs) | 25 | Yes |" in content
+    assert (
+        "| src/other/ | insufficient data (n=10 runs) | insufficient data (n=10 runs) | 10 | No |"
+        in content
+    )
 
 
 def test_generate_eval_md_auto_merge_boundary_in_table():
@@ -1447,9 +1452,9 @@ def test_generate_eval_md_auto_merge_boundary_in_table():
         },
     }
     snap = _make_snapshot(modules=modules)
-    content = generate_eval_md(snap, [snap])
-    assert "| src/a/ | 90% | $1.00 | 10 | No |" in content
-    assert "| src/b/ | 91% | $1.00 | 10 | Yes |" in content
+    content = generate_eval_md(snap, [snap], min_n=10)
+    assert "| src/a/ | 90% (n=10 runs) | $1.00 (n=10 runs) | 10 | No |" in content
+    assert "| src/b/ | 91% (n=10 runs) | $1.00 (n=10 runs) | 10 | Yes |" in content
 
 
 def test_generate_eval_md_trend_table():
@@ -1670,11 +1675,11 @@ def test_generate_eval_md_module_level_custom_volume_floor():
         },
     }
     snap = _make_snapshot(modules=modules)
-    content = generate_eval_md(snap, [snap], volume_floor=5)
-    assert "| src/a/ | 95% | $1.00 | 5 | Yes |" in content
+    content = generate_eval_md(snap, [snap], volume_floor=5, min_n=5)
+    assert "| src/a/ | 95% (n=5 runs) | $1.00 (n=5 runs) | 5 | Yes |" in content
 
-    content_strict = generate_eval_md(snap, [snap], volume_floor=20)
-    assert "| src/a/ | 95% | $1.00 | 5 | No |" in content_strict
+    content_strict = generate_eval_md(snap, [snap], volume_floor=20, min_n=5)
+    assert "| src/a/ | 95% (n=5 runs) | $1.00 (n=5 runs) | 5 | No |" in content_strict
 
 
 # --- compute_snapshot module enhancements ---
@@ -4018,3 +4023,211 @@ def test_publish_migrates_legacy_untracked_snapshots(tmp_path, monkeypatch, caps
         "2026-10-02",
         "2026-10-03",
     ]
+
+
+# --- per-module stats only over PRs with an implement run (#432) ---
+
+
+def _module_pr(number, issue, *, merged=True, human_edited=False):
+    return {
+        "number": number,
+        "merged": merged,
+        "closed": not merged,
+        "changed_files": [f"src/widget/f{number}.py"],
+        "human_edited": human_edited,
+        "issue": issue,
+    }
+
+
+def test_compute_snapshot_module_rates_only_over_prs_with_runs():
+    runs = [
+        {"type": "implement", "issue": 1, "success": True, "attempts": 1, "cost_usd": 1.0},
+        {"type": "implement", "issue": 2, "success": True, "attempts": 2, "cost_usd": 3.0},
+    ]
+    pr_data = [_module_pr(10, 1), _module_pr(11, 2), _module_pr(12, 3), _module_pr(13, None)]
+    pr_data = enrich_pr_data_with_runs(pr_data, runs)
+    snap = compute_snapshot(runs, pr_data, date="2026-10-26")
+    mod = snap["modules"]["src/widget/"]
+    assert mod["implementations"] == 4
+    assert mod["implement_run_count"] == 2
+    assert mod["first_attempt_rate"] == 0.5
+    assert mod["avg_cost_usd"] == 2.0
+
+
+def test_compute_snapshot_module_without_runs_has_zero_run_count():
+    pr_data = [_module_pr(10, 1), _module_pr(11, 2)]
+    snap = compute_snapshot([], pr_data, date="2026-10-26")
+    mod = snap["modules"]["src/widget/"]
+    assert mod["implementations"] == 2
+    assert mod["implement_run_count"] == 0
+
+
+def test_compute_snapshot_module_ignores_first_attempt_flag_without_run():
+    """A PR carrying first_attempt_success but no matching run is not counted."""
+    pr = {**_module_pr(10, 7), "first_attempt_success": True}
+    snap = compute_snapshot([], [pr], date="2026-10-26")
+    mod = snap["modules"]["src/widget/"]
+    assert mod["implement_run_count"] == 0
+    assert mod["first_attempt_rate"] == 0.0
+
+
+def test_compute_snapshot_module_human_edit_rate_still_over_merged_prs():
+    runs = [{"type": "implement", "issue": 1, "success": True, "attempts": 1, "cost_usd": 1.0}]
+    pr_data = [
+        _module_pr(10, 1, human_edited=True),
+        _module_pr(11, 2),
+        _module_pr(12, None, human_edited=True),
+        _module_pr(13, None),
+        _module_pr(14, 3, merged=False),
+    ]
+    pr_data = enrich_pr_data_with_runs(pr_data, runs)
+    snap = compute_snapshot(runs, pr_data, date="2026-10-26")
+    mod = snap["modules"]["src/widget/"]
+    assert mod["human_edit_rate"] == 0.5
+    assert mod["merged_clean_count"] == 2
+    assert mod["implement_run_count"] == 1
+
+
+def test_generate_eval_md_module_without_runs_renders_insufficient_data():
+    pr_data = [_module_pr(10, 1), _module_pr(11, 2)]
+    snap = compute_snapshot([], pr_data, date="2026-10-26")
+    content = generate_eval_md(snap, [snap])
+    row = next(line for line in content.splitlines() if line.startswith("| src/widget/ |"))
+    assert row == (
+        "| src/widget/ | insufficient data (n=0 runs) | insufficient data (n=0 runs) | 2 | No |"
+    )
+    assert "0%" not in row
+    assert "$0.00" not in row
+
+
+def test_generate_eval_md_module_at_min_n_renders_rate_and_cost():
+    modules = {
+        "src/widget/": {
+            "implementations": 30,
+            "implement_run_count": 20,
+            "first_attempt_rate": 0.85,
+            "avg_cost_usd": 1.25,
+            "human_edit_rate": 0.0,
+            "merged_clean_count": 30,
+        },
+    }
+    snap = _make_snapshot(modules=modules)
+    content = generate_eval_md(snap, [snap])
+    assert "| src/widget/ | 85% (n=20 runs) | $1.25 (n=20 runs) | 30 | No |" in content
+
+
+def test_module_implement_runs_reads_new_key():
+    assert module_implement_runs({"implementations": 5, "implement_run_count": 2}) == 2
+
+
+def test_module_implement_runs_falls_back_to_implementations():
+    assert module_implement_runs({"implementations": 5}) == 5
+
+
+def test_format_cost_with_n_below_min_n():
+    assert format_cost_with_n(0.0, 3, "runs", min_n=20) == "insufficient data (n=3 runs)"
+
+
+def test_format_cost_with_n_at_min_n():
+    assert format_cost_with_n(1.5, 20, "runs", min_n=20) == "$1.50 (n=20 runs)"
+
+
+def test_format_snapshot_module_hotspots_use_run_count():
+    snap = {
+        "date": "2026-10-26",
+        "total_prs": 4,
+        "implement_run_count": 2,
+        "first_attempt_rate": 0.5,
+        "avg_cost_usd": 2.0,
+        "avg_duration_seconds": 0,
+        "human_edit_rate": 0.0,
+        "modules": {
+            "src/widget/": {
+                "implementations": 4,
+                "implement_run_count": 2,
+                "first_attempt_rate": 0.5,
+            },
+        },
+    }
+    assert "50% first-attempt (1/2 runs)" in format_snapshot(snap)
+    assert "| src/widget/ | 50% (1/2 runs) | 4 |" in format_eval_md(snap)
+
+
+# --- eval --publish --force (#432) ---
+
+
+def test_main_publish_force_publishes_without_material_change(tmp_path, monkeypatch, capsys):
+    ctx = _make_split_ctx(tmp_path)
+    _init_repo(ctx, monkeypatch)
+    runs = _runs(50, 0)
+    _commit_published(ctx, _REAL_COMPUTE_SNAPSHOT(runs, [], date="2026-10-01"))
+    _write_runs(ctx, runs)
+
+    _patch_eval_env(monkeypatch, [], ["2026-10-02"])
+    main(publish=True, force=True, ctx=ctx)
+
+    out = capsys.readouterr().out
+    assert "No material change, publishing EVAL.md anyway (--force)" in out
+    assert "# EVAL Report" in (ctx.repo_dir / "EVAL.md").read_text()
+    published = ctx.repo_dir / "autoloop" / "eval_snapshots" / "2026-10-02.json"
+    assert published.exists()
+    assert load_latest_snapshot(ctx)["date"] == "2026-10-02"
+    assert _git(ctx, "status", "--porcelain") == ""
+    assert _git(ctx, "log", "-1", "--format=%s").strip() == "chore: update eval report (2026-10-02)"
+
+
+def test_main_publish_without_force_still_skips(tmp_path, monkeypatch, capsys):
+    ctx = _make_split_ctx(tmp_path)
+    _init_repo(ctx, monkeypatch)
+    runs = _runs(50, 0)
+    _commit_published(ctx, _REAL_COMPUTE_SNAPSHOT(runs, [], date="2026-10-01"))
+    _write_runs(ctx, runs)
+
+    calls = []
+    _patch_eval_env(monkeypatch, calls, ["2026-10-02"])
+    main(publish=True, ctx=ctx)
+
+    out = capsys.readouterr().out
+    assert "No material change, skipping EVAL.md commit" in out
+    assert (ctx.repo_dir / "EVAL.md").read_text() == "# Eval\n"
+    assert not (ctx.repo_dir / "autoloop" / "eval_snapshots" / "2026-10-02.json").exists()
+    assert not [c for c in calls if c[:2] == ["git", "commit"]]
+
+
+def test_cli_eval_force_flag():
+    from autoloop.cli import build_parser
+
+    parser = build_parser()
+    assert parser.parse_args(["eval", "--publish", "--force"]).force is True
+    assert parser.parse_args(["eval"]).force is False
+
+
+def _dispatch_eval(argv):
+    from unittest.mock import MagicMock, patch
+
+    from autoloop.cli import main as cli_main
+
+    called = {}
+
+    def fake_eval_main(**kwargs):
+        called.update(kwargs)
+
+    with (
+        patch("autoloop.eval.main", fake_eval_main),
+        patch("autoloop.config.load_config", return_value=MagicMock()),
+        patch("autoloop.config.RepoContext", return_value="fake_ctx"),
+        patch("sys.argv", ["autoloop", *argv]),
+    ):
+        cli_main()
+    return called
+
+
+def test_cli_eval_passes_force_to_eval_main():
+    called = _dispatch_eval(["eval", "--publish", "--force"])
+    assert called["publish"] is True
+    assert called["force"] is True
+
+
+def test_cli_eval_force_defaults_false_in_eval_main():
+    called = _dispatch_eval(["eval", "--publish"])
+    assert called["force"] is False
