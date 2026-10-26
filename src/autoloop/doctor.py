@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 
 from autoloop.config import RepoContext
@@ -121,8 +122,12 @@ def check_jev(ctx: RepoContext) -> tuple[bool, str]:
 
 
 def check_worktree_isolation(ctx: RepoContext) -> tuple[bool, str]:
-    """Report worktree isolation status when enabled."""
+    """Verify implement resolves its working dir under ctx.worktree_dir when isolation is on.
+
+    Uses a dry-run resolution: no worktree is created and no branch is switched.
+    """
     from autoloop.config import load_config
+    from autoloop.implement_issue import build_branch_name, resolve_working_dir
 
     config_path = ctx.repo_dir / "autoloop.toml"
     try:
@@ -131,10 +136,21 @@ def check_worktree_isolation(ctx: RepoContext) -> tuple[bool, str]:
         return False, "could not load autoloop.toml to read isolation config"
 
     if cfg.implement_isolation != "worktree":
-        return True, ""
+        return True, "Worktree isolation: disabled"
 
-    worktree_path = ctx.worktree_dir
-    return True, f"Worktree isolation: enabled (path: {worktree_path})"
+    probe_branch = build_branch_name({"number": 0, "title": "doctor probe"})
+    try:
+        resolved = resolve_working_dir(cfg.implement_isolation, ctx, probe_branch, dry_run=True)
+    except Exception as exc:
+        return False, f"Worktree isolation: enabled, but working dir resolution failed: {exc}"
+
+    if not Path(resolved).resolve().is_relative_to(ctx.worktree_dir.resolve()):
+        return (
+            False,
+            f"Worktree isolation: enabled, but implement resolves to {resolved}, "
+            f"which is not under {ctx.worktree_dir}",
+        )
+    return True, f"Worktree isolation: enabled (implement runs in {resolved})"
 
 
 def check_verify_cmd(ctx: RepoContext) -> tuple[bool, str]:
