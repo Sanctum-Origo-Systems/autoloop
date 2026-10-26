@@ -29,6 +29,7 @@ class PruneItem:
     outcome: str
     reason: str = ""
     removed: bool = False
+    would_remove: bool = False
     needs_review: bool = False
 
     def line(self) -> str:
@@ -40,14 +41,19 @@ class PruneItem:
 class PruneResult:
     items: list[PruneItem] = field(default_factory=list)
     stale_worktrees: int = 0
+    dry_run: bool = False
 
     @property
     def removed(self) -> int:
         return sum(1 for i in self.items if i.removed)
 
     @property
+    def would_remove(self) -> int:
+        return sum(1 for i in self.items if i.would_remove)
+
+    @property
     def kept(self) -> int:
-        return sum(1 for i in self.items if not i.removed)
+        return sum(1 for i in self.items if not i.removed and not i.would_remove)
 
     @property
     def needs_review(self) -> int:
@@ -181,7 +187,7 @@ def _prune_worktree(
     delete_branch = state == "MERGED" or is_fully_merged(branch, ctx)
     if dry_run:
         outcome = "would remove" if delete_branch else "would remove worktree, keep branch"
-        return PruneItem("worktree", name, outcome, f"PR {state}"), True
+        return PruneItem("worktree", name, outcome, f"PR {state}", would_remove=True), True
 
     if not _remove_worktree(wt_path, ctx):
         return PruneItem("worktree", name, "kept (remove failed)", "git worktree remove"), True
@@ -230,7 +236,7 @@ def _prune_branch(branch: str, ctx: RepoContext, cfg: AutoLoopConfig, dry_run: b
             needs_review=True,
         )
     if dry_run:
-        return PruneItem("branch", branch, "would remove", pr_label)
+        return PruneItem("branch", branch, "would remove", pr_label, would_remove=True)
     if not _delete_branch(branch, ctx):
         return PruneItem("branch", branch, "kept (delete failed)", pr_label)
     return PruneItem("branch", branch, "removed", pr_label, removed=True)
@@ -241,7 +247,7 @@ def prune(ctx: RepoContext, cfg: AutoLoopConfig, *, dry_run: bool = False) -> Pr
 
     With dry_run, nothing is removed; outcomes and stale_worktrees are still computed.
     """
-    result = PruneResult()
+    result = PruneResult(dry_run=dry_run)
     worktrees = list_worktrees(ctx)
     checked_out = {branch: path for path, branch in worktrees if branch}
     worktree_root = ctx.worktree_dir.resolve()
@@ -282,15 +288,21 @@ def format_report(result: PruneResult) -> str:
         lines.append("Needs human review:")
         lines.extend(f"  {i.kind} {i.name}: {i.reason}" for i in review)
     lines.append("")
-    lines.append(
-        f"Summary: {result.removed} removed, {result.kept} kept, "
-        f"{result.needs_review} needing review"
-    )
+    if result.dry_run:
+        lines.append(
+            f"Summary (dry run): {result.would_remove} would remove, {result.kept} kept, "
+            f"{result.needs_review} needing review"
+        )
+    else:
+        lines.append(
+            f"Summary: {result.removed} removed, {result.kept} kept, "
+            f"{result.needs_review} needing review"
+        )
     return "\n".join(lines)
 
 
-def main(ctx: RepoContext, cfg: AutoLoopConfig) -> int:
+def main(ctx: RepoContext, cfg: AutoLoopConfig, *, dry_run: bool = False) -> int:
     """Entry point for `autoloop prune`. Always returns 0; kept items are not an error."""
-    result = prune(ctx, cfg)
+    result = prune(ctx, cfg, dry_run=dry_run)
     print(format_report(result))
     return 0

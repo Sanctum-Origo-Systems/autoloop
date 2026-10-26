@@ -137,6 +137,24 @@ class TestCliPassesCtxToPrune:
         assert args[0].repo_dir == tmp_path
         assert args[1] is cfg
 
+    @pytest.mark.parametrize(
+        ("argv", "expected"),
+        [(["autoloop", "prune", "--dry-run"], True), (["autoloop", "prune"], False)],
+    )
+    def test_prune_dry_run_flag_dispatched(self, monkeypatch, tmp_path, argv, expected):
+        monkeypatch.setattr("sys.argv", argv)
+        mock_ctx = _mock_ctx(repo_dir=tmp_path)
+
+        with (
+            patch("autoloop.config.RepoContext", return_value=mock_ctx),
+            patch("autoloop.config.load_config", return_value=_cfg()),
+            patch("autoloop.prune.main", return_value=0) as mock_prune,
+            pytest.raises(SystemExit),
+        ):
+            main()
+
+        assert mock_prune.call_args.kwargs == {"dry_run": expected}
+
 
 class TestRepoContextUsesRepoDirNotCwd:
     def test_pipeline_uses_ctx_repo_dir_not_cwd(self, tmp_path, monkeypatch):
