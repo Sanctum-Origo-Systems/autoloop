@@ -1,5 +1,40 @@
 # Changelog
 
+## v0.17.0
+
+Run history fix: implement and review runs had been logging to the legacy `<repo>/autoloop/run_history.jsonl` since the data-dir move, so eval, auto-merge gates and `status` missed them. They now log to `~/.autoloop/<hash>/run_history.jsonl`. Rows already in the legacy file are not migrated automatically.
+
+### Run History
+- fix: implement and review runs log to the data dir; test suite guarded against writes into the repo tree (#438) ($2.92)
+- fix: `status` reads the data-dir run history (#439) ($1.01)
+
+### Eval Dashboard
+- fix: give EVAL.md metrics explicit populations and n (#418) ($1.63)
+- fix: per-module stats only over PRs with implement runs; add `eval --publish --force` (#432) ($1.64)
+- fix: keep unpublished eval snapshots out of the repo (#402) ($1.58)
+- chore: update eval report (2026-10-26) ($0.00)
+
+### Prune
+- feat: add prune module and `autoloop prune` command (#423) ($1.28)
+- feat: prune at the start of implement, and clean up the worktree after auto-merge (#424) ($1.12)
+- feat: `autoloop prune --dry-run` with a would-remove summary (#434) ($0.55)
+
+### Doctor
+- feat: doctor checks that run_claude gets merged settings (origin/main settings, `--settings` support, `--live` probe) (#412) ($1.42)
+
+### MCP Server
+- fix: reap MCP-spawned runs and log their output under the data dir (#437) ($0.97)
+- fix: parse the last JSON line in MCP review_pr output (#407) ($0.52)
+
+### Triage
+- fix: require 2 shared keywords for file-overlap duplicates and ignore generic words (#433) ($0.58)
+
+### Implement
+- fix: gitignore .autoloop.lock and harden acquire_lock (#403) ($0.90)
+- fix: pass RepoContext to load_run_history in try_auto_merge (#406) ($0.89)
+
+Total: 15 PRs, $17.01
+
 ## v0.16.1
 
 ### Tests
