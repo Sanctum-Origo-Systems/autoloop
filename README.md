@@ -158,11 +158,11 @@ This creates three files:
 |------|---------|
 | `autoloop.toml` | Pipeline configuration (models, timeouts, verify command) |
 | `.github/workflows/autoloop-cleanup.yml` | CI workflow that cleans labels and auto-closes parent issues on merge |
-| `.gitignore` | Adds `autoloop/run_history.jsonl` |
+| `.gitignore` | Adds `autoloop/run_history.jsonl` and `.autoloop.lock` |
 
 It also creates GitHub labels (`ready`, `rejected`, `in-progress`, etc.) used by the triage system.
 
-Operational data (`run_history.jsonl`, `jev_decisions.jsonl`) is stored outside the repo tree in `~/.autoloop/<id>/`, keyed by git remote URL. This keeps operational data out of your working tree and supports multiple repos on the same machine. Eval snapshots and `EVAL.md` stay in the repo (published via PRs).
+Operational data (`run_history.jsonl`, `jev_decisions.jsonl`) is stored outside the repo tree in `~/.autoloop/<id>/`, keyed by git remote URL. This keeps operational data out of your working tree and supports multiple repos on the same machine. Daily eval snapshots are stored in `~/.autoloop/<id>/eval_snapshots/`. Only published snapshots are committed to `autoloop/eval_snapshots/` together with `EVAL.md` (via PRs with `--publish --pr`). `eval --publish` compares against the last published snapshot and publishes only on a material change, so a no-change run leaves the working tree clean.
 
 Commit the generated files:
 
@@ -196,6 +196,7 @@ Checks that everything is set up correctly before your first run:
 ✓ gh CLI installed and authenticated
 ✓ No active Claude Code session conflict
 ✓ verify_cmd passes ("pytest" → exit 0)
+✓ .autoloop.lock is ignored and untracked
 ✓ origin/main:.claude/settings.json valid (12 allow rules)
 ✓ claude CLI supports --settings
 ```

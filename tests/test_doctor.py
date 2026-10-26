@@ -26,6 +26,7 @@ from autoloop.doctor import (
     check_jev,
     check_live_probe,
     check_main_settings,
+    check_lockfile_ignored,
     check_verify_cmd,
     check_worktree_isolation,
     get_checks,
@@ -161,7 +162,7 @@ def test_check_claude_settings_missing(repo_ctx):
 
 def test_get_checks_returns_registered_checks(repo_ctx):
     checks = get_checks(repo_ctx)
-    assert len(checks) == 10
+    assert len(checks) == 11
     assert checks[0].name == "autoloop.toml"
     assert checks[1].name == ".claude/settings.json"
     assert checks[2].name == "claude CLI installed"
@@ -170,8 +171,9 @@ def test_get_checks_returns_registered_checks(repo_ctx):
     assert checks[5].name == "Claude Code session conflict"
     assert checks[6].name == "verify_cmd"
     assert checks[7].name == "Jev config"
-    assert checks[8].name == "origin/main settings"
-    assert checks[9].name == "claude --settings support"
+    assert checks[8].name == ".autoloop.lock gitignored"
+    assert checks[9].name == "origin/main settings"
+    assert checks[10].name == "claude --settings support"
     assert "autoloop init" in checks[0].fix_hint
     assert "autoloop init" in checks[1].fix_hint
     assert "autoloop doctor" in checks[6].fix_hint
@@ -187,7 +189,7 @@ def test_get_checks_all_pass(repo_ctx, capsys):
     checks = get_checks(repo_ctx)
     results = run_checks(checks)
 
-    assert len(results) == 10
+    assert len(results) == 11
     file_results = [r for r in results if r.name in ("autoloop.toml", ".claude/settings.json")]
     assert all(r.passed for r in file_results)
     out = capsys.readouterr().out
@@ -198,7 +200,7 @@ def test_get_checks_all_fail(repo_ctx, capsys):
     checks = get_checks(repo_ctx)
     results = run_checks(checks)
 
-    assert len(results) == 10
+    assert len(results) == 11
     out = capsys.readouterr().out
     assert "✗" in out
 
@@ -812,3 +814,56 @@ def test_live_probe_fails_without_origin_main(repo_ctx):
     assert passed is False
     assert "could not create probe worktree" in msg
     mock_claude.assert_not_called()
+
+
+# --- .autoloop.lock gitignore check ---
+
+
+def test_check_lockfile_ignored_warns_when_not_ignored(repo_ctx):
+    _git(repo_ctx.repo_dir, "init", "-q")
+    passed, msg = check_lockfile_ignored(repo_ctx)
+    assert passed is False
+    assert ".autoloop.lock" in msg
+    assert ".gitignore" in msg
+
+
+def test_check_lockfile_ignored_warns_when_tracked(repo_ctx):
+    _git(repo_ctx.repo_dir, "init", "-q")
+    (repo_ctx.repo_dir / ".autoloop.lock").write_text("12345")
+    _git(repo_ctx.repo_dir, "add", ".autoloop.lock")
+    (repo_ctx.repo_dir / ".gitignore").write_text(".autoloop.lock\n")
+    passed, msg = check_lockfile_ignored(repo_ctx)
+    assert passed is False
+    assert ".autoloop.lock" in msg
+    assert "git rm --cached .autoloop.lock" in msg
+
+
+def test_check_lockfile_ignored_passes_when_ignored_and_untracked(repo_ctx):
+    _git(repo_ctx.repo_dir, "init", "-q")
+    (repo_ctx.repo_dir / ".gitignore").write_text(".autoloop.lock\n")
+    (repo_ctx.repo_dir / ".autoloop.lock").write_text("12345")
+    passed, msg = check_lockfile_ignored(repo_ctx)
+    assert passed is True
+    assert "ignored and untracked" in msg
+
+
+def test_check_lockfile_ignored_no_lock_warning_in_doctor_output(repo_ctx, capsys):
+    _git(repo_ctx.repo_dir, "init", "-q")
+    (repo_ctx.repo_dir / ".gitignore").write_text(".autoloop.lock\n")
+    checks = [c for c in get_checks(repo_ctx) if c.name == ".autoloop.lock gitignored"]
+    results = run_checks(checks)
+    assert results[0].passed is True
+    assert "✗" not in capsys.readouterr().out
+
+
+def test_check_lockfile_ignored_skips_when_git_missing(repo_ctx):
+    with patch("autoloop.doctor.subprocess.run", side_effect=FileNotFoundError):
+        passed, msg = check_lockfile_ignored(repo_ctx)
+    assert passed is True
+    assert "skipping" in msg
+
+
+def test_check_lockfile_ignored_skips_outside_git_repo(repo_ctx):
+    passed, msg = check_lockfile_ignored(repo_ctx)
+    assert passed is True
+    assert "skipping" in msg
