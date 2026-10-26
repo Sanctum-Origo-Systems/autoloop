@@ -714,12 +714,12 @@ def review_pr(pr_number, cfg, repo_dir: Path | None = None, ctx: RepoContext | N
 
 def _show_status():
     """Show last run, ready issues, and next scheduled timers."""
-    from autoloop.config import load_config
+    from autoloop.config import RepoContext, load_config
     from autoloop.mcp_server import _read_last_runs
 
     cfg = load_config()
 
-    last_impl, last_review = _read_last_runs(Path.cwd())
+    last_impl, last_review = _read_last_runs(RepoContext(Path.cwd()))
     if last_impl:
         print(
             f"Last implement: issue #{last_impl['issue']} — "

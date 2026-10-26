@@ -2109,6 +2109,13 @@ def test_extract_keywords_underscored_identifiers():
     assert "fields" in result
 
 
+def test_extract_keywords_filters_generic_component_words():
+    """Regression for #433: component/verb words appear in many unrelated titles."""
+    generic = ["doctor", "implement", "eval", "triage", "fix", "feat", "add", "run", "check"]
+    result = _extract_keywords(" ".join(generic + ["test", "autoloop", "stale", "worktree"]))
+    assert result == {"stale", "worktree"}
+
+
 # --- detect_duplicate_issues ---
 
 
@@ -2121,7 +2128,7 @@ def test_detect_duplicate_file_and_keyword_overlap():
         },
     ]
     result = detect_duplicate_issues(
-        "add review_model field to AutoLoopConfig and TOML loader",
+        "add review_model config field to AutoLoopConfig and TOML loader",
         ["src/autoloop/config.py"],
         existing,
     )
@@ -2181,6 +2188,58 @@ def test_detect_duplicate_file_only_no_keyword_no_match():
     assert result == []
 
 
+def test_detect_duplicate_shared_file_and_generic_word_not_flagged():
+    """Regression for #433: one shared file plus the word "doctor" is not a duplicate."""
+    existing = [
+        {
+            "number": 412,
+            "title": "feat: doctor checks run_claude gets merged settings",
+            "body": "## Files to Modify\n- src/autoloop/doctor.py\n- tests/test_doctor.py",
+        },
+    ]
+    result = detect_duplicate_issues(
+        "fix: doctor reports missing gh scopes",
+        ["src/autoloop/doctor.py", "tests/test_doctor.py"],
+        existing,
+    )
+    assert result == []
+
+
+def test_detect_duplicate_shared_file_and_one_specific_word_not_flagged():
+    existing = [
+        {
+            "number": 30,
+            "title": "prune stale branches after merge",
+            "body": "## Files to Modify\n- src/autoloop/prune.py",
+        },
+    ]
+    result = detect_duplicate_issues(
+        "prune ignores locked directories",
+        ["src/autoloop/prune.py"],
+        existing,
+    )
+    assert result == []
+
+
+def test_detect_duplicate_shared_file_and_two_specific_words_flagged():
+    existing = [
+        {
+            "number": 31,
+            "title": "fix: clean up stale worktree after failed run",
+            "body": "## Files to Modify\n- src/autoloop/implement_issue.py",
+        },
+    ]
+    result = detect_duplicate_issues(
+        "implement: remove stale worktree before branching",
+        ["src/autoloop/implement_issue.py"],
+        existing,
+    )
+    assert len(result) == 1
+    assert result[0]["number"] == 31
+    assert "src/autoloop/implement_issue.py" in result[0]["reason"]
+    assert "stale, worktree" in result[0]["reason"]
+
+
 def test_detect_duplicate_empty_existing():
     result = detect_duplicate_issues("add some feature", ["src/main.py"], [])
     assert result == []
@@ -2200,7 +2259,7 @@ def test_detect_duplicate_multiple_matches():
         },
     ]
     result = detect_duplicate_issues(
-        "add review_model configuration",
+        "add review_model config to TOML loader",
         ["src/config.py"],
         existing,
     )
@@ -2373,7 +2432,7 @@ def test_triage_issue_detects_duplicate_routes_to_needs_human(monkeypatch):
 
     candidate = {
         "number": 92,
-        "title": "add review_model field to AutoLoopConfig and TOML loader",
+        "title": "add review_model config field to AutoLoopConfig and TOML loader",
         "body": "## Files to Modify\n- src/autoloop/config.py\n\n## Type\nfeature",
     }
 
@@ -2582,7 +2641,7 @@ def test_triage_issue_uses_discovered_files_for_duplicate_check(monkeypatch):
 
     candidate = {
         "number": 92,
-        "title": "add review_model to TOML loader",
+        "title": "add review_model config to TOML loader",
         "body": "",
     }
 
@@ -2797,7 +2856,7 @@ def test_triage_issue_duplicate_assigns_priority_label(monkeypatch):
 
     candidate = {
         "number": 92,
-        "title": "add review_model field to AutoLoopConfig",
+        "title": "add review_model config field to AutoLoopConfig",
         "body": "## Files to Modify\n- src/autoloop/config.py\n\n## Type\nfeature",
     }
 

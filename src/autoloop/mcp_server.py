@@ -41,18 +41,13 @@ def _parse_last_json(stdout: str) -> dict:
     raise ValueError("no JSON object found in output")
 
 
-def _read_last_runs(base: Path) -> tuple[dict | None, dict | None]:
-    """Read the last implement and last review entries from run_history.jsonl."""
-    log_file = base / "autoloop" / "run_history.jsonl"
-    if not log_file.exists():
-        return None, None
-    lines = log_file.read_text().strip().splitlines()
-    if not lines:
-        return None, None
+def _read_last_runs(ctx: RepoContext) -> tuple[dict | None, dict | None]:
+    """Read the last implement and last review entries from the data-dir run history."""
+    from autoloop.eval import load_run_history
+
     last_impl = None
     last_review = None
-    for line in reversed(lines):
-        entry = json.loads(line)
+    for entry in reversed(load_run_history(ctx)):
         run_type = entry.get("type", "implement")
         if run_type == "review" and last_review is None:
             last_review = entry
@@ -310,7 +305,7 @@ def main():
         parts = []
         cfg = load_config(path=ctx.repo_dir / "autoloop.toml")
 
-        last_impl, last_review = _read_last_runs(ctx.repo_dir)
+        last_impl, last_review = _read_last_runs(ctx)
         if last_impl:
             status = "success" if last_impl["success"] else "failed"
             parts.append(
