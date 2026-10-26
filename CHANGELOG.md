@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.15.0
+
+Requires Claude Code with Opus 5.5 support (tested on 2.1.310).
+
+### Claude Runner
+- fix: run claude -p with the repo's merged settings via --settings, so allow/deny rules apply in untrusted worktrees (#408) ($1.11)
+
+### Eval Dashboard
+- fix: eval counts triage runs as implementations, skewing success and cost metrics (#400) ($1.99)
+
+### Config
+- chore: default impl_model to claude-opus-5-5 ($0.00)
+- chore: gitignore .autoloop.lock and commit missing eval snapshots ($0.00)
+
+Total: 4 PRs, $3.10
+
 ## v0.14.0
 
 ### Jev Report
