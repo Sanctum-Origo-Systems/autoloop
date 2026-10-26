@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
+from datetime import UTC, datetime
+from pathlib import Path
 
 from autoloop.config import RepoContext
 
@@ -95,6 +98,40 @@ def _is_process_running(name: str) -> bool:
         return False
 
 
+_spawned: list[subprocess.Popen] = []
+
+
+def _spawn_log_path(cmd: list[str], cwd: str | None) -> Path:
+    """Return the log file path for a spawned run under the target repo's data dir."""
+    ctx = _make_context(cwd)
+    command = cmd[1] if cmd[0] == "autoloop" and len(cmd) > 1 else Path(cmd[0]).name
+    # Microseconds keep two runs of the same command started in one second apart.
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
+    return ctx.data_dir / "mcp-runs" / f"{stamp}-{command}.log"
+
+
+def _spawn(cmd: list[str], cwd: str | None = None) -> Path:
+    """Start a detached subprocess without blocking, logging its output; reap it on exit.
+
+    Returns the path of the log file that receives the child's stdout and stderr.
+    """
+    log_path = _spawn_log_path(cmd, cwd)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_path, "ab") as log:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    _spawned[:] = [p for p in _spawned if p.returncode is None]
+    _spawned.append(proc)
+    threading.Thread(target=proc.wait, daemon=True).start()
+    return log_path
+
+
 def main():
     try:
         from fastmcp import FastMCP
@@ -104,17 +141,6 @@ def main():
         raise SystemExit(1)
 
     server = FastMCP("autoloop-mcp")
-
-    def _spawn(cmd: list[str], cwd: str | None = None) -> None:
-        """Fully detach a subprocess so it doesn't block the MCP connection."""
-        subprocess.Popen(
-            cmd,
-            cwd=cwd,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
 
     @server.tool()
     def autoloop_implement(
@@ -141,7 +167,7 @@ def main():
             cmd.append("--auto-fix")
             cmd.extend(["--max-pr-review-rounds", str(max_pr_review_rounds)])
 
-        _spawn(cmd, cwd=repo_dir)
+        log_path = _spawn(cmd, cwd=repo_dir)
 
         if issue:
             msg = f"Started implementation of issue #{issue}"
@@ -149,7 +175,7 @@ def main():
             msg = f"Started implementation (max {max_issues} issue(s))"
         if auto_fix:
             msg += f" (auto-fix, max {max_pr_review_rounds} review rounds)"
-        return msg + "."
+        return f"{msg}. Log: {log_path}"
 
     @server.tool()
     def autoloop_triage(
@@ -173,7 +199,7 @@ def main():
         if issue is not None:
             cmd.extend(["--issue", str(issue)])
 
-        _spawn(cmd, cwd=repo_dir)
+        log_path = _spawn(cmd, cwd=repo_dir)
 
         if issue is not None:
             msg = f"Started triage of issue #{issue}"
@@ -181,7 +207,7 @@ def main():
             msg = f"Started triage run (drain mode, max {max_rounds} rounds)"
         else:
             msg = "Started triage run"
-        return msg + "."
+        return f"{msg}. Log: {log_path}"
 
     @server.tool()
     def autoloop_fix_pr(pr_number: int, repo_dir: str | None = None) -> str:
@@ -191,8 +217,8 @@ def main():
             pr_number: The PR number to fix.
             repo_dir: Target repository directory. Defaults to server's working directory.
         """
-        _spawn(["autoloop", "fix-pr", str(pr_number)], cwd=repo_dir)
-        return f"Started fix-pr for PR #{pr_number}."
+        log_path = _spawn(["autoloop", "fix-pr", str(pr_number)], cwd=repo_dir)
+        return f"Started fix-pr for PR #{pr_number}. Log: {log_path}"
 
     @server.tool()
     async def autoloop_review_pr(pr_number: int, repo_dir: str | None = None) -> str:
@@ -264,8 +290,8 @@ def main():
         Args:
             repo_dir: Target repository directory. Defaults to server's working directory.
         """
-        _spawn(["autoloop", "preflight"], cwd=repo_dir)
-        return "Started preflight checks."
+        log_path = _spawn(["autoloop", "preflight"], cwd=repo_dir)
+        return f"Started preflight checks. Log: {log_path}"
 
     @server.tool()
     def autoloop_status(repo_dir: str | None = None) -> str:

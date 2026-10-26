@@ -457,6 +457,8 @@ Configure the autoloop MCP server by adding to your project's `.mcp.json`:
 }
 ```
 
+Runs started through the MCP tools (`implement`, `triage`, `fix-pr`, `preflight`) write their stdout and stderr to `~/.autoloop/<repo-hash>/mcp-runs/<UTC timestamp>-<command>.log`; the tool's reply includes the path.
+
 Install the MCP server on the VPS with `uv tool install "autoloop[mcp] @ git+https://github.com/Sanctum-Origo-Systems/autoloop@<tag>"`, then restart the Claude Code session.
 
 **Enable remote control:** In the Claude Code session on the VPS, run `/login` to authenticate, then enable remote connections in settings. This allows the Claude mobile app to send messages to the VPS session.

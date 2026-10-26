@@ -85,6 +85,13 @@ def test_read_last_runs_only_review(tmp_path):
 # --- Fake FastMCP for testing tool registration ---
 
 
+class _FakeProc:
+    returncode = 0
+
+    def wait(self):
+        return 0
+
+
 class _FakeServer:
     def __init__(self, name="test"):
         self.tools = {}
@@ -101,7 +108,7 @@ class _FakeServer:
 
 
 @pytest.fixture()
-def mcp_tools(monkeypatch):
+def mcp_tools(monkeypatch, tmp_path):
     """Register MCP tools using a fake FastMCP and return the tool dict."""
     fake_fastmcp_mod = types.ModuleType("fastmcp")
 
@@ -115,6 +122,12 @@ def mcp_tools(monkeypatch):
     import autoloop.mcp_server
 
     reload(autoloop.mcp_server)
+    # Keep the git lookup in RepoContext away from tests that patch subprocess.Popen.
+    monkeypatch.setattr(
+        autoloop.mcp_server,
+        "_spawn_log_path",
+        lambda cmd, cwd: tmp_path / "mcp-runs" / f"{cmd[1]}.log",
+    )
     autoloop.mcp_server.main()
     return server.tools
 
@@ -128,6 +141,7 @@ def test_implement_passes_cwd(mcp_tools, tmp_path):
 
     def fake_popen(cmd, **kwargs):
         captured.append({"cmd": cmd, "kwargs": kwargs})
+        return _FakeProc()
 
     with patch("autoloop.mcp_server.subprocess.Popen", fake_popen):
         result = mcp_tools["autoloop_implement"](issue=42, repo_dir=str(tmp_path))
@@ -136,7 +150,7 @@ def test_implement_passes_cwd(mcp_tools, tmp_path):
     assert captured[0]["kwargs"]["cwd"] == str(tmp_path)
     assert "--issue" in captured[0]["cmd"]
     assert "42" in captured[0]["cmd"]
-    assert result == "Started implementation of issue #42."
+    assert result.startswith("Started implementation of issue #42. Log: ")
 
 
 def test_implement_cwd_none_when_no_repo_dir(mcp_tools):
@@ -145,13 +159,14 @@ def test_implement_cwd_none_when_no_repo_dir(mcp_tools):
 
     def fake_popen(cmd, **kwargs):
         captured.append({"cmd": cmd, "kwargs": kwargs})
+        return _FakeProc()
 
     with patch("autoloop.mcp_server.subprocess.Popen", fake_popen):
         result = mcp_tools["autoloop_implement"](max_issues=2)
 
     assert len(captured) == 1
     assert captured[0]["kwargs"]["cwd"] is None
-    assert result == "Started implementation (max 2 issue(s))."
+    assert result.startswith("Started implementation (max 2 issue(s)). Log: ")
 
 
 def test_triage_passes_cwd(mcp_tools, tmp_path):
@@ -160,6 +175,7 @@ def test_triage_passes_cwd(mcp_tools, tmp_path):
 
     def fake_popen(cmd, **kwargs):
         captured.append({"cmd": cmd, "kwargs": kwargs})
+        return _FakeProc()
 
     with patch("autoloop.mcp_server.subprocess.Popen", fake_popen):
         result = mcp_tools["autoloop_triage"](repo_dir=str(tmp_path))
@@ -167,7 +183,7 @@ def test_triage_passes_cwd(mcp_tools, tmp_path):
     assert len(captured) == 1
     assert captured[0]["kwargs"]["cwd"] == str(tmp_path)
     assert captured[0]["cmd"] == ["autoloop", "triage"]
-    assert result == "Started triage run."
+    assert result.startswith("Started triage run. Log: ")
 
 
 def test_triage_cwd_none_when_no_repo_dir(mcp_tools):
@@ -176,6 +192,7 @@ def test_triage_cwd_none_when_no_repo_dir(mcp_tools):
 
     def fake_popen(cmd, **kwargs):
         captured.append({"cmd": cmd, "kwargs": kwargs})
+        return _FakeProc()
 
     with patch("autoloop.mcp_server.subprocess.Popen", fake_popen):
         mcp_tools["autoloop_triage"]()
@@ -190,6 +207,7 @@ def test_preflight_passes_cwd(mcp_tools, tmp_path):
 
     def fake_popen(cmd, **kwargs):
         captured.append({"cmd": cmd, "kwargs": kwargs})
+        return _FakeProc()
 
     with patch("autoloop.mcp_server.subprocess.Popen", fake_popen):
         result = mcp_tools["autoloop_preflight"](repo_dir=str(tmp_path))
@@ -197,7 +215,7 @@ def test_preflight_passes_cwd(mcp_tools, tmp_path):
     assert len(captured) == 1
     assert captured[0]["kwargs"]["cwd"] == str(tmp_path)
     assert captured[0]["cmd"] == ["autoloop", "preflight"]
-    assert result == "Started preflight checks."
+    assert result.startswith("Started preflight checks. Log: ")
 
 
 def test_preflight_cwd_none_when_no_repo_dir(mcp_tools):
@@ -206,13 +224,14 @@ def test_preflight_cwd_none_when_no_repo_dir(mcp_tools):
 
     def fake_popen(cmd, **kwargs):
         captured.append({"cmd": cmd, "kwargs": kwargs})
+        return _FakeProc()
 
     with patch("autoloop.mcp_server.subprocess.Popen", fake_popen):
         result = mcp_tools["autoloop_preflight"]()
 
     assert len(captured) == 1
     assert captured[0]["kwargs"]["cwd"] is None
-    assert result == "Started preflight checks."
+    assert result.startswith("Started preflight checks. Log: ")
 
 
 def test_preflight_registered(mcp_tools):
@@ -226,6 +245,7 @@ def test_fix_pr_passes_cwd(mcp_tools, tmp_path):
 
     def fake_popen(cmd, **kwargs):
         captured.append({"cmd": cmd, "kwargs": kwargs})
+        return _FakeProc()
 
     with patch("autoloop.mcp_server.subprocess.Popen", fake_popen):
         result = mcp_tools["autoloop_fix_pr"](pr_number=99, repo_dir=str(tmp_path))
@@ -233,7 +253,7 @@ def test_fix_pr_passes_cwd(mcp_tools, tmp_path):
     assert len(captured) == 1
     assert captured[0]["kwargs"]["cwd"] == str(tmp_path)
     assert captured[0]["cmd"] == ["autoloop", "fix-pr", "99"]
-    assert result == "Started fix-pr for PR #99."
+    assert result.startswith("Started fix-pr for PR #99. Log: ")
 
 
 def test_fix_pr_cwd_none_when_no_repo_dir(mcp_tools):
@@ -242,6 +262,7 @@ def test_fix_pr_cwd_none_when_no_repo_dir(mcp_tools):
 
     def fake_popen(cmd, **kwargs):
         captured.append({"cmd": cmd, "kwargs": kwargs})
+        return _FakeProc()
 
     with patch("autoloop.mcp_server.subprocess.Popen", fake_popen):
         mcp_tools["autoloop_fix_pr"](pr_number=1)
@@ -619,6 +640,7 @@ def test_triage_drain_mode(mcp_tools):
 
     def fake_popen(cmd, **kwargs):
         captured.append({"cmd": cmd, "kwargs": kwargs})
+        return _FakeProc()
 
     with patch("autoloop.mcp_server.subprocess.Popen", fake_popen):
         result = mcp_tools["autoloop_triage"](drain=True)
@@ -634,6 +656,7 @@ def test_triage_drain_custom_max_rounds(mcp_tools):
 
     def fake_popen(cmd, **kwargs):
         captured.append({"cmd": cmd, "kwargs": kwargs})
+        return _FakeProc()
 
     with patch("autoloop.mcp_server.subprocess.Popen", fake_popen):
         result = mcp_tools["autoloop_triage"](drain=True, max_rounds=3)
@@ -648,6 +671,7 @@ def test_triage_single_issue(mcp_tools):
 
     def fake_popen(cmd, **kwargs):
         captured.append({"cmd": cmd, "kwargs": kwargs})
+        return _FakeProc()
 
     with patch("autoloop.mcp_server.subprocess.Popen", fake_popen):
         result = mcp_tools["autoloop_triage"](issue=42)
@@ -662,12 +686,13 @@ def test_triage_no_flags_single_pass(mcp_tools):
 
     def fake_popen(cmd, **kwargs):
         captured.append({"cmd": cmd, "kwargs": kwargs})
+        return _FakeProc()
 
     with patch("autoloop.mcp_server.subprocess.Popen", fake_popen):
         result = mcp_tools["autoloop_triage"]()
 
     assert captured[0]["cmd"] == ["autoloop", "triage"]
-    assert result == "Started triage run."
+    assert result.startswith("Started triage run. Log: ")
 
 
 def test_triage_drain_with_issue(mcp_tools):
@@ -676,6 +701,7 @@ def test_triage_drain_with_issue(mcp_tools):
 
     def fake_popen(cmd, **kwargs):
         captured.append({"cmd": cmd, "kwargs": kwargs})
+        return _FakeProc()
 
     with patch("autoloop.mcp_server.subprocess.Popen", fake_popen):
         mcp_tools["autoloop_triage"](drain=True, issue=7)
@@ -693,6 +719,7 @@ def test_triage_max_rounds_ignored_without_drain(mcp_tools):
 
     def fake_popen(cmd, **kwargs):
         captured.append({"cmd": cmd, "kwargs": kwargs})
+        return _FakeProc()
 
     with patch("autoloop.mcp_server.subprocess.Popen", fake_popen):
         mcp_tools["autoloop_triage"](max_rounds=10)
@@ -709,6 +736,7 @@ def test_implement_auto_fix(mcp_tools):
 
     def fake_popen(cmd, **kwargs):
         captured.append({"cmd": cmd, "kwargs": kwargs})
+        return _FakeProc()
 
     with patch("autoloop.mcp_server.subprocess.Popen", fake_popen):
         result = mcp_tools["autoloop_implement"](auto_fix=True)
@@ -727,6 +755,7 @@ def test_implement_auto_fix_custom_rounds(mcp_tools):
 
     def fake_popen(cmd, **kwargs):
         captured.append({"cmd": cmd, "kwargs": kwargs})
+        return _FakeProc()
 
     with patch("autoloop.mcp_server.subprocess.Popen", fake_popen):
         result = mcp_tools["autoloop_implement"](auto_fix=True, max_pr_review_rounds=5)
@@ -750,6 +779,7 @@ def test_implement_auto_fix_with_issue(mcp_tools):
 
     def fake_popen(cmd, **kwargs):
         captured.append({"cmd": cmd, "kwargs": kwargs})
+        return _FakeProc()
 
     with patch("autoloop.mcp_server.subprocess.Popen", fake_popen):
         result = mcp_tools["autoloop_implement"](issue=99, auto_fix=True)
@@ -768,6 +798,7 @@ def test_implement_no_auto_fix_omits_flags(mcp_tools):
 
     def fake_popen(cmd, **kwargs):
         captured.append({"cmd": cmd, "kwargs": kwargs})
+        return _FakeProc()
 
     with patch("autoloop.mcp_server.subprocess.Popen", fake_popen):
         result = mcp_tools["autoloop_implement"](issue=10)
