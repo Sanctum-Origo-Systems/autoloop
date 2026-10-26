@@ -5,6 +5,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 import autoloop.claude_runner as claude_runner
 import autoloop.implement_issue as implement_issue
 from autoloop.claude_runner import ClaudeResult
@@ -1396,10 +1398,14 @@ def test_release_lock_removes_file(tmp_path):
 # --- log_run tests ---
 
 
-def test_log_run_writes_json_entry(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    log_path = tmp_path / "autoloop" / "run_history.jsonl"
-    log_run(17, True, 2, 120.0, 5.00, 45000, 2300, 16832, 2903)
+def _history_path(repo_dir: Path) -> Path:
+    """run_history.jsonl in the data dir of the RepoContext built for repo_dir."""
+    return RepoContext(repo_dir).data_dir / "run_history.jsonl"
+
+
+def test_log_run_writes_json_entry(repo_ctx):
+    log_path = repo_ctx.data_dir / "run_history.jsonl"
+    log_run(17, True, 2, 120.0, 5.00, 45000, 2300, 16832, 2903, ctx=repo_ctx)
 
     lines = log_path.read_text().strip().splitlines()
     assert len(lines) == 1
@@ -1412,10 +1418,11 @@ def test_log_run_writes_json_entry(tmp_path, monkeypatch):
     assert "pr_number" not in entry
 
 
-def test_log_run_review_entry_includes_cost_fields(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    log_path = tmp_path / "autoloop" / "run_history.jsonl"
-    log_run(0, True, 1, 30.0, 0.12, 1500, 300, 100, 50, run_type="review", pr_number=42)
+def test_log_run_review_entry_includes_cost_fields(repo_ctx):
+    log_path = repo_ctx.data_dir / "run_history.jsonl"
+    log_run(
+        0, True, 1, 30.0, 0.12, 1500, 300, 100, 50, ctx=repo_ctx, run_type="review", pr_number=42
+    )
 
     lines = log_path.read_text().strip().splitlines()
     assert len(lines) == 1
@@ -1519,7 +1526,7 @@ _FAKE_ISSUE = {"number": 42, "title": "Add feature", "body": "## Type\nfeature",
 def test_implement_single_issue_returns_true_on_success(monkeypatch, tmp_path):
     monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
     monkeypatch.chdir(tmp_path)
-    log_path = tmp_path / "autoloop" / "run_history.jsonl"
+    log_path = _history_path(tmp_path)
 
     def fake_run(cmd, **kwargs):
         if isinstance(cmd, list) and cmd[:3] == ["git", "rev-list", "--count"]:
@@ -1546,6 +1553,7 @@ def test_implement_single_issue_returns_true_on_success(monkeypatch, tmp_path):
     result = implement_single_issue(_FAKE_ISSUE)
     assert result is True
     assert log_path.exists()
+    assert not (tmp_path / "autoloop").exists()
     entry = json.loads(log_path.read_text().strip())
     assert entry["success"] is True
 
@@ -1634,7 +1642,7 @@ def test_implement_single_issue_raises_systemic_error_on_unexpected_exception(mo
 def test_implement_single_issue_logs_summed_token_totals(monkeypatch, tmp_path):
     monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
     monkeypatch.chdir(tmp_path)
-    log_path = tmp_path / "autoloop" / "run_history.jsonl"
+    log_path = _history_path(tmp_path)
 
     results = iter(
         [
@@ -5116,7 +5124,7 @@ def test_implement_single_issue_auto_merge_disabled_logged(monkeypatch, tmp_path
     result = implement_single_issue(_FAKE_ISSUE)
     assert result is True
 
-    log_path = tmp_path / "autoloop" / "run_history.jsonl"
+    log_path = _history_path(tmp_path)
     entry = json.loads(log_path.read_text().strip())
     assert entry["auto_merge"]["decision"] == "skipped-disabled"
 
@@ -5130,7 +5138,7 @@ def test_implement_single_issue_auto_merge_unqualified_logged(monkeypatch, tmp_p
     result = implement_single_issue(_FAKE_ISSUE)
     assert result is True
 
-    log_path = tmp_path / "autoloop" / "run_history.jsonl"
+    log_path = _history_path(tmp_path)
     entry = json.loads(log_path.read_text().strip())
     assert entry["auto_merge"]["decision"] == "skipped-unqualified"
     assert entry["auto_merge"]["gates"]["success_rate"] == 0.5
@@ -5149,7 +5157,7 @@ def test_implement_single_issue_auto_merge_protected_logged(monkeypatch, tmp_pat
     result = implement_single_issue(_FAKE_ISSUE)
     assert result is True
 
-    log_path = tmp_path / "autoloop" / "run_history.jsonl"
+    log_path = _history_path(tmp_path)
     entry = json.loads(log_path.read_text().strip())
     assert entry["auto_merge"]["decision"] == "skipped-protected"
 
@@ -5181,7 +5189,7 @@ def test_implement_single_issue_auto_merge_merged_logged(monkeypatch, tmp_path):
     result = implement_single_issue(_FAKE_ISSUE)
     assert result is True
 
-    log_path = tmp_path / "autoloop" / "run_history.jsonl"
+    log_path = _history_path(tmp_path)
     entry = json.loads(log_path.read_text().strip())
     assert entry["auto_merge"]["decision"] == "merged"
     assert entry["auto_merge"]["gates"]["merged_clean_count"] == 15
@@ -5235,7 +5243,7 @@ def test_implement_single_issue_auto_merge_skipped_integrity(monkeypatch, tmp_pa
     assert result is True
     assert len(try_merge_called) == 0
 
-    log_path = tmp_path / "autoloop" / "run_history.jsonl"
+    log_path = _history_path(tmp_path)
     entry = json.loads(log_path.read_text().strip())
     assert entry["auto_merge"]["decision"] == "skipped-integrity"
 
@@ -5243,16 +5251,16 @@ def test_implement_single_issue_auto_merge_skipped_integrity(monkeypatch, tmp_pa
 # --- log_run auto_merge field ---
 
 
-def test_log_run_includes_auto_merge_field(tmp_path, monkeypatch):
+def test_log_run_includes_auto_merge_field(repo_ctx):
     """auto_merge dict is written to the run_history entry."""
-    monkeypatch.chdir(tmp_path)
-    log_path = tmp_path / "autoloop" / "run_history.jsonl"
+    log_path = repo_ctx.data_dir / "run_history.jsonl"
     log_run(
         42,
         True,
         1,
         60.0,
         1.50,
+        ctx=repo_ctx,
         auto_merge={"decision": "merged", "gates": {"success_rate": 0.95}},
     )
 
@@ -5261,11 +5269,10 @@ def test_log_run_includes_auto_merge_field(tmp_path, monkeypatch):
     assert entry["auto_merge"]["gates"]["success_rate"] == 0.95
 
 
-def test_log_run_omits_auto_merge_when_none(tmp_path, monkeypatch):
+def test_log_run_omits_auto_merge_when_none(repo_ctx):
     """auto_merge field is absent when not provided."""
-    monkeypatch.chdir(tmp_path)
-    log_path = tmp_path / "autoloop" / "run_history.jsonl"
-    log_run(42, True, 1, 60.0, 1.50)
+    log_path = repo_ctx.data_dir / "run_history.jsonl"
+    log_run(42, True, 1, 60.0, 1.50, ctx=repo_ctx)
 
     entry = json.loads(log_path.read_text().strip())
     assert "auto_merge" not in entry
@@ -5355,13 +5362,47 @@ def test_release_lock_uses_repo_dir(tmp_path):
     assert not lock_path.exists()
 
 
-def test_log_run_uses_repo_dir(tmp_path):
-    """log_run writes to repo_dir/autoloop/run_history.jsonl."""
-    log_run(42, True, 1, 60.0, 1.50, repo_dir=tmp_path)
-    log_path = tmp_path / "autoloop" / "run_history.jsonl"
-    assert log_path.exists()
-    entry = json.loads(log_path.read_text().strip())
-    assert entry["issue"] == 42
+def test_log_run_appends_one_line_to_ctx_data_dir(repo_ctx):
+    """Regression (#438): log_run writes to ctx.data_dir, never repo_dir/autoloop."""
+    log_path = repo_ctx.data_dir / "run_history.jsonl"
+    log_run(41, True, 1, 30.0, 0.50, ctx=repo_ctx)
+    before = log_path.read_text().splitlines()
+
+    log_run(42, True, 1, 60.0, 1.50, ctx=repo_ctx)
+
+    lines = log_path.read_text().splitlines()
+    assert len(lines) == len(before) + 1
+    assert json.loads(lines[-1])["issue"] == 42
+    assert not (repo_ctx.repo_dir / "autoloop").exists()
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="mcp_server._read_last_runs still reads the legacy path; fixed by a sibling "
+    "sub-issue of #436. Remove this marker once it lands.",
+)
+def test_legacy_run_history_path_only_in_init_and_config():
+    """Regression (#438): only init.py (gitignore) and config.py (migration) name the legacy path."""
+    src = Path(implement_issue.__file__).parent
+    needles = ('"autoloop" / "run_history.jsonl"', "autoloop/run_history.jsonl")
+    hits = {
+        path.name
+        for path in src.rglob("*.py")
+        if any(needle in path.read_text() for needle in needles)
+    }
+    assert hits <= {"init.py", "config.py"}, f"legacy run_history path referenced in {hits}"
+
+
+def test_log_run_requires_ctx_and_rejects_repo_dir(repo_ctx):
+    """Regression (#438): no cwd fallback and no repo_dir parameter."""
+    with pytest.raises(TypeError):
+        log_run(42, True, 1, 60.0, 1.50)
+    with pytest.raises(TypeError):
+        log_run(42, True, 1, 60.0, 1.50, repo_dir=repo_ctx.repo_dir)
+    with pytest.raises(TypeError):
+        log_run(42, True, 1, 60.0, 1.50, ctx=repo_ctx, repo_dir=repo_ctx.repo_dir)
+    assert not (repo_ctx.data_dir / "run_history.jsonl").exists()
+    assert not (repo_ctx.repo_dir / "autoloop").exists()
 
 
 def test_create_branch_uses_repo_dir(monkeypatch, tmp_path):
@@ -5680,6 +5721,38 @@ def test_implement_single_issue_worktree_failure_removes_worktree(monkeypatch, t
 
     assert received["cleanup_worktree"] == wt_path
     assert "cleanup_branch" not in received
+
+
+@pytest.mark.parametrize("verify_ok", [True, False])
+def test_implement_single_issue_worktree_logs_run_to_main_ctx(monkeypatch, tmp_path, verify_ok):
+    """Regression (#438): in worktree mode both log_run sites get the main-checkout ctx."""
+    from autoloop.eval import load_run_history
+
+    monkeypatch.setattr(
+        implement_issue, "cfg", _test_cfg(implement_isolation="worktree", max_retries=1)
+    )
+    ctx = RepoContext.for_data_dir(tmp_path / "data", repo_dir=tmp_path / "checkout")
+    wt_path = ctx.worktree_dir / "autoloop/42-add-feature"
+    wt_path.mkdir(parents=True)
+    _patch_single_issue_steps(monkeypatch, ctx, wt_path, {}, verify_ok=verify_ok)
+    monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
+    log_ctxs = []
+    real_log_run = implement_issue.log_run
+
+    def recording_log_run(*args, **kwargs):
+        log_ctxs.append(kwargs.get("ctx"))
+        real_log_run(*args, **kwargs)
+
+    monkeypatch.setattr(implement_issue, "log_run", recording_log_run)
+
+    assert implement_single_issue(_FAKE_ISSUE, ctx=ctx) is verify_ok
+
+    assert log_ctxs == [ctx]
+    assert all(c is ctx for c in log_ctxs)
+    runs = load_run_history(ctx)
+    assert [(r["issue"], r["success"]) for r in runs] == [(42, verify_ok)]
+    assert not list(wt_path.rglob("run_history.jsonl"))
+    assert not (ctx.repo_dir / "autoloop").exists()
 
 
 def test_implement_single_issue_worktree_fetches_instead_of_cleaning_main(monkeypatch, tmp_path):

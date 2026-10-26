@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fnmatch
 import os
 import subprocess
 import sys
@@ -13,7 +14,14 @@ from autoloop.config import RepoContext
 # Captured at import, before any test redirects HOME.
 REAL_HOME = Path.home()
 REAL_AUTOLOOP_DIR = REAL_HOME / ".autoloop"
-GUARD_TEST_NAME = "test_suite_did_not_write_to_real_autoloop_dir"
+# The repository working tree: the directory containing tests/.
+REPO_TREE = Path(__file__).resolve().parent.parent
+# Path components under the repo tree that tooling may legitimately write.
+REPO_TREE_IGNORED_NAMES = (".pytest_cache", "__pycache__", ".ruff_cache", ".venv", ".coverage*")
+GUARD_TEST_NAMES = (
+    "test_suite_did_not_write_to_real_autoloop_dir",
+    "test_suite_did_not_write_to_repo_tree",
+)
 
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
 # Audit event -> positions of the path arguments that the event writes to.
@@ -33,12 +41,28 @@ _WRITE_EVENTS = {
 
 
 class WriteGuard:
-    """Record in-process filesystem writes under `root`, ignoring paths under `exclude`."""
+    """Record in-process filesystem writes under `root`.
 
-    def __init__(self, root: Path, exclude: tuple[Path, ...] = ()):
+    Paths under `exclude` are ignored, as are paths with any component below `root`
+    matching a glob in `ignored_names`.
+    """
+
+    def __init__(
+        self,
+        root: Path,
+        exclude: tuple[Path, ...] = (),
+        ignored_names: tuple[str, ...] = (),
+    ):
         self.root = Path(os.path.abspath(root))
         self.exclude = tuple(Path(os.path.abspath(p)) for p in exclude)
+        self.ignored_names = ignored_names
         self.violations: list[str] = []
+
+    def _ignored(self, target: Path) -> bool:
+        if any(target.is_relative_to(p) for p in self.exclude):
+            return True
+        parts = target.relative_to(self.root).parts
+        return any(fnmatch.fnmatch(part, pat) for part in parts for pat in self.ignored_names)
 
     def audit(self, event: str, args: tuple) -> None:
         if event == "open":
@@ -57,9 +81,7 @@ class WriteGuard:
             if not isinstance(path, (str, bytes, os.PathLike)):
                 continue
             target = Path(os.path.abspath(os.fsdecode(path)))
-            if not target.is_relative_to(self.root):
-                continue
-            if any(target.is_relative_to(p) for p in self.exclude):
+            if not target.is_relative_to(self.root) or self._ignored(target):
                 continue
             test = os.environ.get("PYTEST_CURRENT_TEST", "<outside a test>")
             self.violations.append(f"{test}: {event} {target}")
@@ -68,6 +90,7 @@ class WriteGuard:
 # Audit hooks cannot be removed, so one hook dispatches to whichever guards are active.
 ACTIVE_GUARDS: list[WriteGuard] = []
 REAL_HOME_GUARD: WriteGuard | None = None
+REPO_TREE_GUARD: WriteGuard | None = None
 
 
 def _dispatch_audit(event: str, args: tuple) -> None:
@@ -76,16 +99,17 @@ def _dispatch_audit(event: str, args: tuple) -> None:
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    global REAL_HOME_GUARD
-    # The checkout itself may live under ~/.autoloop/<hash>/worktrees; pytest writes caches there.
+    global REAL_HOME_GUARD, REPO_TREE_GUARD
+    # The checkout itself may live under ~/.autoloop/<hash>/worktrees; REPO_TREE_GUARD covers it.
     REAL_HOME_GUARD = WriteGuard(REAL_AUTOLOOP_DIR, exclude=(config.rootpath,))
-    ACTIVE_GUARDS.append(REAL_HOME_GUARD)
+    REPO_TREE_GUARD = WriteGuard(REPO_TREE, ignored_names=REPO_TREE_IGNORED_NAMES)
+    ACTIVE_GUARDS.extend((REAL_HOME_GUARD, REPO_TREE_GUARD))
     sys.addaudithook(_dispatch_audit)
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    """Run the real-home guard test last so it sees writes from every other test."""
-    items.sort(key=lambda item: item.name == GUARD_TEST_NAME)
+    """Run the write-guard tests last so they see writes from every other test."""
+    items.sort(key=lambda item: item.name in GUARD_TEST_NAMES)
 
 
 @pytest.fixture(autouse=True)
