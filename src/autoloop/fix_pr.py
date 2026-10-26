@@ -68,7 +68,7 @@ def ensure_pr_worktree(ctx: RepoContext, branch: str) -> Path:
         return wt_path
     ctx.worktree_dir.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["git", "worktree", "add", "--detach", str(wt_path)],
+        ["git", "worktree", "add", "--quiet", "--detach", str(wt_path)],
         cwd=ctx.repo_dir,
         check=True,
     )

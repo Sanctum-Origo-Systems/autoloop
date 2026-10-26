@@ -1222,6 +1222,8 @@ def test_ensure_pr_worktree_creates_new(tmp_path):
     assert len(calls) == 1
     assert calls[0][0][:3] == ["git", "worktree", "add"]
     assert "--detach" in calls[0][0]
+    # Regression #407: without --quiet, "HEAD is now at ..." leaks into review-pr --json stdout
+    assert "--quiet" in calls[0][0]
     assert str(result) in calls[0][0]
 
 
