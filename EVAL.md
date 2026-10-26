@@ -4,21 +4,22 @@
 
 | Metric | Value |
 |--------|-------|
-| First-attempt success | 68% |
-| Avg cost/PR | $1.44 |
-| Human edit rate | 52% |
+| Total PRs | 164 |
+| First-attempt success | 73% (n=201 implement runs) |
+| Avg cost/run | $1.93 (n=201 implement runs) |
+| Human edit rate | 51% (n=164 merged PRs) |
 
 ## Per-Module Breakdown
 
 | Module | Success | Avg Cost | Impl | Auto-merge ready? |
 |--------|---------|----------|------|--------------------|
-| other | 64% | $0.51 | 11 | No |
-| src/autoloop/ | 71% | $1.62 | 138 | No |
+| other | insufficient data (n=11 runs) | insufficient data (n=11 runs) | 12 | No |
+| src/autoloop/ | 86% (n=153 runs) | $1.84 (n=153 runs) | 164 | No |
 
 ## Trend
 
-| Date (UTC) | Implementations | First-attempt | Avg Cost | Human Edits |
-|------|----------------|---------------|----------|-------------|
+| Date (UTC) | New PRs | First-attempt | Avg Cost | Human Edits |
+|------|---------|---------------|----------|-------------|
 | 2026-07-19 | 12 | 100% | $0.61 | 8% |
 | 2026-07-26 | 6 | 78% | $0.55 | 0% |
 | 2026-08-02 | 12 | 68% | $0.81 | 25% |
@@ -39,26 +40,50 @@
 | 2026-10-02 | 2 | 100% | $0.34 | 150% |
 | 2026-10-03 | 2 | 0% | $1.47 | — |
 | 2026-10-04 | 6 | 100% | $0.07 | 150% |
+| 2026-10-05 | 0 | — | — | — |
+| 2026-10-06 | 3 | 50% | $0.26 | 0% |
+| 2026-10-07 | 1 | — | — | — |
+| 2026-10-08 | 0 | — | — | — |
+| 2026-10-09 | 1 | — | — | — |
+| 2026-10-10 | 2 | — | — | — |
+| 2026-10-11 | 0 | — | — | — |
+| 2026-10-12 | 0 | — | — | — |
+| 2026-10-13 | 0 | — | — | — |
+| 2026-10-14 | 0 | — | — | — |
+| 2026-10-15 | 0 | — | — | — |
+| 2026-10-16 | 0 | — | — | — |
+| 2026-10-17 | 0 | — | — | — |
+| 2026-10-18 | 0 | — | — | — |
+| 2026-10-19 | 0 | — | — | — |
+| 2026-10-20 | 0 | — | — | — |
+| 2026-10-21 | 0 | — | — | — |
+| 2026-10-22 | 0 | — | — | — |
+| 2026-10-23 | 0 | — | — | — |
+| 2026-10-24 | 0 | — | — | — |
+| 2026-10-25 | 0 | — | — | — |
+| 2026-10-26 (baseline break) | 18 | 73% | $1.93 | 51% |
+
+> Baseline break at 2026-10-26: earlier snapshots counted triage runs as implementations (#400), so their first-attempt and cost values are not comparable with later rows.
 
 ```mermaid
 xychart-beta
-    title "First-Attempt Success Rate (UTC)"
-    x-axis ["07-19", "07-26", "08-02", "08-09", "09-06", "09-13", "09-18", "09-19", "09-20", "09-21", "09-22", "09-23", "09-24", "09-25", "09-27", "09-29", "10-01", "10-02", "10-03", "10-04"]
+    title "Weekly First-Attempt Success Rate (2026)"
+    x-axis ["7/19 (n=2)", "7/26 (n=9)", "8/2 (n=19)", "8/9 (n=3)", "9/6 (n=15)", "9/13 (n=14)", "9/20 (n=70)", "9/27 (n=32)", "10/4 (n=70)", "10/11 (n=2)", "10/26 (n=201)"]
     y-axis "Success %" 0 --> 100
-    line [100, 82, 73, 76, 71, 74, 58, 59, 59, 59, 59, 60, 62, 62, 62, 64, 67, 67, 67, 68]
+    bar [100, 78, 68, 100, 60, 86, 57, 78, 81, 50, 73]
 ```
 
 ```mermaid
 xychart-beta
-    title "Avg Cost/PR (UTC)"
-    x-axis ["07-19", "07-26", "08-02", "08-09", "09-06", "09-13", "09-18", "09-19", "09-20", "09-21", "09-22", "09-23", "09-24", "09-25", "09-27", "09-29", "10-01", "10-02", "10-03", "10-04"]
-    y-axis "Cost ($)"
-    line [0.61, 0.56, 0.72, 0.68, 0.77, 0.83, 1.44, 1.45, 1.45, 1.41, 1.41, 1.41, 1.42, 1.42, 1.37, 1.35, 1.48, 1.47, 1.47, 1.44]
+    title "Weekly Avg Cost/PR (2026)"
+    x-axis ["7/19 (n=2)", "7/26 (n=9)", "8/2 (n=19)", "8/9 (n=3)", "9/6 (n=15)", "9/13 (n=14)", "9/20 (n=70)", "9/27 (n=32)", "10/4 (n=70)", "10/11 (n=2)", "10/26 (n=201)"]
+    y-axis "Cost ($)" 0 --> 3
+    bar [0.61, 0.55, 0.81, 0.28, 0.97, 1.04, 2.00, 1.04, 1.60, 0.26, 1.93]
 ```
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': {'pie1': '#4CAF50', 'pie2': '#2196F3', 'pie3': '#FF9800', 'pie4': '#E91E63', 'pie5': '#9C27B0', 'pie6': '#00BCD4', 'pieTitleTextColor': '#aaa', 'pieLegendTextColor': '#aaa', 'pieSectionTextColor': '#fff'}}}%%
 pie title Attempt Distribution by Module
-    "other (64%, 11 impl)" : 11
-    "src/autoloop/ (71%, 138 impl)" : 138
+    "other (73%, 12 impl)" : 12
+    "src/autoloop/ (86%, 164 impl)" : 164
 ```
