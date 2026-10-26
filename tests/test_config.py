@@ -526,6 +526,20 @@ def test_auto_merge_volume_floor_default():
     assert config.auto_merge_volume_floor == 10
 
 
+def test_eval_min_n_default():
+    config = AutoLoopConfig()
+    assert config.eval_min_n == 20
+
+
+def test_eval_min_n_from_toml(tmp_path, monkeypatch):
+    for var in ("AUTOLOOP_TRIAGE_MODEL", "AUTOLOOP_IMPL_MODEL", "AUTOLOOP_TIMEOUT"):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text("eval_min_n = 5\n")
+    config = load_config(toml_path)
+    assert config.eval_min_n == 5
+
+
 def test_auto_merge_promotion_level_default():
     config = AutoLoopConfig()
     assert config.auto_merge_promotion_level == "module"

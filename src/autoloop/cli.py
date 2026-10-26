@@ -314,6 +314,7 @@ def main():
             auto_merge_success_threshold=cfg.auto_merge_success_threshold,
             auto_merge_volume_floor=cfg.auto_merge_volume_floor,
             auto_merge_promotion_level=cfg.auto_merge_promotion_level,
+            eval_min_n=cfg.eval_min_n,
         )
 
     elif args.command == "jev-report":

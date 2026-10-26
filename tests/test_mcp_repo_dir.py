@@ -714,7 +714,8 @@ def test_eval_snapshot_default(mcp_tools, tmp_path):
         result = mcp_tools["autoloop_eval"](repo_dir=str(tmp_path))
 
     assert "Eval Snapshot" in result
-    assert "Issues implemented:     1" in result
+    assert "Total PRs:              0" in result
+    assert "(1/1 implement runs)" in result
 
     snap_dir = tmp_path / "autoloop" / "eval_snapshots"
     assert snap_dir.exists()
@@ -727,7 +728,8 @@ def test_eval_snapshot_no_history(mcp_tools, tmp_path):
         result = mcp_tools["autoloop_eval"](repo_dir=str(tmp_path))
 
     assert "Eval Snapshot" in result
-    assert "Issues implemented:     0" in result
+    assert "Total PRs:              0" in result
+    assert "(0/0 implement runs)" in result
 
 
 def test_eval_trend(mcp_tools, tmp_path):

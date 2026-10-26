@@ -21,6 +21,7 @@ from autoloop.eval import (
     fetch_pr_data,
     format_comparison,
     format_eval_md,
+    format_rate_with_n,
     format_snapshot,
     format_trend,
     generate_eval_md,
@@ -32,6 +33,8 @@ from autoloop.eval import (
     main,
     material_change,
     save_snapshot,
+    snapshot_implement_runs,
+    snapshot_total_prs,
 )
 
 
@@ -517,7 +520,8 @@ def test_format_snapshot_output():
     }
     output = format_snapshot(snap)
     assert "Eval Snapshot (2026-09-14)" in output
-    assert "Issues implemented:     35" in output
+    assert "Total PRs:              35" in output
+    assert "(31/35 implement runs)" in output
     assert "89%" in output
     assert "$1.12" in output
     assert "4m 22s" in output
@@ -558,7 +562,7 @@ def test_format_comparison_output():
             "avg_cost_usd": {"old": 1.15, "new": 1.12, "delta": -0.03},
             "avg_duration_seconds": {"old": 280, "new": 262, "delta": -18},
             "human_edit_rate": {"old": 0.10, "new": 0.08, "delta": -0.02},
-            "total_implementations": {"old": 30, "new": 35, "delta": 5},
+            "total_prs": {"old": 30, "new": 35, "delta": 5},
         },
         "module_changes": {
             "src/autoloop/": {"old_rate": 0.5, "new_rate": 0.6, "old_impl": 5, "new_impl": 6},
@@ -653,7 +657,8 @@ def test_main_snapshot(tmp_path, monkeypatch, capsys):
 
     out = capsys.readouterr().out
     assert "Eval Snapshot" in out
-    assert "Issues implemented:     1" in out
+    assert "Total PRs:              0" in out
+    assert "(1/1 implement runs)" in out
 
     snap_dir = tmp_path / "autoloop" / "eval_snapshots"
     assert snap_dir.exists()
@@ -932,7 +937,7 @@ def test_format_comparison_dollar_shows_percentage():
             "avg_cost_usd": {"old": 1.15, "new": 1.12, "delta": -0.03},
             "avg_duration_seconds": {"old": 280, "new": 262, "delta": -18},
             "human_edit_rate": {"old": 0.10, "new": 0.08, "delta": -0.02},
-            "total_implementations": {"old": 30, "new": 35, "delta": 5},
+            "total_prs": {"old": 30, "new": 35, "delta": 5},
         },
         "module_changes": {},
     }
@@ -952,7 +957,7 @@ def test_format_comparison_dollar_zero_old():
             "avg_cost_usd": {"old": 0.0, "new": 1.0, "delta": 1.0},
             "avg_duration_seconds": {"old": 0, "new": 100, "delta": 100},
             "human_edit_rate": {"old": 0.0, "new": 0.1, "delta": 0.1},
-            "total_implementations": {"old": 0, "new": 5, "delta": 5},
+            "total_prs": {"old": 0, "new": 5, "delta": 5},
         },
         "module_changes": {},
     }
@@ -1156,7 +1161,8 @@ def test_format_eval_md_basic():
     output = format_eval_md(snap)
     assert "# Eval Report" in output
     assert "**Date:** 2026-09-14" in output
-    assert "| Issues implemented | 35 |" in output
+    assert "| Total PRs | 35 |" in output
+    assert "(31/35 implement runs)" in output
     assert "89%" in output
     assert "$1.12" in output
     assert "4m 22s" in output
@@ -1391,9 +1397,10 @@ def test_generate_eval_md_overall_stats():
     content = generate_eval_md(snap, [snap])
     assert "# EVAL Report" in content
     assert "## Overall" in content
-    assert "| First-attempt success | 89% |" in content
-    assert "| Avg cost/PR | $1.12 |" in content
-    assert "| Human edit rate | 8% |" in content
+    assert "| Total PRs | 35 |" in content
+    assert "| First-attempt success | 89% (n=35 implement runs) |" in content
+    assert "| Avg cost/run | $1.12 (n=35 implement runs) |" in content
+    assert "| Human edit rate | 8% (n=35 merged PRs) |" in content
 
 
 def test_generate_eval_md_module_table():
@@ -3569,3 +3576,174 @@ def test_chart_zero_percent_shown_when_all_failed():
     # Period: 14-10=4 runs, 8-8=0 first-attempt → 0%
     assert "bar [80, 0]" in content
     assert "(n=4)" in content
+
+
+# --- explicit populations and n (#418) ---
+
+
+def test_compute_snapshot_pr_count_and_run_count_differ():
+    """PR count and implement-run count are separate populations with their own n."""
+    runs = [
+        {"type": "implement", "issue": 1, "success": True, "attempts": 1, "cost_usd": 1.0},
+        {"type": "implement", "issue": 2, "success": False, "attempts": 3, "cost_usd": 3.0},
+        {"type": "triage", "issue": 0, "success": True, "cost_usd": 0.1},
+    ]
+    pr_data = [
+        {"number": 10, "merged": True, "closed": False, "issue": 1},
+        {"number": 11, "merged": True, "closed": False, "issue": 2, "human_edited": True},
+        {"number": 12, "merged": False, "closed": False, "issue": 3},
+        {"number": 13, "merged": True, "closed": False, "issue": 4},
+        {"number": 14, "merged": False, "closed": True, "issue": 5},
+    ]
+    snap = compute_snapshot(runs, pr_data, date="2026-10-26")
+    assert snap["total_prs"] == 4
+    assert snap["implement_run_count"] == 2
+    assert snap["merged_pr_count"] == 3
+    assert snap["first_attempt_rate"] == 0.5
+    assert snap["avg_cost_usd"] == 2.0
+
+
+def test_compute_snapshot_keeps_old_total_implementations_key():
+    pr_data = [
+        {"number": 10, "merged": True, "closed": False},
+        {"number": 11, "merged": False, "closed": True},
+    ]
+    snap = compute_snapshot([], pr_data, date="2026-10-26")
+    assert snap["total_implementations"] == snap["total_prs"] == 1
+
+
+def test_compute_snapshot_no_pr_data_counts_zero_prs():
+    runs = [{"type": "implement", "issue": 1, "success": True, "attempts": 1}]
+    snap = compute_snapshot(runs, [], date="2026-10-26")
+    assert snap["total_prs"] == 0
+    assert snap["implement_run_count"] == 1
+
+
+def test_snapshot_total_prs_reads_old_key():
+    assert snapshot_total_prs({"total_implementations": 30}) == 30
+    assert snapshot_total_prs({"total_prs": 12, "total_implementations": 99}) == 12
+    assert snapshot_total_prs({}) == 0
+
+
+def test_snapshot_implement_runs_falls_back_to_attempt_distribution():
+    assert snapshot_implement_runs({"implement_run_count": 43}) == 43
+    assert snapshot_implement_runs({"attempt_distribution": {"1": 5, "2": 2, "3+": 1}}) == 8
+    assert snapshot_implement_runs({}) == 0
+
+
+def test_format_rate_with_n_above_and_below_floor():
+    assert format_rate_with_n(0.84, 43, "implement runs") == "84% (n=43 implement runs)"
+    assert format_rate_with_n(0.5, 19, "merged PRs") == "insufficient data (n=19 merged PRs)"
+    assert format_rate_with_n(0.5, 4, "merged PRs", min_n=4) == "50% (n=4 merged PRs)"
+
+
+def test_generate_eval_md_shows_both_n_values():
+    snap = {
+        **_make_snapshot(rate=0.84, cost=1.47, hr=0.43),
+        "total_prs": 115,
+        "total_implementations": 115,
+        "implement_run_count": 43,
+        "merged_pr_count": 60,
+    }
+    content = generate_eval_md(snap, [snap])
+    assert "| Total PRs | 115 |" in content
+    assert "| First-attempt success | 84% (n=43 implement runs) |" in content
+    assert "| Avg cost/run | $1.47 (n=43 implement runs) |" in content
+    assert "| Human edit rate | 43% (n=60 merged PRs) |" in content
+
+
+def test_generate_eval_md_below_floor_renders_insufficient_data():
+    snap = {
+        **_make_snapshot(rate=1.0, hr=0.0, total=5),
+        "implement_run_count": 5,
+        "merged_pr_count": 3,
+    }
+    content = generate_eval_md(snap, [snap])
+    assert "| First-attempt success | insufficient data (n=5 implement runs) |" in content
+    assert "| Human edit rate | insufficient data (n=3 merged PRs) |" in content
+
+
+def test_generate_eval_md_min_n_is_configurable():
+    snap = {
+        **_make_snapshot(rate=1.0, hr=0.0, total=5),
+        "implement_run_count": 5,
+        "merged_pr_count": 3,
+    }
+    content = generate_eval_md(snap, [snap], min_n=3)
+    assert "| First-attempt success | 100% (n=5 implement runs) |" in content
+    assert "| Human edit rate | 0% (n=3 merged PRs) |" in content
+
+
+def test_generate_eval_md_reads_old_total_implementations_key():
+    """Snapshots written before #418 (no total_prs) still feed the trend table."""
+    old = _make_snapshot(date="2026-10-20", total=30)
+    new = _make_snapshot(date="2026-10-21", total=34)
+    assert "total_prs" not in old and "total_prs" not in new
+    content = generate_eval_md(new, [old, new])
+    assert "| Total PRs | 34 |" in content
+    row = [ln for ln in content.split("\n") if ln.startswith("| 2026-10-21")][0]
+    assert row.split("|")[2].strip() == "4"
+
+
+def test_generate_eval_md_marks_baseline_break():
+    before = {
+        **_make_snapshot(date="2026-10-25", rate=0.5, total=200),
+        "attempt_distribution": {"1": 100, "2": 100, "3+": 0},
+    }
+    after = {
+        **_make_snapshot(date="2026-10-26", rate=0.84, cost=1.47, total=43),
+        "total_prs": 205,
+        "implement_run_count": 43,
+        "attempt_distribution": {"1": 36, "2": 7, "3+": 0},
+    }
+    content = generate_eval_md(after, [before, after])
+    row = [ln for ln in content.split("\n") if ln.startswith("| 2026-10-26")][0]
+    assert "2026-10-26 (baseline break)" in row
+    # Period stats restart at the break instead of diffing against triage-inflated rows.
+    assert "84%" in row
+    assert "$1.47" in row
+    assert "Baseline break at 2026-10-26" in content
+    assert "(#400)" in content
+    before_row = [ln for ln in content.split("\n") if ln.startswith("| 2026-10-25")][0]
+    assert "baseline break" not in before_row
+
+
+def test_generate_eval_md_no_baseline_break_after_cutover():
+    a = _make_snapshot(date="2026-10-26", total=40)
+    b = _make_snapshot(date="2026-10-27", total=45)
+    content = generate_eval_md(b, [a, b])
+    assert "baseline break" not in content.lower()
+
+
+def test_material_change_on_implement_run_growth_without_prs():
+    old = {**_make_snapshot(total=10), "total_prs": 0, "implement_run_count": 10}
+    new = {**_make_snapshot(total=10), "total_prs": 0, "implement_run_count": 15}
+    assert material_change(new, old)
+
+
+def test_material_change_reads_old_key_for_pr_growth():
+    old = _make_snapshot(total=30)
+    new = {**_make_snapshot(total=30), "total_prs": 35, "implement_run_count": 30}
+    assert material_change(new, old)
+
+
+def test_compare_snapshots_reports_total_prs_and_old_key():
+    old = {"date": "2026-10-25", "total_implementations": 30}
+    new = {"date": "2026-10-26", "total_prs": 35, "total_implementations": 35}
+    comp = compare_snapshots(old, new)
+    assert comp["changes"]["total_prs"] == {"old": 30, "new": 35, "delta": 5}
+    assert comp["changes"]["total_implementations"]["delta"] == 5
+    assert "Total PRs:" in format_comparison(comp)
+
+
+def test_main_publish_passes_eval_min_n(tmp_path, monkeypatch):
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    entry = {"type": "implement", "issue": 1, "success": True, "attempts": 1, "cost_usd": 1.0}
+    (log_dir / "run_history.jsonl").write_text(json.dumps(entry) + "\n")
+    monkeypatch.setattr("autoloop.eval.subprocess.run", _fake_subprocess_on_main([]))
+
+    main(publish=True, ctx=_make_ctx(tmp_path), eval_min_n=1)
+
+    content = (tmp_path / "EVAL.md").read_text()
+    assert "| First-attempt success | 100% (n=1 implement runs) |" in content
