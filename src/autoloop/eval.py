@@ -7,6 +7,7 @@ metrics. No LLM calls. Purely deterministic.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from datetime import datetime
@@ -278,8 +279,17 @@ def enrich_pr_data_with_runs(pr_data: list[dict], runs: list[dict]) -> list[dict
     return pr_data
 
 
-def save_snapshot(snapshot: dict, ctx: RepoContext) -> Path:
-    snap_dir = ctx.repo_dir / "autoloop" / "eval_snapshots"
+def _published_snapshot_dir(ctx: RepoContext) -> Path:
+    return ctx.repo_dir / "autoloop" / "eval_snapshots"
+
+
+def _daily_snapshot_dir(ctx: RepoContext) -> Path:
+    return ctx.data_dir / "eval_snapshots"
+
+
+def save_snapshot(snapshot: dict, ctx: RepoContext, *, published: bool = False) -> Path:
+    """Write a snapshot to the data dir, or to the repo when it is being published."""
+    snap_dir = _published_snapshot_dir(ctx) if published else _daily_snapshot_dir(ctx)
     snap_dir.mkdir(parents=True, exist_ok=True)
     path = snap_dir / f"{snapshot['date']}.json"
     with open(path, "w") as f:
@@ -289,14 +299,16 @@ def save_snapshot(snapshot: dict, ctx: RepoContext) -> Path:
 
 
 def load_snapshot(date: str, ctx: RepoContext) -> dict | None:
-    path = ctx.repo_dir / "autoloop" / "eval_snapshots" / f"{date}.json"
-    if not path.exists():
-        return None
-    return json.loads(path.read_text())
+    for snap_dir in (_published_snapshot_dir(ctx), _daily_snapshot_dir(ctx)):
+        path = snap_dir / f"{date}.json"
+        if path.exists():
+            return json.loads(path.read_text())
+    return None
 
 
 def load_latest_snapshot(ctx: RepoContext) -> dict | None:
-    snap_dir = ctx.repo_dir / "autoloop" / "eval_snapshots"
+    """Return the last published snapshot — the baseline for material_change."""
+    snap_dir = _published_snapshot_dir(ctx)
     if not snap_dir.exists():
         return None
     files = sorted(snap_dir.glob("*.json"))
@@ -306,13 +318,68 @@ def load_latest_snapshot(ctx: RepoContext) -> dict | None:
 
 
 def load_all_snapshots(ctx: RepoContext) -> list[dict]:
-    snap_dir = ctx.repo_dir / "autoloop" / "eval_snapshots"
-    if not snap_dir.exists():
+    """Return daily and published snapshots by date; the published copy wins on a tie."""
+    by_date: dict[str, Path] = {}
+    for snap_dir in (_daily_snapshot_dir(ctx), _published_snapshot_dir(ctx)):
+        if snap_dir.exists():
+            for f in snap_dir.glob("*.json"):
+                by_date[f.stem] = f
+    return [json.loads(by_date[d].read_text()) for d in sorted(by_date)]
+
+
+def migrate_unpublished_snapshots(ctx: RepoContext) -> list[Path]:
+    """Move untracked or uncommitted repo snapshots into the data dir.
+
+    Untracked and newly staged files are moved out of the repo. Modified tracked files
+    are copied to the data dir and restored to their committed version. Returns the
+    data-dir paths written.
+    """
+    rel_dir = _published_snapshot_dir(ctx).relative_to(ctx.repo_dir)
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all", "--", str(rel_dir)],
+            capture_output=True,
+            text=True,
+            cwd=str(ctx.repo_dir),
+        )
+    except FileNotFoundError:
         return []
-    snapshots = []
-    for f in sorted(snap_dir.glob("*.json")):
-        snapshots.append(json.loads(f.read_text()))
-    return snapshots
+    if result.returncode != 0:
+        return []
+
+    migrated = []
+    daily_dir = _daily_snapshot_dir(ctx)
+    for line in (result.stdout or "").splitlines():
+        code, rel = line[:2], line[3:].strip()
+        src = ctx.repo_dir / rel
+        if not rel.endswith(".json") or not src.is_file():
+            continue
+        if code == "??":
+            restore_cmd, remove = None, True
+        elif code[0] == "A":
+            restore_cmd, remove = ["git", "rm", "--cached", "-q", "--", rel], True
+        elif "M" in code:
+            restore_cmd, remove = ["git", "checkout", "HEAD", "--", rel], False
+        else:
+            continue
+
+        daily_dir.mkdir(parents=True, exist_ok=True)
+        dst = daily_dir / src.name
+        if not dst.exists():
+            shutil.copy2(src, dst)
+        if restore_cmd:
+            try:
+                restore = subprocess.run(
+                    restore_cmd, capture_output=True, text=True, cwd=str(ctx.repo_dir)
+                )
+            except FileNotFoundError:
+                return migrated
+            if restore.returncode != 0:
+                continue
+        if remove:
+            src.unlink()
+        migrated.append(dst)
+    return migrated
 
 
 def compare_snapshots(old: dict, new: dict) -> dict:
@@ -934,6 +1001,8 @@ def main(
             print("Error: --publish must be run from the main branch")
             return
 
+        migrate_unpublished_snapshots(ctx)
+
         runs = load_run_history(ctx)
         pr_data = fetch_pr_data(repo) if repo else []
         pr_data = enrich_pr_data_with_runs(pr_data, runs)
@@ -942,7 +1011,14 @@ def main(
         previous = load_latest_snapshot(ctx)
         snapshot.update(_compute_period_stats(snapshot, previous))
 
-        path = save_snapshot(snapshot, ctx)
+        daily_path = save_snapshot(snapshot, ctx)
+
+        if previous and not material_change(snapshot, previous):
+            print(f"Snapshot saved to {daily_path}")
+            print("No material change, skipping EVAL.md commit")
+            return
+
+        path = save_snapshot(snapshot, ctx, published=True)
         print(f"Snapshot saved to {path}")
 
         all_snaps = load_all_snapshots(ctx)
@@ -958,10 +1034,6 @@ def main(
         eval_path.write_text(content)
 
         date = snapshot["date"]
-
-        if previous and not material_change(snapshot, previous):
-            print("No material change, skipping EVAL.md commit")
-            return
 
         print("Material change detected, publishing EVAL.md")
 
