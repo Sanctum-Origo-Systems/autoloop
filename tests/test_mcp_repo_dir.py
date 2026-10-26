@@ -27,9 +27,8 @@ def _make_ctx(repo_dir):
 
 
 def test_read_last_runs_returns_both(tmp_path):
-    log_dir = tmp_path / "autoloop"
-    log_dir.mkdir()
-    log_file = log_dir / "run_history.jsonl"
+    ctx = _make_ctx(tmp_path)
+    log_file = ctx.data_dir / "run_history.jsonl"
     lines = [
         json.dumps({"type": "implement", "issue": 10, "success": True, "timestamp": "t1"}),
         json.dumps(
@@ -44,35 +43,33 @@ def test_read_last_runs_returns_both(tmp_path):
     ]
     log_file.write_text("\n".join(lines) + "\n")
 
-    last_impl, last_review = _read_last_runs(base=tmp_path)
+    last_impl, last_review = _read_last_runs(ctx)
     assert last_impl["issue"] == 10
     assert last_review["pr_number"] == 42
     assert last_review["type"] == "review"
 
 
 def test_read_last_runs_no_file(tmp_path):
-    last_impl, last_review = _read_last_runs(base=tmp_path)
+    last_impl, last_review = _read_last_runs(_make_ctx(tmp_path))
     assert last_impl is None
     assert last_review is None
 
 
 def test_read_last_runs_only_implement(tmp_path):
-    log_dir = tmp_path / "autoloop"
-    log_dir.mkdir()
-    log_file = log_dir / "run_history.jsonl"
+    ctx = _make_ctx(tmp_path)
+    log_file = ctx.data_dir / "run_history.jsonl"
     log_file.write_text(
         json.dumps({"type": "implement", "issue": 5, "success": True, "timestamp": "t1"}) + "\n"
     )
 
-    last_impl, last_review = _read_last_runs(base=tmp_path)
+    last_impl, last_review = _read_last_runs(ctx)
     assert last_impl["issue"] == 5
     assert last_review is None
 
 
 def test_read_last_runs_only_review(tmp_path):
-    log_dir = tmp_path / "autoloop"
-    log_dir.mkdir()
-    log_file = log_dir / "run_history.jsonl"
+    ctx = _make_ctx(tmp_path)
+    log_file = ctx.data_dir / "run_history.jsonl"
     log_file.write_text(
         json.dumps(
             {"type": "review", "pr_number": 7, "success": True, "cost_usd": 0.05, "timestamp": "t1"}
@@ -80,7 +77,7 @@ def test_read_last_runs_only_review(tmp_path):
         + "\n"
     )
 
-    last_impl, last_review = _read_last_runs(base=tmp_path)
+    last_impl, last_review = _read_last_runs(ctx)
     assert last_impl is None
     assert last_review["pr_number"] == 7
 
@@ -485,8 +482,8 @@ def test_status_with_repo_dir(mcp_tools, tmp_path, monkeypatch):
     toml_path = tmp_path / "autoloop.toml"
     toml_path.write_text('repo = "acme-corp/widget"\n')
 
-    log_dir = tmp_path / "autoloop"
-    log_dir.mkdir()
+    log_dir = RepoContext(tmp_path).data_dir
+    log_dir.mkdir(parents=True)
     (log_dir / "run_history.jsonl").write_text(
         json.dumps(
             {"issue": 10, "success": True, "cost_usd": 0.75, "timestamp": "2026-07-18T10:00:00"}
@@ -527,8 +524,8 @@ def test_status_shows_both_implement_and_review(mcp_tools, tmp_path, monkeypatch
     toml_path = tmp_path / "autoloop.toml"
     toml_path.write_text('repo = "acme-corp/widget"\n')
 
-    log_dir = tmp_path / "autoloop"
-    log_dir.mkdir()
+    log_dir = RepoContext(tmp_path).data_dir
+    log_dir.mkdir(parents=True)
     lines = [
         json.dumps(
             {"issue": 10, "success": True, "cost_usd": 0.75, "timestamp": "2026-07-18T10:00:00"}
