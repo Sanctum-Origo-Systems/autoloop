@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
+from autoloop.config import RepoContext
 from autoloop.mcp_server import _get_timer_info, _is_process_running
 
 
@@ -225,8 +226,8 @@ def test_cli_show_status_displays_review_run(tmp_path, monkeypatch, capsys):
         lambda path=None: AutoLoopConfig(repo="owner/repo"),
     )
 
-    log_dir = tmp_path / "autoloop"
-    log_dir.mkdir()
+    log_dir = RepoContext(tmp_path).data_dir
+    log_dir.mkdir(parents=True)
     log_file = log_dir / "run_history.jsonl"
     log_file.write_text(
         json.dumps(
@@ -282,8 +283,8 @@ def test_cli_show_status_no_review_shows_implement_only(tmp_path, monkeypatch, c
         lambda path=None: AutoLoopConfig(repo="owner/repo"),
     )
 
-    log_dir = tmp_path / "autoloop"
-    log_dir.mkdir()
+    log_dir = RepoContext(tmp_path).data_dir
+    log_dir.mkdir(parents=True)
     log_file = log_dir / "run_history.jsonl"
     log_file.write_text(
         json.dumps(
