@@ -757,6 +757,26 @@ def test_log_run_includes_cache_creation_tokens(tmp_path):
     assert entry["cache_creation_tokens"] == 300
 
 
+def test_log_run_triage_writes_type_and_issues_triaged(tmp_path):
+    log_run(0, True, 0, 5.0, 0.10, tmp_path, run_type="triage", issues_triaged=3)
+
+    log_file = tmp_path / "run_history.jsonl"
+    entry = json.loads(log_file.read_text().strip())
+    assert entry["type"] == "triage"
+    assert entry["issue"] == 0
+    assert entry["attempts"] == 0
+    assert entry["issues_triaged"] == 3
+
+
+def test_log_run_default_type_is_implement(tmp_path):
+    log_run(1, True, 1, 10.0, 0.05, tmp_path)
+
+    log_file = tmp_path / "run_history.jsonl"
+    entry = json.loads(log_file.read_text().strip())
+    assert entry["type"] == "implement"
+    assert "issues_triaged" not in entry
+
+
 # --- _merge_steps ---
 
 

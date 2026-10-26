@@ -65,7 +65,9 @@ def compute_snapshot(
     date: str | None = None,
     module_prefixes: list[str] | None = None,
 ) -> dict:
-    impl_runs = [r for r in runs if r.get("type", "implement") == "implement"]
+    impl_runs = [
+        r for r in runs if r.get("type", "implement") == "implement" and r.get("issue", 0) != 0
+    ]
 
     total = len(impl_runs)
     first_attempt = sum(1 for r in impl_runs if r.get("success") and r.get("attempts", 1) == 1)
@@ -258,7 +260,9 @@ def _extract_issue_from_branch(branch: str) -> int | None:
 
 
 def enrich_pr_data_with_runs(pr_data: list[dict], runs: list[dict]) -> list[dict]:
-    impl_runs = [r for r in runs if r.get("type", "implement") == "implement"]
+    impl_runs = [
+        r for r in runs if r.get("type", "implement") == "implement" and r.get("issue", 0) != 0
+    ]
     issue_attempts: dict[int, int] = {}
     for r in impl_runs:
         issue = r.get("issue", 0)
