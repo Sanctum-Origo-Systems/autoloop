@@ -60,7 +60,9 @@ def ensure_worktree(ctx: RepoContext, branch: str) -> Path:
 
 
 def reset_worktree_branch(worktree_path: Path, branch: str) -> None:
-    """Reset the worktree branch to the latest origin/main."""
+    """Discard leftovers from earlier attempts, then reset the branch to origin/main."""
+    subprocess.run(["git", "reset", "--hard"], cwd=worktree_path, check=True)
+    subprocess.run(["git", "clean", "-fd"], cwd=worktree_path, check=True)
     subprocess.run(
         ["git", "checkout", "-B", branch, "origin/main"],
         cwd=worktree_path,
@@ -1600,7 +1602,19 @@ def implement_single_issue(
             )
             return False
 
-        ensure_clean_main(repo_dir)
+        # With worktree isolation the main checkout may hold someone's uncommitted work,
+        # so leave it alone and only refresh origin/main for the worktree reset.
+        use_worktree = cfg.implement_isolation == "worktree"
+        if use_worktree:
+            if ctx is None:
+                raise ValueError("implement.isolation = 'worktree' requires a RepoContext (ctx)")
+            subprocess.run(
+                ["git", "fetch", "origin", "main"],
+                cwd=repo_dir,
+                capture_output=True,
+            )
+        else:
+            ensure_clean_main(repo_dir)
 
         if not design_gate(issue, require_design):
             return False
@@ -1630,7 +1644,6 @@ def implement_single_issue(
 
         # With worktree isolation, the agent and every git/gh step after branch creation
         # run in work_dir so the main checkout (repo_dir) stays on main.
-        use_worktree = cfg.implement_isolation == "worktree" and ctx is not None
         if use_worktree:
             branch, work_dir = create_worktree_branch(issue, ctx)
             print(f"  Worktree: {work_dir}")

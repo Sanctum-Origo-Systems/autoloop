@@ -5345,19 +5345,22 @@ def test_ensure_worktree_path_under_worktree_dir(tmp_path):
 
 
 def test_reset_worktree_branch_runs_checkout(monkeypatch, tmp_path):
-    """reset_worktree_branch runs git checkout -B inside the worktree."""
-    captured = {}
+    """reset_worktree_branch discards leftovers, then runs git checkout -B, all in the worktree."""
+    calls = []
 
     def fake_run(cmd, **kwargs):
-        captured["cmd"] = cmd
-        captured["cwd"] = kwargs.get("cwd")
+        calls.append((cmd, kwargs.get("cwd")))
         return type("R", (), {"returncode": 0})()
 
     monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
     reset_worktree_branch(tmp_path, "autoloop/42-add-feature")
 
-    assert captured["cmd"] == ["git", "checkout", "-B", "autoloop/42-add-feature", "origin/main"]
-    assert captured["cwd"] == tmp_path
+    assert [cmd for cmd, _ in calls] == [
+        ["git", "reset", "--hard"],
+        ["git", "clean", "-fd"],
+        ["git", "checkout", "-B", "autoloop/42-add-feature", "origin/main"],
+    ]
+    assert all(cwd == tmp_path for _, cwd in calls)
 
 
 def test_resolve_working_dir_off_returns_cwd(monkeypatch, tmp_path):
@@ -5564,6 +5567,50 @@ def test_implement_single_issue_worktree_failure_removes_worktree(monkeypatch, t
     assert "cleanup_branch" not in received
 
 
+def test_implement_single_issue_worktree_fetches_instead_of_cleaning_main(monkeypatch, tmp_path):
+    """With isolation 'worktree', main is fetched, never reset via ensure_clean_main."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(implement_isolation="worktree"))
+    ctx = RepoContext.for_data_dir(tmp_path / "data", repo_dir=tmp_path / "checkout")
+    wt_path = ctx.worktree_dir / "autoloop/42-add-feature"
+    received = {}
+    git_calls = _patch_single_issue_steps(monkeypatch, ctx, wt_path, received)
+    cleaned = []
+    monkeypatch.setattr(
+        implement_issue, "ensure_clean_main", lambda repo_dir=None: cleaned.append(1)
+    )
+
+    assert implement_single_issue(_FAKE_ISSUE, ctx=ctx) is True
+
+    assert cleaned == []
+    assert (["git", "fetch", "origin", "main"], ctx.repo_dir) in git_calls
+
+
+def test_implement_single_issue_isolation_off_still_cleans_main(monkeypatch, tmp_path):
+    """With isolation 'off', ensure_clean_main still runs on the main checkout."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(implement_isolation="off"))
+    ctx = RepoContext.for_data_dir(tmp_path / "data", repo_dir=tmp_path / "checkout")
+    received = {}
+    _patch_single_issue_steps(monkeypatch, ctx, ctx.worktree_dir / "unused", received)
+    cleaned = []
+    monkeypatch.setattr(
+        implement_issue, "ensure_clean_main", lambda repo_dir=None: cleaned.append(repo_dir)
+    )
+
+    assert implement_single_issue(_FAKE_ISSUE, ctx=ctx) is True
+
+    assert cleaned == [ctx.repo_dir]
+
+
+def test_implement_single_issue_worktree_without_ctx_raises(monkeypatch):
+    """With isolation 'worktree' and no ctx, fail loudly instead of falling back silently."""
+    import pytest
+
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(implement_isolation="worktree"))
+
+    with pytest.raises(SystemicError, match="requires a RepoContext"):
+        implement_single_issue(_FAKE_ISSUE, ctx=None)
+
+
 def test_implement_single_issue_isolation_off_uses_main_checkout(monkeypatch, tmp_path):
     """With isolation 'off', every step still receives the main checkout path."""
     monkeypatch.setattr(implement_issue, "cfg", _test_cfg(implement_isolation="off"))
@@ -5590,7 +5637,8 @@ def _git(*args, cwd):
 
 
 def test_implement_single_issue_worktree_keeps_main_checkout_on_main(monkeypatch, tmp_path):
-    """Regression (#414): with isolation 'worktree', the main checkout stays on main.
+    """Regression (#414): with isolation 'worktree', the main checkout stays on main
+    and its uncommitted work is left untouched.
 
     Uses real git against a local bare origin; only gh calls and the agent are stubbed.
     """
@@ -5642,9 +5690,14 @@ def test_implement_single_issue_worktree_keeps_main_checkout_on_main(monkeypatch
     monkeypatch.setattr(implement_issue, "review_implementation", lambda *a, **kw: (True, ""))
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: 7)
 
+    (checkout / "README.md").write_text("widget\nuncommitted edit\n")
+    (checkout / "scratch.txt").write_text("work in progress\n")
+
     assert _git("branch", "--show-current", cwd=checkout) == "main"
     assert implement_single_issue(_FAKE_ISSUE, ctx=ctx) is True
 
+    assert (checkout / "README.md").read_text() == "widget\nuncommitted edit\n"
+    assert (checkout / "scratch.txt").read_text() == "work in progress\n"
     wt_path = ctx.worktree_dir / "autoloop/42-add-feature"
     assert agent_dirs == [wt_path]
     assert main_branch_seen == ["main"]
