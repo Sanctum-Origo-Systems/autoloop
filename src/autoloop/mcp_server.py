@@ -21,6 +21,24 @@ def _make_context(repo_dir: str | None) -> RepoContext:
     return RepoContext(repo_dir or ".")
 
 
+def _parse_last_json(stdout: str) -> dict:
+    """Parse the last JSON object line in *stdout*, skipping any leading non-JSON output.
+
+    Raises ValueError if no line parses as a JSON object.
+    """
+    for line in reversed((stdout or "").splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            return data
+    raise ValueError("no JSON object found in output")
+
+
 def _read_last_runs(base: Path) -> tuple[dict | None, dict | None]:
     """Read the last implement and last review entries from run_history.jsonl."""
     log_file = base / "autoloop" / "run_history.jsonl"
@@ -217,7 +235,7 @@ def main():
 
         if result.returncode != 0:
             try:
-                data = json.loads(result.stdout)
+                data = _parse_last_json(result.stdout)
                 cost = data.get("cost_usd", 0)
                 inp = data.get("input_tokens", 0)
                 out = data.get("output_tokens", 0)
@@ -231,7 +249,7 @@ def main():
                 return f"Review failed for PR #{pr_number}: {error}"
 
         try:
-            data = json.loads(result.stdout)
+            data = _parse_last_json(result.stdout)
         except (json.JSONDecodeError, ValueError):
             snippet = (result.stdout or result.stderr or "")[:300].strip()
             return f"Review of PR #{pr_number} completed but returned invalid output: {snippet}"
@@ -384,12 +402,13 @@ def main():
             save_snapshot(current, ctx)
             return format_comparison(comparison)
 
-        snap_path = save_snapshot(current, ctx)
+        save_snapshot(current, ctx)
         result = format_snapshot(current)
 
         if publish:
             from autoloop.eval import _publish_via_pr
 
+            snap_path = save_snapshot(current, ctx, published=True)
             all_snaps = load_all_snapshots(ctx)
             md_content = generate_eval_md(
                 current,

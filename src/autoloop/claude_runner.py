@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -21,6 +21,7 @@ class ClaudeResult:
     cache_creation_tokens: int
     success: bool
     timed_out: bool = False
+    permission_denials: list[dict] = field(default_factory=list)
 
 
 def _fetch_main_settings(repo_dir: Path) -> str | None:
@@ -100,6 +101,7 @@ def run_claude(
             cache_read_tokens=usage.get("cache_read_input_tokens", 0),
             cache_creation_tokens=usage.get("cache_creation_input_tokens", 0),
             success=True,
+            permission_denials=data.get("permission_denials") or [],
         )
     except (json.JSONDecodeError, KeyError):
         return ClaudeResult(result.stdout, 0, 0, 0, 0, 0, success=True)

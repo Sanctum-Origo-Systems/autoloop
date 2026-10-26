@@ -105,7 +105,12 @@ def build_parser():
     acp_parser.add_argument("pr_number", type=int, help="PR number to check")
 
     # doctor
-    subparsers.add_parser("doctor", help="Run environment and config checks")
+    doctor_parser = subparsers.add_parser("doctor", help="Run environment and config checks")
+    doctor_parser.add_argument(
+        "--live",
+        action="store_true",
+        help="Also run a paid claude -p probe that checks permission rules apply",
+    )
 
     # preflight
     subparsers.add_parser("preflight", help="Run verify and lint commands on the current branch")
@@ -325,7 +330,7 @@ def main():
     elif args.command == "doctor":
         from autoloop.doctor import get_checks, run_checks
 
-        results = run_checks(get_checks(ctx))
+        results = run_checks(get_checks(ctx, live=args.live))
         if any(not r.passed for r in results):
             sys.exit(1)
 
