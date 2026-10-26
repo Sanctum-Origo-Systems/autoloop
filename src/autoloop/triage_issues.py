@@ -241,8 +241,19 @@ def _extract_keywords(text: str) -> set[str]:
         "with",
         "would",
     }
+    # Component and verb words that appear in many unrelated titles (#433).
+    generic_words = {
+        "autoloop",
+        "check",
+        "doctor",
+        "eval",
+        "implement",
+        "run",
+        "test",
+        "triage",
+    }
     words = re.findall(r"[a-z][a-z0-9_]+", text.lower())
-    return {w for w in words if w not in stopwords and len(w) > 2}
+    return {w for w in words if w not in stopwords and w not in generic_words and len(w) > 2}
 
 
 def detect_duplicate_issues(
@@ -253,7 +264,8 @@ def detect_duplicate_issues(
     """Check if a candidate overlaps with existing ready/in-progress issues.
 
     Returns list of potential duplicates: [{"number": 89, "reason": "..."}].
-    Flags overlap when files AND keywords overlap, or when keyword overlap is high.
+    Flags overlap when files overlap AND at least 2 keywords overlap, or when
+    keyword overlap is high.
     """
     candidate_keywords = _extract_keywords(candidate_title)
     candidate_file_set = set(candidate_files)
@@ -267,7 +279,7 @@ def detect_duplicate_issues(
         file_overlap = candidate_file_set & existing_files
         keyword_overlap = candidate_keywords & existing_keywords
 
-        if file_overlap and keyword_overlap:
+        if file_overlap and len(keyword_overlap) >= 2:
             file_list = ", ".join(f"`{f}`" for f in sorted(file_overlap))
             keyword_list = ", ".join(sorted(keyword_overlap))
             duplicates.append(
