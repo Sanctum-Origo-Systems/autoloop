@@ -515,6 +515,8 @@ Benefits:
 
 The worktree is reset to a clean branch from `origin/main` before each issue. Session detection is skipped for commands that use the worktree since they never touch your tree.
 
+With isolation on, implement's agent, verification, push and PR creation all run in the worktree, and the main checkout stays on `main` for the whole run. (It is still reset to a clean, up-to-date `main` at the start of each issue, so local `main` matches `origin/main` for branch comparisons.) `autoloop doctor` does a dry-run resolution of implement's working directory and fails if it is not under the worktree directory.
+
 Start with `isolation = "off"` (default). Enable on one repo to validate, then default on once first-attempt rates hold.
 
 ## Graduated Autonomy

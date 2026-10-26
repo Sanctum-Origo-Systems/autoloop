@@ -452,15 +452,56 @@ def test_check_worktree_isolation_enabled(repo_ctx):
     passed, msg = check_worktree_isolation(repo_ctx)
     assert passed is True
     assert "Worktree isolation: enabled" in msg
+    assert str(repo_ctx.worktree_dir / "autoloop/0-doctor-probe") in msg
+
+
+def test_check_worktree_isolation_enabled_is_dry_run(repo_ctx):
+    """The doctor check creates no worktree and runs no git commands."""
+    toml_file = repo_ctx.repo_dir / "autoloop.toml"
+    toml_file.write_text('repo = "acme/widgets"\n\n[implement]\nisolation = "worktree"\n')
+    with patch("autoloop.implement_issue.subprocess.run") as mock_run:
+        passed, _ = check_worktree_isolation(repo_ctx)
+    assert passed is True
+    mock_run.assert_not_called()
+    assert not repo_ctx.worktree_dir.exists()
+
+
+def test_check_worktree_isolation_fails_when_path_not_under_worktree_dir(repo_ctx):
+    """A resolved path outside ctx.worktree_dir is reported as a failure naming the mismatch."""
+    toml_file = repo_ctx.repo_dir / "autoloop.toml"
+    toml_file.write_text('repo = "acme/widgets"\n\n[implement]\nisolation = "worktree"\n')
+    with patch(
+        "autoloop.implement_issue.resolve_working_dir",
+        return_value=repo_ctx.repo_dir,
+    ):
+        passed, msg = check_worktree_isolation(repo_ctx)
+    assert passed is False
+    assert str(repo_ctx.repo_dir) in msg
     assert str(repo_ctx.worktree_dir) in msg
+    assert "not under" in msg
+
+
+def test_check_worktree_isolation_fails_when_resolution_raises(repo_ctx):
+    toml_file = repo_ctx.repo_dir / "autoloop.toml"
+    toml_file.write_text('repo = "acme/widgets"\n\n[implement]\nisolation = "worktree"\n')
+    with patch(
+        "autoloop.implement_issue.resolve_working_dir",
+        side_effect=RuntimeError("boom"),
+    ):
+        passed, msg = check_worktree_isolation(repo_ctx)
+    assert passed is False
+    assert "resolution failed" in msg
+    assert "boom" in msg
 
 
 def test_check_worktree_isolation_off(repo_ctx):
     toml_file = repo_ctx.repo_dir / "autoloop.toml"
     toml_file.write_text('repo = "acme/widgets"\n')
-    passed, msg = check_worktree_isolation(repo_ctx)
+    with patch("autoloop.implement_issue.resolve_working_dir") as mock_resolve:
+        passed, msg = check_worktree_isolation(repo_ctx)
     assert passed is True
-    assert msg == ""
+    assert msg == "Worktree isolation: disabled"
+    mock_resolve.assert_not_called()
 
 
 def test_get_checks_includes_worktree_when_enabled(repo_ctx):

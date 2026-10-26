@@ -68,13 +68,18 @@ def reset_worktree_branch(worktree_path: Path, branch: str) -> None:
     )
 
 
-def resolve_working_dir(isolation: str, ctx: RepoContext, branch: str) -> Path:
+def resolve_working_dir(
+    isolation: str, ctx: RepoContext, branch: str, dry_run: bool = False
+) -> Path:
     """Return the working directory based on isolation mode.
 
     When isolation is 'worktree', creates/reuses a worktree and resets the branch.
+    With dry_run, returns the worktree path without creating it or touching git.
     When isolation is 'off', returns Path.cwd().
     """
     if isolation == "worktree":
+        if dry_run:
+            return ctx.worktree_dir / branch
         wt_path = ensure_worktree(ctx, branch)
         reset_worktree_branch(wt_path, branch)
         return wt_path
@@ -560,6 +565,21 @@ def create_branch(issue: dict, repo_dir: Path | None = None) -> str:
     )
     subprocess.run(["git", "checkout", "-B", branch], cwd=repo_dir, check=True)
     return branch
+
+
+def create_worktree_branch(issue: dict, ctx: RepoContext) -> tuple[str, Path]:
+    """Create the feature branch in a worktree, leaving the main checkout's branch untouched.
+
+    Returns (branch, worktree_path).
+    """
+    branch = build_branch_name(issue)
+    subprocess.run(
+        ["git", "push", "origin", "--delete", branch],
+        cwd=ctx.repo_dir,
+        capture_output=True,
+    )
+    wt_path = resolve_working_dir(cfg.implement_isolation, ctx, branch)
+    return branch, wt_path
 
 
 def build_implementation_prompt(issue: dict, repo_dir: Path | None = None) -> str:
@@ -1146,6 +1166,17 @@ def cleanup_branch(branch: str, repo_dir: Path | None = None):
     )
 
 
+def cleanup_worktree_branch(ctx: RepoContext, wt_path: Path, branch: str):
+    """Remove a failed branch's worktree, then delete the branch locally and remotely."""
+    subprocess.run(["git", "worktree", "remove", "--force", str(wt_path)], cwd=ctx.repo_dir)
+    subprocess.run(["git", "branch", "-D", branch], cwd=ctx.repo_dir)
+    subprocess.run(
+        ["git", "push", "origin", "--delete", branch],
+        cwd=ctx.repo_dir,
+        capture_output=True,
+    )
+
+
 def create_pr(
     issue: dict,
     branch: str,
@@ -1597,7 +1628,15 @@ def implement_single_issue(
         )
         post_in_progress_comment(issue["number"])
 
-        branch = create_branch(issue, repo_dir)
+        # With worktree isolation, the agent and every git/gh step after branch creation
+        # run in work_dir so the main checkout (repo_dir) stays on main.
+        use_worktree = cfg.implement_isolation == "worktree" and ctx is not None
+        if use_worktree:
+            branch, work_dir = create_worktree_branch(issue, ctx)
+            print(f"  Worktree: {work_dir}")
+        else:
+            branch = create_branch(issue, repo_dir)
+            work_dir = repo_dir
         print(f"  Branch: {branch}")
 
         last_errors = None
@@ -1606,7 +1645,7 @@ def implement_single_issue(
         approved = False
         for attempt in range(1, cfg.max_retries + 1):
             print(f"  Attempt {attempt}/{cfg.max_retries}...")
-            result = implement(issue, previous_errors=last_errors, repo_dir=repo_dir)
+            result = implement(issue, previous_errors=last_errors, repo_dir=work_dir)
             claude_results.append(result)
             final_attempt = attempt
 
@@ -1616,7 +1655,7 @@ def implement_single_issue(
                 timeout_failure = True
                 break
 
-            if is_branch_empty(branch, repo_dir):
+            if is_branch_empty(branch, work_dir):
                 print(f"  {EMPTY_BRANCH_DIAGNOSTIC}")
                 post_attempt_failure(issue["number"], attempt, EMPTY_BRANCH_DIAGNOSTIC)
                 empty_branch_failure = True
@@ -1626,7 +1665,7 @@ def implement_single_issue(
                 branch,
                 issue_body=issue.get("body", ""),
                 title=issue.get("title", ""),
-                repo_dir=repo_dir,
+                repo_dir=work_dir,
             )
             if not valid:
                 print(f"  Verification failed:\n{errors}")
@@ -1638,7 +1677,7 @@ def implement_single_issue(
                 mutation_gate(
                     branch,
                     detect_issue_type(issue.get("body", ""), issue.get("title", "")),
-                    repo_dir,
+                    work_dir,
                 )
             except (RuntimeError, subprocess.TimeoutExpired, subprocess.CalledProcessError) as e:
                 gate_msg = f"Mutation gate error: {e}"
@@ -1648,7 +1687,7 @@ def implement_single_issue(
                 continue
 
             print("  Verification passed. Reviewing implementation...")
-            approved, feedback = review_implementation(issue, branch, repo_dir=repo_dir)
+            approved, feedback = review_implementation(issue, branch, repo_dir=work_dir)
             if not approved:
                 print(f"  Review failed:\n{feedback}")
                 last_errors = feedback
@@ -1693,7 +1732,10 @@ def implement_single_issue(
                     "needs-human",
                 ],
             )
-            cleanup_branch(branch, repo_dir)
+            if use_worktree:
+                cleanup_worktree_branch(ctx, work_dir, branch)
+            else:
+                cleanup_branch(branch, repo_dir)
             log_run(
                 issue["number"],
                 False,
@@ -1708,9 +1750,9 @@ def implement_single_issue(
             )
             return False
 
-        integrity_violations = check_test_integrity(branch, repo_dir)
+        integrity_violations = check_test_integrity(branch, work_dir)
 
-        subprocess.run(["git", "push", "-u", "origin", branch], cwd=repo_dir)
+        subprocess.run(["git", "push", "-u", "origin", branch], cwd=work_dir)
         pr_number = create_pr(
             issue,
             branch,
@@ -1721,7 +1763,7 @@ def implement_single_issue(
             output_tokens=total_output,
             cache_creation_tokens=total_cache_creation,
             cache_read_tokens=total_cache_read,
-            repo_dir=repo_dir,
+            repo_dir=work_dir,
         )
         if pr_number is not None and created_prs is not None:
             created_prs.append(
@@ -1791,11 +1833,12 @@ def implement_single_issue(
         if integrity_violations:
             auto_merge_decision, auto_merge_gates = "skipped-integrity", {}
         else:
-            auto_merge_decision, auto_merge_gates = try_auto_merge(branch, pr_number, repo_dir)
+            auto_merge_decision, auto_merge_gates = try_auto_merge(branch, pr_number, work_dir)
         if cfg.auto_merge:
             print(f"  Auto-merge: {auto_merge_decision}")
 
-        subprocess.run(["git", "checkout", "main"], cwd=repo_dir)
+        if not use_worktree:
+            subprocess.run(["git", "checkout", "main"], cwd=repo_dir)
 
         print(f"\n--- AutoLoop Run Stats (#{issue['number']}) ---")
         print(f"  Duration: {elapsed:.0f}s")
