@@ -115,6 +115,11 @@ def build_parser():
     # preflight
     subparsers.add_parser("preflight", help="Run verify and lint commands on the current branch")
 
+    # prune
+    subparsers.add_parser(
+        "prune", help="Remove worktrees and autoloop/* branches whose PRs are merged or closed"
+    )
+
     # eval
     eval_parser = subparsers.add_parser(
         "eval", help="Compute builder performance metrics from run history + PR data"
@@ -351,6 +356,13 @@ def main():
                 any_failed = True
                 print(result["output"])
         sys.exit(1 if any_failed else 0)
+
+    elif args.command == "prune":
+        from autoloop.config import load_config
+        from autoloop.prune import main as prune_main
+
+        cfg = load_config()
+        sys.exit(prune_main(ctx, cfg))
 
 
 def _run_jev_shadow(
