@@ -383,6 +383,103 @@ def test_review_pr_failure_returns_status(mcp_tools, tmp_path, monkeypatch):
     assert "$0.08" in result
 
 
+def _review_env(tmp_path, monkeypatch):
+    (tmp_path / "autoloop.toml").write_text('repo = "acme-corp/widget"\n')
+    for var in (
+        "AUTOLOOP_TRIAGE_MODEL",
+        "AUTOLOOP_IMPL_MODEL",
+        "AUTOLOOP_TIMEOUT",
+        "AUTOLOOP_REVIEWER",
+        "AUTOLOOP_REPO",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+
+def test_review_pr_ignores_leading_git_output(mcp_tools, tmp_path, monkeypatch):
+    """Regression #407: git lines before the JSON result must not break parsing."""
+    import asyncio
+    from types import SimpleNamespace
+
+    _review_env(tmp_path, monkeypatch)
+    stdout = (
+        "HEAD is now at abc1234 feat: add widget\n"
+        + json.dumps(
+            {"success": True, "cost_usd": 0.12, "input_tokens": 1500, "output_tokens": 300}
+        )
+        + "\n"
+    )
+
+    with patch(
+        "subprocess.run",
+        return_value=SimpleNamespace(returncode=0, stdout=stdout, stderr=""),
+    ):
+        result = asyncio.run(mcp_tools["autoloop_review_pr"](pr_number=55, repo_dir=str(tmp_path)))
+
+    assert "invalid output" not in result
+    assert "passed" in result
+    assert "$0.12" in result
+
+
+def test_review_pr_failure_ignores_leading_git_output(mcp_tools, tmp_path, monkeypatch):
+    """Regression #407: non-zero exit with git lines before the JSON still reports cost."""
+    import asyncio
+    from types import SimpleNamespace
+
+    _review_env(tmp_path, monkeypatch)
+    stdout = (
+        "HEAD is now at abc1234 feat: add widget\n"
+        + json.dumps(
+            {"success": False, "cost_usd": 0.08, "input_tokens": 1000, "output_tokens": 200}
+        )
+        + "\n"
+    )
+
+    with patch(
+        "subprocess.run",
+        return_value=SimpleNamespace(returncode=1, stdout=stdout, stderr=""),
+    ):
+        result = asyncio.run(mcp_tools["autoloop_review_pr"](pr_number=55, repo_dir=str(tmp_path)))
+
+    assert result.startswith("Review failed for PR #55. Cost: $0.08")
+
+
+def test_review_pr_no_json_reports_invalid_output(mcp_tools, tmp_path, monkeypatch):
+    """autoloop_review_pr still reports invalid output when stdout has no JSON at all."""
+    import asyncio
+    from types import SimpleNamespace
+
+    _review_env(tmp_path, monkeypatch)
+
+    with patch(
+        "subprocess.run",
+        return_value=SimpleNamespace(
+            returncode=0, stdout="HEAD is now at abc1234 feat: add widget\n", stderr=""
+        ),
+    ):
+        result = asyncio.run(mcp_tools["autoloop_review_pr"](pr_number=55, repo_dir=str(tmp_path)))
+
+    assert "invalid output" in result
+    assert "HEAD is now at" in result
+
+
+def test_parse_last_json_skips_leading_lines():
+    """_parse_last_json returns the last JSON object line, ignoring other output."""
+    from autoloop.mcp_server import _parse_last_json
+
+    stdout = 'HEAD is now at abc1234 msg\n{"success": false}\nnoise\n{"success": true}\n'
+    assert _parse_last_json(stdout) == {"success": True}
+
+
+def test_parse_last_json_raises_without_object():
+    """_parse_last_json raises ValueError when no line is a JSON object."""
+    from autoloop.mcp_server import _parse_last_json
+
+    with pytest.raises(ValueError):
+        _parse_last_json("HEAD is now at abc1234 msg\n[1, 2]\n{not json\n")
+    with pytest.raises(ValueError):
+        _parse_last_json("")
+
+
 def test_status_with_repo_dir(mcp_tools, tmp_path, monkeypatch):
     """autoloop_status resolves paths from repo_dir when provided."""
     toml_path = tmp_path / "autoloop.toml"
