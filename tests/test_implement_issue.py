@@ -67,6 +67,13 @@ from autoloop.implement_issue import (
     unblock_ready_issues,
     wait_for_ci,
 )
+from autoloop.prune import PruneResult
+
+
+@pytest.fixture(autouse=True)
+def _stub_prune(monkeypatch):
+    """Keep main() from running a real prune; prune tests patch this again to observe it."""
+    monkeypatch.setattr(implement_issue, "prune", lambda ctx, cfg: PruneResult())
 
 
 def _test_cfg(**overrides):
@@ -6277,3 +6284,243 @@ def test_main_post_batch_summary_contains_only_current_batch_prs(monkeypatch, tm
     assert len(post_calls[0]) == 1
     assert post_calls[0][0]["pr_number"] == 200
     assert post_calls[0][0]["issue_number"] == 20
+
+
+# --- prune at start of implement (#424) ---
+
+
+def _patch_main_for_prune(monkeypatch, events, *, isolation="worktree"):
+    """Stub main()'s collaborators; prune and each implemented issue append to *events*."""
+    from autoloop.prune import PruneItem
+
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(implement_isolation=isolation))
+    monkeypatch.setattr(implement_issue, "detect_active_claude_session", lambda d: False)
+    monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
+    monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
+    monkeypatch.setattr(implement_issue, "post_batch_summary", lambda prs, cfg: None)
+
+    def fake_prune(ctx, cfg):
+        events.append("prune")
+        item = PruneItem("worktree", "autoloop/7-old", "removed", "PR MERGED", removed=True)
+        return PruneResult(items=[item])
+
+    def fake_ensure_worktree(ctx, branch):
+        events.append("ensure_worktree")
+        return ctx.worktree_dir / branch
+
+    def fake_single(issue, **kwargs):
+        if implement_issue.cfg.implement_isolation == "worktree":
+            implement_issue.ensure_worktree(kwargs["ctx"], f"autoloop/{issue['number']}-x")
+        events.append(f"implement:{issue['number']}")
+        return True
+
+    monkeypatch.setattr(implement_issue, "prune", fake_prune)
+    monkeypatch.setattr(implement_issue, "ensure_worktree", fake_ensure_worktree)
+    monkeypatch.setattr(implement_issue, "implement_single_issue", fake_single)
+
+
+@pytest.mark.parametrize("isolation", ["worktree", "off"])
+def test_main_prunes_once_before_implementing_ready_queue(monkeypatch, tmp_path, capsys, isolation):
+    """main() runs prune once per run, before any worktree or issue work, in either mode."""
+    events = []
+    _patch_main_for_prune(monkeypatch, events, isolation=isolation)
+    queue = [
+        {"number": 1, "title": "One", "body": "", "labels": []},
+        {"number": 2, "title": "Two", "body": "", "labels": []},
+    ]
+    monkeypatch.setattr(implement_issue, "get_top_ready_issue", lambda: queue.pop(0))
+
+    implement_issue.main(ctx=_make_ctx(tmp_path), max_issues=2)
+
+    assert events.count("prune") == 1
+    assert events[0] == "prune"
+    assert [e for e in events if e.startswith("implement:")] == ["implement:1", "implement:2"]
+    if isolation == "worktree":
+        assert events.index("prune") < events.index("ensure_worktree")
+    out = capsys.readouterr().out
+    assert "worktree autoloop/7-old: removed — PR MERGED" in out
+    assert "Summary: 1 removed, 0 kept, 0 needing review" in out
+
+
+def test_main_prunes_before_targeted_issue(monkeypatch, tmp_path):
+    """With issue= given, prune still runs once before the targeted issue is implemented."""
+    events = []
+    _patch_main_for_prune(monkeypatch, events)
+    targeted = {"number": 28, "title": "Targeted", "body": "", "labels": []}
+    monkeypatch.setattr(implement_issue, "get_issue_by_number", lambda n: targeted)
+    monkeypatch.setattr(implement_issue, "dependencies_met", lambda issue: True)
+
+    implement_issue.main(ctx=_make_ctx(tmp_path), issue=28)
+
+    assert events == ["prune", "ensure_worktree", "implement:28"]
+
+
+def test_main_prune_failure_warns_and_continues(monkeypatch, tmp_path, caplog, capsys):
+    """A prune exception is logged as a warning and the issue is still implemented."""
+    events = []
+    _patch_main_for_prune(monkeypatch, events)
+
+    def exploding_prune(ctx, cfg):
+        events.append("prune")
+        raise RuntimeError("git worktree list exploded")
+
+    monkeypatch.setattr(implement_issue, "prune", exploding_prune)
+    queue = [{"number": 1, "title": "One", "body": "", "labels": []}]
+    monkeypatch.setattr(
+        implement_issue, "get_top_ready_issue", lambda: queue.pop(0) if queue else None
+    )
+
+    with caplog.at_level("WARNING"):
+        implement_issue.main(ctx=_make_ctx(tmp_path))
+
+    assert events == ["prune", "ensure_worktree", "implement:1"]
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert any("Prune failed" in r.getMessage() for r in warnings)
+    assert "Implemented 1 issue(s) this run." in capsys.readouterr().out
+
+
+def test_run_prune_prints_report(monkeypatch, tmp_path, capsys):
+    """run_prune passes ctx and cfg to prune and prints its report."""
+    from autoloop.implement_issue import run_prune
+
+    cfg = _test_cfg()
+    monkeypatch.setattr(implement_issue, "cfg", cfg)
+    seen = []
+    monkeypatch.setattr(
+        implement_issue, "prune", lambda ctx, cfg: seen.append((ctx, cfg)) or PruneResult()
+    )
+    ctx = _make_ctx(tmp_path)
+
+    run_prune(ctx)
+
+    assert seen == [(ctx, cfg)]
+    assert "Nothing to prune." in capsys.readouterr().out
+
+
+# --- worktree cleanup after auto-merge (#424) ---
+
+
+_MERGE_BRANCH = "autoloop/42-add-feature"
+
+
+def _patch_auto_merge_cleanup(monkeypatch, tmp_path, decision, *, isolation="worktree"):
+    """Run implement_single_issue's stubbed steps with try_auto_merge returning *decision*.
+
+    Returns (ctx, wt_path, events); events records git calls as (cmd, cwd) and log_run as
+    the string "log_run".
+    """
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(implement_isolation=isolation))
+    ctx = RepoContext.for_data_dir(tmp_path / "data", repo_dir=tmp_path / "checkout")
+    wt_path = ctx.worktree_dir / _MERGE_BRANCH
+    events = _patch_single_issue_steps(monkeypatch, ctx, wt_path, {})
+    monkeypatch.setattr(
+        implement_issue,
+        "try_auto_merge",
+        lambda branch, pr_number, repo_dir=None, ctx=None: (decision, {}),
+    )
+    monkeypatch.setattr(implement_issue, "log_run", lambda *a, **kw: events.append("log_run"))
+    return ctx, wt_path, events
+
+
+def _is_worktree_remove(event):
+    return event != "log_run" and event[0][:3] == ["git", "worktree", "remove"]
+
+
+def _is_branch_delete(event):
+    return event != "log_run" and event[0][:3] == ["git", "branch", "-D"]
+
+
+def test_implement_single_issue_merged_removes_worktree_then_local_branch(monkeypatch, tmp_path):
+    """After auto-merge, the worktree is removed, then the local branch; the remote is kept."""
+    ctx, wt_path, events = _patch_auto_merge_cleanup(monkeypatch, tmp_path, "merged")
+
+    assert implement_single_issue(_FAKE_ISSUE, ctx=ctx) is True
+
+    removes = [i for i, e in enumerate(events) if _is_worktree_remove(e)]
+    deletes = [i for i, e in enumerate(events) if _is_branch_delete(e)]
+    assert len(removes) == 1 and len(deletes) == 1
+    assert events[removes[0]] == (
+        ["git", "worktree", "remove", "--force", str(wt_path)],
+        ctx.repo_dir,
+    )
+    assert events[deletes[0]] == (["git", "branch", "-D", _MERGE_BRANCH], ctx.repo_dir)
+    assert events.index("log_run") < removes[0] < deletes[0]
+    assert deletes[0] == len(events) - 1
+    assert not any(e != "log_run" and e[0][:3] == ["git", "push", "origin"] for e in events)
+
+
+@pytest.mark.parametrize(
+    "decision",
+    ["skipped-unqualified", "skipped-disabled", "skipped-ci-failed", "skipped-merge-failed"],
+)
+def test_implement_single_issue_unmerged_keeps_worktree_and_branch(monkeypatch, tmp_path, decision):
+    """Without an auto-merge the worktree stays after the PR for review and fix-pr."""
+    ctx, _, events = _patch_auto_merge_cleanup(monkeypatch, tmp_path, decision)
+
+    assert implement_single_issue(_FAKE_ISSUE, ctx=ctx) is True
+
+    assert not any(_is_worktree_remove(e) for e in events)
+    assert not any(_is_branch_delete(e) for e in events)
+
+
+def test_implement_single_issue_merged_isolation_off_skips_worktree_cleanup(monkeypatch, tmp_path):
+    """With isolation 'off' there is no worktree, so auto-merge triggers no removal."""
+    ctx, _, events = _patch_auto_merge_cleanup(monkeypatch, tmp_path, "merged", isolation="off")
+
+    assert implement_single_issue(_FAKE_ISSUE, ctx=ctx) is True
+
+    assert not any(_is_worktree_remove(e) for e in events)
+    assert not any(_is_branch_delete(e) for e in events)
+
+
+def test_implement_single_issue_merged_cleanup_failure_warns(monkeypatch, tmp_path, caplog):
+    """A failed worktree removal after auto-merge warns, keeps the branch, and still succeeds."""
+    ctx, _, events = _patch_auto_merge_cleanup(monkeypatch, tmp_path, "merged")
+
+    def fake_run(cmd, **kwargs):
+        events.append((cmd, kwargs.get("cwd")))
+        code = 1 if cmd[:3] == ["git", "worktree", "remove"] else 0
+        return type("R", (), {"returncode": code, "stdout": "1\n", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    with caplog.at_level("WARNING"):
+        assert implement_single_issue(_FAKE_ISSUE, ctx=ctx) is True
+
+    assert any(_is_worktree_remove(e) for e in events)
+    assert not any(_is_branch_delete(e) for e in events)
+    assert any(
+        r.levelname == "WARNING" and "Could not remove worktree" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_implement_single_issue_merged_cleanup_error_warns(monkeypatch, tmp_path, caplog):
+    """An OSError during post-merge cleanup warns instead of failing the issue."""
+    ctx, _, _ = _patch_auto_merge_cleanup(monkeypatch, tmp_path, "merged")
+
+    def exploding_remove(wt_path, ctx):
+        raise OSError("git not found")
+
+    monkeypatch.setattr(implement_issue, "remove_worktree", exploding_remove)
+
+    with caplog.at_level("WARNING"):
+        assert implement_single_issue(_FAKE_ISSUE, ctx=ctx) is True
+
+    assert any(
+        r.levelname == "WARNING" and "Post-merge cleanup" in r.getMessage() for r in caplog.records
+    )
+
+
+def test_remove_merged_worktree_warns_when_branch_delete_fails(monkeypatch, tmp_path, caplog):
+    """remove_merged_worktree warns when the local branch can't be deleted."""
+    from autoloop.implement_issue import remove_merged_worktree
+
+    ctx = _make_ctx(tmp_path)
+    monkeypatch.setattr(implement_issue, "remove_worktree", lambda wt, c: True)
+    monkeypatch.setattr(implement_issue, "delete_branch", lambda b, c: False)
+
+    with caplog.at_level("WARNING"):
+        remove_merged_worktree(ctx, ctx.worktree_dir / _MERGE_BRANCH, _MERGE_BRANCH)
+
+    assert any("Could not delete local branch" in r.getMessage() for r in caplog.records)

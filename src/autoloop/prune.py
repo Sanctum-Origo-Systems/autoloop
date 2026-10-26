@@ -143,11 +143,13 @@ def is_fully_merged(branch: str, ctx: RepoContext) -> bool:
         return False
 
 
-def _delete_branch(branch: str, ctx: RepoContext) -> bool:
+def delete_branch(branch: str, ctx: RepoContext) -> bool:
+    """Delete the local *branch* only; the remote branch is never touched."""
     return _git(["branch", "-D", branch], ctx.repo_dir).returncode == 0
 
 
-def _remove_worktree(wt_path: Path, ctx: RepoContext) -> bool:
+def remove_worktree(wt_path: Path, ctx: RepoContext) -> bool:
+    """Remove the worktree at *wt_path*. Callers must check for tracked changes first."""
     # --force only overrides untracked files (e.g. .venv); tracked changes were checked first.
     return _git(["worktree", "remove", "--force", str(wt_path)], ctx.repo_dir).returncode == 0
 
@@ -178,15 +180,15 @@ def _prune_worktree(
             True,
         )
 
-    delete_branch = state == "MERGED" or is_fully_merged(branch, ctx)
+    drop_branch = state == "MERGED" or is_fully_merged(branch, ctx)
     if dry_run:
-        outcome = "would remove" if delete_branch else "would remove worktree, keep branch"
+        outcome = "would remove" if drop_branch else "would remove worktree, keep branch"
         return PruneItem("worktree", name, outcome, f"PR {state}"), True
 
-    if not _remove_worktree(wt_path, ctx):
+    if not remove_worktree(wt_path, ctx):
         return PruneItem("worktree", name, "kept (remove failed)", "git worktree remove"), True
 
-    if not delete_branch:
+    if not drop_branch:
         return (
             PruneItem(
                 "worktree",
@@ -198,7 +200,7 @@ def _prune_worktree(
             ),
             True,
         )
-    if not _delete_branch(branch, ctx):
+    if not delete_branch(branch, ctx):
         return (
             PruneItem(
                 "worktree",
@@ -231,7 +233,7 @@ def _prune_branch(branch: str, ctx: RepoContext, cfg: AutoLoopConfig, dry_run: b
         )
     if dry_run:
         return PruneItem("branch", branch, "would remove", pr_label)
-    if not _delete_branch(branch, ctx):
+    if not delete_branch(branch, ctx):
         return PruneItem("branch", branch, "kept (delete failed)", pr_label)
     return PruneItem("branch", branch, "removed", pr_label, removed=True)
 

@@ -19,6 +19,7 @@ from pathlib import Path
 
 from autoloop.claude_runner import ClaudeResult, run_claude
 from autoloop.config import AutoLoopConfig, RepoContext, load_config
+from autoloop.prune import delete_branch, format_report, prune, remove_worktree
 from autoloop.review_queue import post_batch_summary
 
 cfg = None
@@ -1184,6 +1185,29 @@ def cleanup_worktree_branch(ctx: RepoContext, wt_path: Path, branch: str):
     )
 
 
+def remove_merged_worktree(ctx: RepoContext, wt_path: Path, branch: str) -> None:
+    """Remove an auto-merged PR's worktree, then its local branch. The remote is left alone.
+
+    Failures only log a warning: the PR is already merged, and prune retries later.
+    """
+    try:
+        if not remove_worktree(wt_path, ctx):
+            logging.warning("Could not remove worktree %s after auto-merge", wt_path)
+            return
+        if not delete_branch(branch, ctx):
+            logging.warning("Could not delete local branch %s after auto-merge", branch)
+    except (OSError, subprocess.SubprocessError) as exc:
+        logging.warning("Post-merge cleanup of %s failed: %s", wt_path, exc)
+
+
+def run_prune(ctx: RepoContext) -> None:
+    """Prune stale worktrees and branches, printing the report. Failures only log a warning."""
+    try:
+        print(format_report(prune(ctx, cfg)))
+    except Exception:
+        logging.warning("Prune failed; continuing with implement", exc_info=True)
+
+
 def create_pr(
     issue: dict,
     branch: str,
@@ -1897,6 +1921,10 @@ def implement_single_issue(
             },
         )
 
+        # Otherwise the worktree stays for review and fix-pr until prune removes it.
+        if use_worktree and auto_merge_decision == "merged":
+            remove_merged_worktree(ctx, work_dir, branch)
+
         return True
     except Exception as exc:
         logging.exception("implement_single_issue failed for #%s", issue.get("number"))
@@ -1954,6 +1982,7 @@ def main(
     try:
         cleanup_merged_labels()
         unblock_ready_issues()
+        run_prune(ctx)
 
         if issue is not None:
             implement_targeted_issue(
