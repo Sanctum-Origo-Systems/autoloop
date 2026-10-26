@@ -77,6 +77,26 @@ def test_run_claude_missing_usage_defaults_to_zero(monkeypatch):
     assert result.cache_creation_tokens == 0
 
 
+def test_run_claude_parses_permission_denials(monkeypatch):
+    denial = {"tool_name": "Bash", "tool_input": {"command": "git push nowhere-remote HEAD"}}
+    response = {**_FULL_RESPONSE, "permission_denials": [denial]}
+    fake_run, _ = _fake_run(stdout=json.dumps(response))
+    monkeypatch.setattr(claude_runner.subprocess, "run", fake_run)
+
+    result = run_claude("p", "opus", 10)
+
+    assert result.permission_denials == [denial]
+
+
+def test_run_claude_missing_permission_denials_defaults_to_empty(monkeypatch):
+    fake_run, _ = _fake_run(stdout=json.dumps(_FULL_RESPONSE))
+    monkeypatch.setattr(claude_runner.subprocess, "run", fake_run)
+
+    result = run_claude("p", "opus", 10)
+
+    assert result.permission_denials == []
+
+
 def test_run_claude_defaults_cwd_to_none(monkeypatch):
     fake_run, captured = _fake_run(stdout=json.dumps(_FULL_RESPONSE))
     monkeypatch.setattr(claude_runner.subprocess, "run", fake_run)

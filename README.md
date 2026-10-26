@@ -196,7 +196,13 @@ Checks that everything is set up correctly before your first run:
 ✓ gh CLI installed and authenticated
 ✓ No active Claude Code session conflict
 ✓ verify_cmd passes ("pytest" → exit 0)
+✓ origin/main:.claude/settings.json valid (12 allow rules)
+✓ claude CLI supports --settings
 ```
+
+Implement runs pass `origin/main:.claude/settings.json` to `claude -p` via `--settings`. Doctor fails if that file can't be read or the installed CLI lacks `--settings`, because implement runs would then have no permission rules. It warns if `permissions.allow` is empty.
+
+`autoloop doctor --live` also runs a paid probe (off by default): it calls `claude -p` in a throwaway worktree of `origin/main` and passes if the agent can write and commit a file and its `git push` to a nonexistent remote is denied. The worktree and branch are removed afterwards, and the probe's cost is printed.
 
 Each check reports pass or fail with a fix suggestion. Exit code 0 if all pass, 1 if any fail. Run this once after `autoloop init` and again if implementations start failing unexpectedly.
 
@@ -576,7 +582,7 @@ Jev is an off-by-default probabilistic decision model that can shadow autoloop's
 | Command | Description |
 |---------|-------------|
 | `autoloop init` | Scaffold autoloop onto a new repo |
-| `autoloop doctor` | Verify environment and configuration |
+| `autoloop doctor` | Verify environment and configuration (`--live` adds a paid permission probe) |
 | `autoloop plan` | Create issues from a spec file |
 | `autoloop triage` | Triage untriaged issues |
 | `autoloop implement` | Implement top ready issue |
