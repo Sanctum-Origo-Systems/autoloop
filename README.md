@@ -208,7 +208,7 @@ Review `autoloop.toml` and adjust for your project. Key fields:
 repo = "owner/repo"              # Your GitHub repo
 verify_cmd = "pytest"             # Command that validates the implementation
 lint_command = "ruff check && ruff format --check"
-impl_model = "claude-opus-4-6[1m]"  # Model for implementation
+impl_model = "claude-opus-5-5"  # Model for implementation
 triage_model = "sonnet"           # Model for triage (lighter, cheaper)
 max_retries = 3                   # Retry attempts per issue
 protected_paths = ["autoloop.toml"]  # Files the bot must never modify
@@ -472,7 +472,7 @@ Example workflow from your phone:
 |-------|---------|-------------|
 | `repo` | (required) | GitHub `owner/repo` (required) |
 | `triage_model` | `sonnet` | Claude model for triage |
-| `impl_model` | `claude-opus-4-6[1m]` | Claude model for implementation |
+| `impl_model` | `claude-opus-5-5` | Claude model for implementation |
 | `review_model` | (defaults to `impl_model`) | Claude model for semantic PR review. Falls back to `impl_model` when omitted |
 | `impl_timeout` | `900` | Implementation timeout (seconds) |
 | `triage_timeout` | `90` | Triage timeout (seconds) |
