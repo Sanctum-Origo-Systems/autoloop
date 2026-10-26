@@ -4712,11 +4712,11 @@ def test_try_auto_merge_disabled(monkeypatch):
     assert len(is_ready_called) == 0
 
 
-def test_try_auto_merge_unqualified(monkeypatch):
+def test_try_auto_merge_unqualified(monkeypatch, tmp_path):
     """When is_auto_merge_ready returns 'No', gh pr merge is not called."""
     monkeypatch.setattr(implement_issue, "cfg", _test_cfg(auto_merge=True))
 
-    monkeypatch.setattr("autoloop.eval.load_run_history", lambda **kw: [])
+    monkeypatch.setattr("autoloop.eval.load_run_history", lambda ctx: [])
     monkeypatch.setattr("autoloop.eval.fetch_pr_data", lambda repo: [])
     monkeypatch.setattr("autoloop.eval.enrich_pr_data_with_runs", lambda pd, r: pd)
     monkeypatch.setattr(
@@ -4739,13 +4739,13 @@ def test_try_auto_merge_unqualified(monkeypatch):
 
     monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
 
-    decision, gates = try_auto_merge("branch", 99)
+    decision, gates = try_auto_merge("branch", 99, ctx=RepoContext.for_data_dir(tmp_path))
     assert decision == "skipped-unqualified"
     assert gates["success_rate"] == 0.5
     assert len(merge_calls) == 0
 
 
-def test_try_auto_merge_protected(monkeypatch):
+def test_try_auto_merge_protected(monkeypatch, tmp_path):
     """When touches_protected_path returns True, gh pr merge is not called."""
     monkeypatch.setattr(
         implement_issue,
@@ -4753,7 +4753,7 @@ def test_try_auto_merge_protected(monkeypatch):
         _test_cfg(auto_merge=True, protected_paths=["autoloop/"]),
     )
 
-    monkeypatch.setattr("autoloop.eval.load_run_history", lambda **kw: [])
+    monkeypatch.setattr("autoloop.eval.load_run_history", lambda ctx: [])
     monkeypatch.setattr("autoloop.eval.fetch_pr_data", lambda repo: [])
     monkeypatch.setattr("autoloop.eval.enrich_pr_data_with_runs", lambda pd, r: pd)
     monkeypatch.setattr(
@@ -4782,12 +4782,12 @@ def test_try_auto_merge_protected(monkeypatch):
 
     monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
 
-    decision, gates = try_auto_merge("branch", 99)
+    decision, gates = try_auto_merge("branch", 99, ctx=RepoContext.for_data_dir(tmp_path))
     assert decision == "skipped-protected"
     assert len(merge_calls) == 0
 
 
-def test_try_auto_merge_merged(monkeypatch):
+def test_try_auto_merge_merged(monkeypatch, tmp_path):
     """When all gates pass and CI passes, gh pr merge --squash is called."""
     monkeypatch.setattr(
         implement_issue,
@@ -4795,7 +4795,7 @@ def test_try_auto_merge_merged(monkeypatch):
         _test_cfg(auto_merge=True, protected_paths=["autoloop/"], repo="acme-corp/widget"),
     )
 
-    monkeypatch.setattr("autoloop.eval.load_run_history", lambda **kw: [])
+    monkeypatch.setattr("autoloop.eval.load_run_history", lambda ctx: [])
     monkeypatch.setattr("autoloop.eval.fetch_pr_data", lambda repo: [])
     monkeypatch.setattr("autoloop.eval.enrich_pr_data_with_runs", lambda pd, r: pd)
     monkeypatch.setattr(
@@ -4835,7 +4835,7 @@ def test_try_auto_merge_merged(monkeypatch):
 
     monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
 
-    decision, gates = try_auto_merge("branch", 99)
+    decision, gates = try_auto_merge("branch", 99, ctx=RepoContext.for_data_dir(tmp_path))
     assert decision == "merged"
     assert gates["success_rate"] == 0.95
     assert len(merge_calls) == 1
@@ -4852,7 +4852,7 @@ def test_try_auto_merge_no_pr_number(monkeypatch):
     assert gates == {}
 
 
-def test_try_auto_merge_ci_failed(monkeypatch):
+def test_try_auto_merge_ci_failed(monkeypatch, tmp_path):
     """When CI fails, gh pr merge is not called and decision is skipped-ci-failed."""
     monkeypatch.setattr(
         implement_issue,
@@ -4860,7 +4860,7 @@ def test_try_auto_merge_ci_failed(monkeypatch):
         _test_cfg(auto_merge=True, protected_paths=[], repo="acme-corp/widget"),
     )
 
-    monkeypatch.setattr("autoloop.eval.load_run_history", lambda **kw: [])
+    monkeypatch.setattr("autoloop.eval.load_run_history", lambda ctx: [])
     monkeypatch.setattr("autoloop.eval.fetch_pr_data", lambda repo: [])
     monkeypatch.setattr("autoloop.eval.enrich_pr_data_with_runs", lambda pd, r: pd)
     monkeypatch.setattr(
@@ -4895,13 +4895,13 @@ def test_try_auto_merge_ci_failed(monkeypatch):
 
     monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
 
-    decision, gates = try_auto_merge("branch", 99)
+    decision, gates = try_auto_merge("branch", 99, ctx=RepoContext.for_data_dir(tmp_path))
     assert decision == "skipped-ci-failed"
     assert gates["success_rate"] == 0.95
     assert len(merge_calls) == 0
 
 
-def test_try_auto_merge_merge_failed(monkeypatch):
+def test_try_auto_merge_merge_failed(monkeypatch, tmp_path):
     """When gh pr merge fails, decision is skipped-merge-failed."""
     monkeypatch.setattr(
         implement_issue,
@@ -4909,7 +4909,7 @@ def test_try_auto_merge_merge_failed(monkeypatch):
         _test_cfg(auto_merge=True, protected_paths=[], repo="acme-corp/widget"),
     )
 
-    monkeypatch.setattr("autoloop.eval.load_run_history", lambda **kw: [])
+    monkeypatch.setattr("autoloop.eval.load_run_history", lambda ctx: [])
     monkeypatch.setattr("autoloop.eval.fetch_pr_data", lambda repo: [])
     monkeypatch.setattr("autoloop.eval.enrich_pr_data_with_runs", lambda pd, r: pd)
     monkeypatch.setattr(
@@ -4942,9 +4942,66 @@ def test_try_auto_merge_merge_failed(monkeypatch):
 
     monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
 
-    decision, gates = try_auto_merge("branch", 99)
+    decision, gates = try_auto_merge("branch", 99, ctx=RepoContext.for_data_dir(tmp_path))
     assert decision == "skipped-merge-failed"
     assert gates["success_rate"] == 0.95
+
+
+def _write_run_history(data_dir: Path, rows: list[dict]) -> None:
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / "run_history.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+
+def test_try_auto_merge_gates_from_ctx_history_implementations_only(monkeypatch, tmp_path):
+    """Regression (#406): with auto_merge on, try_auto_merge loads run history via ctx and
+    computes gate metrics from implementation rows only (triage rows ignored)."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(auto_merge=True, repo="acme/widget"))
+    ctx = RepoContext.for_data_dir(tmp_path / "data", repo_dir=tmp_path)
+    _write_run_history(
+        ctx.data_dir,
+        [
+            {"type": "implement", "issue": 1, "success": True, "attempts": 1},
+            {"type": "implement", "issue": 2, "success": True, "attempts": 2},
+            {"type": "triage", "issue": 3, "success": True, "attempts": 1},
+            {"type": "triage", "issue": 4, "success": True, "attempts": 1},
+            {"type": "triage", "issue": 0, "success": True, "attempts": 1},
+        ],
+    )
+    monkeypatch.setattr(
+        "autoloop.eval.fetch_pr_data",
+        lambda repo: [
+            {"issue": 1, "merged": True, "human_edited": False, "changed_files": ["src/a.py"]},
+            {"issue": 2, "merged": True, "human_edited": True, "changed_files": ["src/b.py"]},
+        ],
+    )
+    ready_args = []
+    monkeypatch.setattr(
+        "autoloop.eval.is_auto_merge_ready",
+        lambda *a, **kw: ready_args.append(a) or "No",
+    )
+
+    decision, gates = try_auto_merge("branch", 99, ctx=ctx)
+
+    assert decision == "skipped-unqualified"
+    # 1 of 2 implementations succeeded first try; counting the triage rows would inflate it.
+    assert gates == {"success_rate": 0.5, "edit_rate": 0.5, "merged_clean_count": 1}
+    assert ready_args == [(0.5, 0.5, 1)]
+
+
+def test_try_auto_merge_resolves_ctx_from_repo_dir(monkeypatch, tmp_path):
+    """When ctx is omitted, try_auto_merge builds a RepoContext from repo_dir."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(auto_merge=True, repo="acme/widget"))
+    _write_run_history(
+        RepoContext(tmp_path).data_dir,
+        [{"type": "implement", "issue": 7, "success": True, "attempts": 1}],
+    )
+    monkeypatch.setattr("autoloop.eval.fetch_pr_data", lambda repo: [])
+    monkeypatch.setattr("autoloop.eval.is_auto_merge_ready", lambda *a, **kw: "No")
+
+    decision, gates = try_auto_merge("branch", 99, tmp_path)
+
+    assert decision == "skipped-unqualified"
+    assert gates["success_rate"] == 1.0
 
 
 def test_wait_for_ci_pending_until_timeout(monkeypatch):
@@ -5007,7 +5064,7 @@ def _auto_merge_integration_setup(monkeypatch, tmp_path, auto_merge_decision, au
     monkeypatch.setattr(
         implement_issue,
         "try_auto_merge",
-        lambda branch, pr_number, repo_dir=None: (auto_merge_decision, auto_merge_gates),
+        lambda branch, pr_number, repo_dir=None, ctx=None: (auto_merge_decision, auto_merge_gates),
     )
 
 
@@ -5055,6 +5112,24 @@ def test_implement_single_issue_auto_merge_protected_logged(monkeypatch, tmp_pat
     log_path = tmp_path / "autoloop" / "run_history.jsonl"
     entry = json.loads(log_path.read_text().strip())
     assert entry["auto_merge"]["decision"] == "skipped-protected"
+
+
+def test_implement_single_issue_passes_ctx_to_try_auto_merge(monkeypatch, tmp_path):
+    """Regression (#406): implement_single_issue threads its RepoContext into try_auto_merge."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(auto_merge=True))
+    _auto_merge_integration_setup(monkeypatch, tmp_path, "skipped-unqualified", {})
+    seen_ctx = []
+    monkeypatch.setattr(
+        implement_issue,
+        "try_auto_merge",
+        lambda branch, pr_number, repo_dir=None, ctx=None: (
+            seen_ctx.append(ctx) or ("skipped-unqualified", {})
+        ),
+    )
+    ctx = RepoContext.for_data_dir(tmp_path / "data", repo_dir=tmp_path)
+
+    assert implement_single_issue(_FAKE_ISSUE, ctx=ctx) is True
+    assert seen_ctx == [ctx]
 
 
 def test_implement_single_issue_auto_merge_merged_logged(monkeypatch, tmp_path):

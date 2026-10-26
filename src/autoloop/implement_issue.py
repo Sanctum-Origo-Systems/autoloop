@@ -1488,9 +1488,16 @@ def wait_for_ci(pr_number: int, timeout: int = 600, poll_interval: int = 30) -> 
 
 
 def try_auto_merge(
-    branch: str, pr_number: int | None, repo_dir: Path | None = None
+    branch: str,
+    pr_number: int | None,
+    repo_dir: Path | None = None,
+    ctx: RepoContext | None = None,
 ) -> tuple[str, dict]:
-    """Attempt auto-merge after review passes. Returns (decision, gate_metrics)."""
+    """Attempt auto-merge after review passes. Returns (decision, gate_metrics).
+
+    Gate metrics come from the run history in ``ctx.data_dir``. When *ctx* is None it is
+    resolved from *repo_dir* (or the cwd), the same way ``main`` builds it.
+    """
     if not cfg.auto_merge:
         return "skipped-disabled", {}
 
@@ -1505,7 +1512,9 @@ def try_auto_merge(
         load_run_history,
     )
 
-    runs = load_run_history()
+    if ctx is None:
+        ctx = RepoContext(repo_dir or Path())
+    runs = load_run_history(ctx)
     pr_data = fetch_pr_data(cfg.repo)
     pr_data = enrich_pr_data_with_runs(pr_data, runs)
     snapshot = compute_snapshot(runs, pr_data)
@@ -1846,7 +1855,9 @@ def implement_single_issue(
         if integrity_violations:
             auto_merge_decision, auto_merge_gates = "skipped-integrity", {}
         else:
-            auto_merge_decision, auto_merge_gates = try_auto_merge(branch, pr_number, work_dir)
+            auto_merge_decision, auto_merge_gates = try_auto_merge(
+                branch, pr_number, work_dir, ctx=ctx
+            )
         if cfg.auto_merge:
             print(f"  Auto-merge: {auto_merge_decision}")
 
