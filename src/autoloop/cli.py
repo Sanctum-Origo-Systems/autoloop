@@ -120,8 +120,11 @@ def build_parser():
     subparsers.add_parser("preflight", help="Run verify and lint commands on the current branch")
 
     # prune
-    subparsers.add_parser(
+    prune_parser = subparsers.add_parser(
         "prune", help="Remove worktrees and autoloop/* branches whose PRs are merged or closed"
+    )
+    prune_parser.add_argument(
+        "--dry-run", action="store_true", help="Show what would be removed without removing it"
     )
 
     # eval
@@ -372,7 +375,7 @@ def main():
         from autoloop.prune import main as prune_main
 
         cfg = load_config()
-        sys.exit(prune_main(ctx, cfg))
+        sys.exit(prune_main(ctx, cfg, dry_run=args.dry_run))
 
 
 def _run_jev_shadow(

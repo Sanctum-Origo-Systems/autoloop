@@ -92,9 +92,9 @@ class FakeRepo:
         with patch("autoloop.prune.subprocess.run", side_effect=self.run):
             return prune.prune(self.ctx, self.cfg, **kwargs)
 
-    def main(self):
+    def main(self, **kwargs):
         with patch("autoloop.prune.subprocess.run", side_effect=self.run):
-            return prune.main(self.ctx, self.cfg)
+            return prune.main(self.ctx, self.cfg, **kwargs)
 
 
 @pytest.fixture()
@@ -296,6 +296,41 @@ class TestSummary:
         out = capsys.readouterr().out
         assert "Nothing to prune." in out
         assert "Summary: 0 removed, 0 kept, 0 needing review" in out
+
+    def test_dry_run_summary_counts_would_remove_not_kept(self, repo, capsys):
+        repo.add_worktree("autoloop/33-merged", "MERGED")
+        repo.add_worktree("autoloop/34-closed", "CLOSED", unique=2)
+        repo.add_worktree("autoloop/35-open", "OPEN")
+
+        assert repo.main(dry_run=True) == 0
+
+        assert repo.mutating_calls() == []
+        out = capsys.readouterr().out
+        summary = out.rstrip().splitlines()[-1]
+        assert summary == "Summary (dry run): 2 would remove, 1 kept, 0 needing review"
+        assert "2 would remove" in summary
+        assert "1 kept" in summary
+
+    def test_dry_run_result_counts(self, repo):
+        repo.add_worktree("autoloop/36-merged", "MERGED")
+        repo.add_branch("autoloop/37-merged", "MERGED")
+        repo.add_branch("autoloop/38-orphan", None, unique=1)
+
+        result = repo.prune(dry_run=True)
+
+        assert result.dry_run
+        assert (result.removed, result.would_remove, result.kept) == (0, 2, 1)
+
+    def test_non_dry_run_summary_unchanged(self, repo, capsys):
+        repo.add_worktree("autoloop/39-merged", "MERGED")
+        repo.add_worktree("autoloop/40-open", "OPEN")
+
+        repo.main()
+
+        out = capsys.readouterr().out
+        assert out.rstrip().splitlines()[-1] == "Summary: 1 removed, 1 kept, 0 needing review"
+        assert "would remove" not in out
+        assert "dry run" not in out
 
 
 class TestStaleWorktreeCount:
