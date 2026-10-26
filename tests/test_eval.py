@@ -307,6 +307,57 @@ def test_compute_snapshot_default_type_is_implement():
     assert snap["total_implementations"] == 1
 
 
+def test_compute_snapshot_excludes_triage_and_issue_zero():
+    """Mixed history: only real implementations (type=implement, issue!=0) are counted."""
+    runs = [
+        {
+            "type": "implement",
+            "issue": 42,
+            "success": True,
+            "attempts": 1,
+            "cost_usd": 2.50,
+            "duration_seconds": 300,
+        },
+        {
+            "type": "implement",
+            "issue": 99,
+            "success": True,
+            "attempts": 2,
+            "cost_usd": 3.00,
+            "duration_seconds": 400,
+        },
+        {
+            "type": "triage",
+            "issue": 0,
+            "success": True,
+            "attempts": 0,
+            "issues_triaged": 3,
+            "cost_usd": 0.10,
+            "duration_seconds": 15,
+        },
+        {
+            "issue": 0,
+            "success": True,
+            "attempts": 5,
+            "cost_usd": 0.20,
+            "duration_seconds": 25,
+        },
+        {
+            "type": "review",
+            "issue": 0,
+            "success": True,
+            "cost_usd": 0.30,
+            "duration_seconds": 30,
+        },
+    ]
+    snap = compute_snapshot(runs, date="2026-10-26")
+    assert snap["total_implementations"] == 2
+    assert snap["first_attempt_rate"] == 0.5
+    assert snap["avg_cost_usd"] == 2.75
+    assert snap["avg_duration_seconds"] == 350
+    assert snap["attempt_distribution"] == {"1": 1, "2": 1, "3+": 0}
+
+
 # --- enrich_pr_data_with_runs ---
 
 

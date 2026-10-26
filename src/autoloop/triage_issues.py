@@ -490,10 +490,13 @@ def log_run(
     output_tokens: int = 0,
     cache_read_tokens: int = 0,
     cache_creation_tokens: int = 0,
+    run_type: str = "implement",
+    issues_triaged: int = 0,
 ):
     """Append a JSON entry to the run history log."""
     entry = {
         "timestamp": datetime.now(UTC).isoformat(),
+        "type": run_type,
         "issue": issue_number,
         "success": success,
         "attempts": attempts,
@@ -504,6 +507,8 @@ def log_run(
         "cache_read_tokens": cache_read_tokens,
         "cache_creation_tokens": cache_creation_tokens,
     }
+    if issues_triaged:
+        entry["issues_triaged"] = issues_triaged
     log_file = data_dir / "run_history.jsonl"
     log_file.parent.mkdir(parents=True, exist_ok=True)
     with open(log_file, "a") as f:
@@ -1380,7 +1385,7 @@ def main(ctx=None, issue=None, drain=False, max_rounds=None):
         log_run(
             0,
             True,
-            num_triaged,
+            0,
             elapsed,
             total_cost,
             ctx.data_dir,
@@ -1388,6 +1393,8 @@ def main(ctx=None, issue=None, drain=False, max_rounds=None):
             total_output,
             total_cache_read,
             total_cache_creation,
+            run_type="triage",
+            issues_triaged=num_triaged,
         )
 
 
