@@ -6,6 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from autoloop.cli import main
 
 
@@ -111,6 +113,29 @@ class TestCliPassesCtxToAutoCloseParent:
 
         mock_acp.assert_called_once()
         assert mock_acp.call_args[0][0] is mock_ctx
+
+
+class TestCliPassesCtxToPrune:
+    def test_prune_receives_ctx_and_cfg(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("sys.argv", ["autoloop", "prune"])
+        mock_ctx = _mock_ctx(repo_dir=tmp_path)
+        cfg = _cfg()
+
+        with (
+            patch("autoloop.config.RepoContext", return_value=mock_ctx) as mock_rc,
+            patch("autoloop.config.load_config", return_value=cfg),
+            patch("autoloop.prune.main", return_value=0) as mock_prune,
+            pytest.raises(SystemExit) as exc,
+        ):
+            main()
+
+        assert exc.value.code == 0
+        mock_rc.assert_called_once_with(repo_dir=Path.cwd())
+        mock_prune.assert_called_once()
+        args, _ = mock_prune.call_args
+        assert args[0] is mock_ctx
+        assert args[0].repo_dir == tmp_path
+        assert args[1] is cfg
 
 
 class TestRepoContextUsesRepoDirNotCwd:
