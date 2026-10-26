@@ -150,6 +150,11 @@ def build_parser():
         action="store_true",
         help="With --publish, create a branch and PR instead of committing to main",
     )
+    eval_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="With --publish, publish even when the metrics show no material change",
+    )
 
     # jev-report
     jev_report_parser = subparsers.add_parser(
@@ -320,6 +325,7 @@ def main():
             output=args.output,
             publish=args.publish,
             pr=args.pr,
+            force=args.force,
             auto_merge_edit_rate_threshold=cfg.auto_merge_edit_rate_threshold,
             auto_merge_success_threshold=cfg.auto_merge_success_threshold,
             auto_merge_volume_floor=cfg.auto_merge_volume_floor,

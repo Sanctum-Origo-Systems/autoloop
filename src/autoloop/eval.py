@@ -114,17 +114,21 @@ def compute_snapshot(
             if mod not in modules:
                 modules[mod] = {
                     "implementations": 0,
+                    "implement_run_count": 0,
                     "first_attempt_successes": 0,
                     "total_cost": 0.0,
                     "merged_count": 0,
                     "human_edit_count": 0,
                 }
             modules[mod]["implementations"] += 1
-            if pr.get("first_attempt_success", False):
-                modules[mod]["first_attempt_successes"] += 1
+            # Success and cost are only known for PRs whose issue has an implement run;
+            # PRs opened by hand or before run history began are left out of both.
             issue = pr.get("issue")
             if issue and issue in issue_cost:
+                modules[mod]["implement_run_count"] += 1
                 modules[mod]["total_cost"] += issue_cost[issue]
+                if pr.get("first_attempt_success", False):
+                    modules[mod]["first_attempt_successes"] += 1
             if pr.get("merged", False):
                 modules[mod]["merged_count"] += 1
                 if pr.get("human_edited", False):
@@ -133,12 +137,14 @@ def compute_snapshot(
     module_stats = {}
     for mod, stats in sorted(modules.items()):
         imp = stats["implementations"]
+        n_runs = stats["implement_run_count"]
         fa = stats["first_attempt_successes"]
         merged = stats["merged_count"]
         module_stats[mod] = {
             "implementations": imp,
-            "first_attempt_rate": round(fa / imp, 2) if imp else 0.0,
-            "avg_cost_usd": round(stats["total_cost"] / imp, 2) if imp else 0.0,
+            "implement_run_count": n_runs,
+            "first_attempt_rate": round(fa / n_runs, 2) if n_runs else 0.0,
+            "avg_cost_usd": round(stats["total_cost"] / n_runs, 2) if n_runs else 0.0,
             "human_edit_rate": round(stats["human_edit_count"] / merged, 2) if merged else 0.0,
             "merged_clean_count": merged - stats["human_edit_count"],
         }
@@ -197,11 +203,25 @@ def snapshot_implement_runs(snapshot: dict) -> int:
     return sum(dist.get(k, 0) for k in ("1", "2", "3+"))
 
 
+def module_implement_runs(stats: dict) -> int:
+    """Implement runs behind a module's success and cost; pre-#432 snapshots used its PRs."""
+    if "implement_run_count" in stats:
+        return stats["implement_run_count"]
+    return stats.get("implementations", 0)
+
+
 def format_rate_with_n(rate: float, n: int, population: str, min_n: int = DEFAULT_MIN_N) -> str:
     """Render a rate with its sample size, or "insufficient data" when n is below min_n."""
     if n < min_n:
         return f"insufficient data (n={n} {population})"
     return f"{rate:.0%} (n={n} {population})"
+
+
+def format_cost_with_n(cost: float, n: int, population: str, min_n: int = DEFAULT_MIN_N) -> str:
+    """Render an average cost with its sample size, or "insufficient data" below min_n."""
+    if n < min_n:
+        return f"insufficient data (n={n} {population})"
+    return f"${cost:.2f} (n={n} {population})"
 
 
 def _crosses_baseline_break(snapshot: dict, prev: dict | None) -> bool:
@@ -496,10 +516,10 @@ def format_snapshot(snapshot: dict) -> str:
     if modules:
         lines.append("  Retry hotspots:")
         for mod, stats in sorted(modules.items(), key=lambda x: x[1]["first_attempt_rate"]):
-            imp = stats["implementations"]
-            fa = round(stats["first_attempt_rate"] * imp)
+            n_runs = module_implement_runs(stats)
+            fa = round(stats["first_attempt_rate"] * n_runs)
             lines.append(
-                f"    {mod:<20s} {stats['first_attempt_rate']:.0%} first-attempt ({fa}/{imp})"
+                f"    {mod:<20s} {stats['first_attempt_rate']:.0%} first-attempt ({fa}/{n_runs} runs)"
             )
 
     return "\n".join(lines)
@@ -721,8 +741,11 @@ def format_eval_md(snapshot: dict) -> str:
         lines.append("|--------|-------------------|-----------------|")
         for mod, stats in sorted(modules.items(), key=lambda x: x[1]["first_attempt_rate"]):
             imp = stats["implementations"]
-            fa = round(stats["first_attempt_rate"] * imp)
-            lines.append(f"| {mod} | {stats['first_attempt_rate']:.0%} ({fa}/{imp}) | {imp} |")
+            n_runs = module_implement_runs(stats)
+            fa = round(stats["first_attempt_rate"] * n_runs)
+            lines.append(
+                f"| {mod} | {stats['first_attempt_rate']:.0%} ({fa}/{n_runs} runs) | {imp} |"
+            )
 
     lines.append("")
     return "\n".join(lines)
@@ -810,10 +833,13 @@ def generate_eval_md(
             success = stats.get("first_attempt_rate", 0)
             avg_c = stats.get("avg_cost_usd", 0)
             prs = stats.get("implementations", 0)
+            n_runs = module_implement_runs(stats)
             edit_r = stats.get("human_edit_rate", 0)
             clean = stats.get("merged_clean_count", 0)
             auto = is_auto_merge_ready(success, edit_r, clean, **gate_kwargs)
-            lines.append(f"| {mod} | {success:.0%} | ${avg_c:.2f} | {prs} | {auto} |")
+            success_s = format_rate_with_n(success, n_runs, "runs", min_n)
+            cost_s = format_cost_with_n(avg_c, n_runs, "runs", min_n)
+            lines.append(f"| {mod} | {success_s} | {cost_s} | {prs} | {auto} |")
         lines.append("")
 
     recent = all_snapshots
@@ -1041,6 +1067,7 @@ def main(
     output: str | None = None,
     publish: bool = False,
     pr: bool = False,
+    force: bool = False,
     auto_merge_edit_rate_threshold: float = 0.05,
     auto_merge_success_threshold: float = 0.90,
     auto_merge_volume_floor: int = 10,
@@ -1076,7 +1103,8 @@ def main(
 
         daily_path = save_snapshot(snapshot, ctx)
 
-        if previous and not material_change(snapshot, previous):
+        changed = previous is None or material_change(snapshot, previous)
+        if not changed and not force:
             print(f"Snapshot saved to {daily_path}")
             print("No material change, skipping EVAL.md commit")
             return
@@ -1099,7 +1127,10 @@ def main(
 
         date = snapshot["date"]
 
-        print("Material change detected, publishing EVAL.md")
+        if changed:
+            print("Material change detected, publishing EVAL.md")
+        else:
+            print("No material change, publishing EVAL.md anyway (--force)")
 
         if pr:
             print(_publish_via_pr(ctx, path, eval_path, date))
