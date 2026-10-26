@@ -76,7 +76,7 @@ def test_partial_toml_keeps_defaults(tmp_path, monkeypatch):
     config = load_config(toml_path)
 
     assert config.triage_model == "haiku"
-    assert config.impl_model == "claude-opus-4-6[1m]"
+    assert config.impl_model == "claude-opus-5-5"
     assert config.impl_timeout == 900
     assert config.verify_cmd == "uv run pytest"
     assert config.lint_command == ""
@@ -276,7 +276,7 @@ def test_review_model_defaults_to_dataclass_impl_model(tmp_path, monkeypatch):
     toml_path.write_text('repo = "acme-corp/widget"\n')
     config = load_config(toml_path)
     assert config.review_model == config.impl_model
-    assert config.review_model == "claude-opus-4-6[1m]"
+    assert config.review_model == "claude-opus-5-5"
 
 
 def test_test_gate_skip_types_default():

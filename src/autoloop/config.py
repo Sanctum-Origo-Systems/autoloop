@@ -68,7 +68,7 @@ class RepoContext:
 class AutoLoopConfig:
     repo: str = "Sanctum-Origo-Systems/patina"
     triage_model: str = "sonnet"
-    impl_model: str = "claude-opus-4-6[1m]"
+    impl_model: str = "claude-opus-5-5"
     review_model: str = ""
     impl_timeout: int = 900
     triage_timeout: int = 90

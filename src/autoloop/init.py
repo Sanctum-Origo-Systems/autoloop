@@ -34,7 +34,7 @@ repo = "{repo}"
 
 # Models
 triage_model = "sonnet"
-impl_model = "claude-opus-4-6[1m]"
+impl_model = "claude-opus-5-5"
 
 # Timeouts (seconds)
 impl_timeout = 900
