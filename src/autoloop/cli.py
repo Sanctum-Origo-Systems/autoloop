@@ -10,8 +10,12 @@ import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from autoloop import __version__
+
+if TYPE_CHECKING:
+    from autoloop.config import RepoContext
 
 
 def build_parser():
@@ -294,7 +298,7 @@ def main():
                     checkout_branch(branch_name, repo_dir)
                 except (json.JSONDecodeError, KeyError):
                     pass
-        result = review_pr(args.pr_number, cfg, repo_dir=repo_dir)
+        result = review_pr(args.pr_number, cfg, repo_dir=repo_dir, ctx=ctx)
         if args.json:
             json.dump(result, sys.stdout)
             print()
@@ -428,16 +432,19 @@ def _run_jev_shadow(
         logging.exception("Failed to log Jev auto-merge decision")
 
 
-def review_pr(pr_number, cfg, repo_dir: Path | None = None):
+def review_pr(pr_number, cfg, repo_dir: Path | None = None, ctx: RepoContext | None = None):
     """Review a PR: checkout, run mutation gate + semantic review, post findings.
 
     Never merges. Applies needs-human label on failure.
     Restores the previous branch after review.
+    Review rows are logged to ctx.data_dir; ctx is the main checkout's context, so
+    pass it explicitly when repo_dir is a worktree.
     Returns a dict with keys: success, cost_usd, input_tokens, output_tokens,
     cache_read_tokens, cache_creation_tokens.
     """
     import autoloop.implement_issue as impl
     from autoloop.claude_runner import run_claude
+    from autoloop.config import RepoContext
 
     _zero_result = {
         "success": False,
@@ -449,6 +456,8 @@ def review_pr(pr_number, cfg, repo_dir: Path | None = None):
     }
 
     cwd = repo_dir or Path.cwd()
+    if ctx is None:
+        ctx = RepoContext(cwd)
     impl.cfg = cfg
     start_time = time.time()
 
@@ -491,7 +500,7 @@ def review_pr(pr_number, cfg, repo_dir: Path | None = None):
             cost_usd=0,
             run_type="review",
             pr_number=pr_number,
-            repo_dir=repo_dir,
+            ctx=ctx,
         )
         return _zero_result
 
@@ -521,7 +530,7 @@ def review_pr(pr_number, cfg, repo_dir: Path | None = None):
                 cost_usd=0,
                 run_type="review",
                 pr_number=pr_number,
-                repo_dir=repo_dir,
+                ctx=ctx,
             )
             return _zero_result
 
@@ -669,7 +678,7 @@ def review_pr(pr_number, cfg, repo_dir: Path | None = None):
             cache_creation_tokens=result.cache_creation_tokens,
             run_type="review",
             pr_number=pr_number,
-            repo_dir=repo_dir,
+            ctx=ctx,
         )
 
         if success:

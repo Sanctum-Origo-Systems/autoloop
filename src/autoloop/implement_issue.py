@@ -271,12 +271,13 @@ def log_run(
     output_tokens: int = 0,
     cache_read_tokens: int = 0,
     cache_creation_tokens: int = 0,
+    *,
+    ctx: RepoContext,
     run_type: str = "implement",
     pr_number: int | None = None,
-    repo_dir: Path | None = None,
     auto_merge: dict | None = None,
 ):
-    """Append a JSON entry to the run history log."""
+    """Append a JSON entry to ctx.data_dir/run_history.jsonl, the file eval reads."""
     entry = {
         "timestamp": datetime.now(UTC).isoformat(),
         "type": run_type,
@@ -294,7 +295,7 @@ def log_run(
         entry["pr_number"] = pr_number
     if auto_merge is not None:
         entry["auto_merge"] = auto_merge
-    log_file = (repo_dir or Path()) / "autoloop" / "run_history.jsonl"
+    log_file = ctx.data_dir / "run_history.jsonl"
     log_file.parent.mkdir(parents=True, exist_ok=True)
     with open(log_file, "a") as f:
         f.write(json.dumps(entry) + "\n")
@@ -1734,6 +1735,8 @@ def implement_single_issue(
         total_cache_read = sum(r.cache_read_tokens for r in claude_results)
         total_cache_creation = sum(r.cache_creation_tokens for r in claude_results)
         total_all = total_input + total_cache_creation + total_cache_read + total_output
+        # Run rows belong to the main checkout's data dir, never one derived from work_dir.
+        log_ctx = ctx if ctx is not None else RepoContext(Path.cwd())
 
         if not success:
             if timeout_failure:
@@ -1772,7 +1775,7 @@ def implement_single_issue(
                 total_output,
                 total_cache_read,
                 total_cache_creation,
-                repo_dir=repo_dir,
+                ctx=log_ctx,
             )
             return False
 
@@ -1887,7 +1890,7 @@ def implement_single_issue(
             total_output,
             total_cache_read,
             total_cache_creation,
-            repo_dir=repo_dir,
+            ctx=log_ctx,
             auto_merge={
                 "decision": auto_merge_decision,
                 "gates": auto_merge_gates,

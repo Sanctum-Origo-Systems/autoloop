@@ -11,7 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from autoloop.cli import main, review_pr
-from autoloop.config import AutoLoopConfig
+from autoloop.config import AutoLoopConfig, RepoContext
 
 
 def _cfg(**overrides):
@@ -406,13 +406,13 @@ class TestReviewPrBranchRestore:
 
 
 class TestReviewPrCostTracking:
-    def test_success_logs_review_entry_with_cost_fields(self, tmp_path, monkeypatch):
+    def test_success_logs_review_entry_with_cost_fields(self, tmp_path, monkeypatch, repo_ctx):
         cfg = _cfg()
         pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
         review_json = json.dumps({"approved": True, "summary": "looks good"})
         dispatch = _make_dispatcher(pr_data)
         monkeypatch.chdir(tmp_path)
-        log_file = tmp_path / "autoloop" / "run_history.jsonl"
+        log_file = repo_ctx.data_dir / "run_history.jsonl"
 
         with (
             patch("subprocess.run", side_effect=dispatch),
@@ -428,7 +428,7 @@ class TestReviewPrCostTracking:
                 ),
             ),
         ):
-            result = review_pr(42, cfg)
+            result = review_pr(42, cfg, ctx=repo_ctx)
 
         assert result["success"] is True
         assert result["cost_usd"] == 0.12
@@ -449,7 +449,7 @@ class TestReviewPrCostTracking:
         assert "duration_seconds" in entry
         assert "timestamp" in entry
 
-    def test_failure_logs_review_entry(self, tmp_path, monkeypatch):
+    def test_failure_logs_review_entry(self, tmp_path, monkeypatch, repo_ctx):
         cfg = _cfg()
         pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
         review_json = json.dumps(
@@ -457,7 +457,7 @@ class TestReviewPrCostTracking:
         )
         dispatch = _make_dispatcher(pr_data)
         monkeypatch.chdir(tmp_path)
-        log_file = tmp_path / "autoloop" / "run_history.jsonl"
+        log_file = repo_ctx.data_dir / "run_history.jsonl"
 
         with (
             patch("subprocess.run", side_effect=dispatch),
@@ -466,7 +466,7 @@ class TestReviewPrCostTracking:
                 return_value=_claude_result(text=review_json, cost_usd=0.08),
             ),
         ):
-            result = review_pr(42, cfg)
+            result = review_pr(42, cfg, ctx=repo_ctx)
 
         assert result["success"] is False
         assert result["cost_usd"] == 0.08
@@ -546,31 +546,31 @@ class TestReviewPrCostTracking:
         assert "Review cost:" in body
         assert "$0.10" in body
 
-    def test_checkout_failure_logs_run(self, tmp_path, monkeypatch):
+    def test_checkout_failure_logs_run(self, tmp_path, monkeypatch, repo_ctx):
         cfg = _cfg()
         pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix", "body": ""})
         dispatch = _make_dispatcher(pr_data, {("gh", "pr", "checkout"): _ok(returncode=1)})
         monkeypatch.chdir(tmp_path)
-        log_file = tmp_path / "autoloop" / "run_history.jsonl"
+        log_file = repo_ctx.data_dir / "run_history.jsonl"
         with (
             patch("subprocess.run", side_effect=dispatch),
         ):
-            review_pr(42, cfg)
+            review_pr(42, cfg, ctx=repo_ctx)
         entry = json.loads(log_file.read_text().strip())
         assert entry["type"] == "review"
         assert entry["pr_number"] == 42
         assert entry["success"] is False
         assert entry["cost_usd"] == 0
 
-    def test_pr_view_failure_logs_run(self, tmp_path, monkeypatch):
+    def test_pr_view_failure_logs_run(self, tmp_path, monkeypatch, repo_ctx):
         cfg = _cfg()
         dispatch = _make_dispatcher("", {("gh", "pr", "view"): _ok(returncode=1)})
         monkeypatch.chdir(tmp_path)
-        log_file = tmp_path / "autoloop" / "run_history.jsonl"
+        log_file = repo_ctx.data_dir / "run_history.jsonl"
         with (
             patch("subprocess.run", side_effect=dispatch),
         ):
-            review_pr(42, cfg)
+            review_pr(42, cfg, ctx=repo_ctx)
         entry = json.loads(log_file.read_text().strip())
         assert entry["type"] == "review"
         assert entry["pr_number"] == 42
@@ -1081,12 +1081,15 @@ class TestReviewPrRepoDir:
         for cmd, kw in git_calls:
             assert kw.get("cwd") == tmp_path, f"git call {cmd} missing cwd=repo_dir"
 
-    def test_log_run_writes_to_repo_dir(self, tmp_path):
-        """run_history.jsonl is written under repo_dir, not cwd."""
+    def test_log_run_writes_to_ctx_data_dir_not_repo_dir(self, tmp_path):
+        """Regression (#438): run_history.jsonl goes to ctx.data_dir, not repo_dir/autoloop."""
         cfg = _cfg()
         pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
         review_json = json.dumps({"approved": True, "summary": "ok"})
         dispatch = _make_dispatcher(pr_data)
+        repo_dir = tmp_path / "worktree"
+        repo_dir.mkdir()
+        ctx = RepoContext.for_data_dir(tmp_path / "data", repo_dir=tmp_path / "checkout")
 
         with (
             patch("subprocess.run", side_effect=dispatch),
@@ -1095,13 +1098,13 @@ class TestReviewPrRepoDir:
                 return_value=_claude_result(text=review_json, cost_usd=0.10),
             ),
         ):
-            review_pr(42, cfg, repo_dir=tmp_path)
+            review_pr(42, cfg, repo_dir=repo_dir, ctx=ctx)
 
-        log_file = tmp_path / "autoloop" / "run_history.jsonl"
-        assert log_file.exists()
+        log_file = ctx.data_dir / "run_history.jsonl"
         entry = json.loads(log_file.read_text().strip())
         assert entry["type"] == "review"
         assert entry["pr_number"] == 42
+        assert not (repo_dir / "autoloop" / "run_history.jsonl").exists()
 
     def test_jev_decisions_written_to_repo_dir(self, tmp_path):
         """jev_decisions.jsonl is written under repo_dir when jev_mode is on."""
@@ -1124,23 +1127,24 @@ class TestReviewPrRepoDir:
         jev_log = tmp_path / "autoloop" / "jev_decisions.jsonl"
         assert jev_log.exists()
 
-    def test_checkout_failure_logs_to_repo_dir(self, tmp_path):
-        """On checkout failure, run_history.jsonl still goes to repo_dir."""
+    def test_checkout_failure_logs_to_ctx_data_dir(self, tmp_path):
+        """On checkout failure, run_history.jsonl still goes to ctx.data_dir."""
         cfg = _cfg()
         pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix", "body": ""})
         dispatch = _make_dispatcher(pr_data, {("gh", "pr", "checkout"): _ok(returncode=1)})
+        ctx = RepoContext.for_data_dir(tmp_path / "data", repo_dir=tmp_path)
 
         with patch("subprocess.run", side_effect=dispatch):
-            review_pr(42, cfg, repo_dir=tmp_path)
+            review_pr(42, cfg, repo_dir=tmp_path, ctx=ctx)
 
-        log_file = tmp_path / "autoloop" / "run_history.jsonl"
-        assert log_file.exists()
+        log_file = ctx.data_dir / "run_history.jsonl"
         entry = json.loads(log_file.read_text().strip())
         assert entry["type"] == "review"
         assert entry["success"] is False
+        assert not (tmp_path / "autoloop").exists()
 
-    def test_none_repo_dir_falls_back_to_cwd(self, tmp_path, monkeypatch):
-        """When repo_dir is None, behavior matches the original Path.cwd() default."""
+    def test_none_ctx_logs_to_cwd_repo_context(self, tmp_path, monkeypatch):
+        """Without ctx, review rows go to the data dir of the cwd's RepoContext."""
         monkeypatch.chdir(tmp_path)
         cfg = _cfg()
         pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
@@ -1156,8 +1160,85 @@ class TestReviewPrRepoDir:
         ):
             review_pr(42, cfg)
 
-        log_file = tmp_path / "autoloop" / "run_history.jsonl"
-        assert log_file.exists()
+        log_file = RepoContext(tmp_path).data_dir / "run_history.jsonl"
+        assert json.loads(log_file.read_text().strip())["type"] == "review"
+        assert not (tmp_path / "autoloop").exists()
+
+
+class TestReviewPrCliLogsToDataDir:
+    """Regression (#438): `autoloop review-pr` logs every review row to ctx.data_dir."""
+
+    @pytest.fixture()
+    def repo(self, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        monkeypatch.chdir(repo)
+        return repo
+
+    def _run_cli(self, cfg, dispatch, *, expect_exit):
+        review = _claude_result(text=json.dumps({"approved": True, "summary": "ok"}))
+        with (
+            patch("subprocess.run", side_effect=dispatch),
+            patch("autoloop.claude_runner.run_claude", return_value=review),
+            patch("sys.argv", ["autoloop", "review-pr", "42"]),
+            patch("autoloop.config.load_config", return_value=cfg),
+        ):
+            if expect_exit:
+                with pytest.raises(SystemExit):
+                    main()
+            else:
+                main()
+
+    def _assert_review_row(self, repo, *, success):
+        from autoloop.eval import load_run_history
+
+        ctx = RepoContext(repo)
+        rows = load_run_history(ctx)
+        assert [(r["type"], r["pr_number"], r["success"]) for r in rows] == [
+            ("review", 42, success)
+        ]
+        assert not (repo / "autoloop" / "run_history.jsonl").exists()
+
+    def test_checkout_failure_row_in_data_dir(self, repo):
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix", "body": ""})
+        dispatch = _make_dispatcher(pr_data, {("gh", "pr", "checkout"): _ok(returncode=1)})
+
+        self._run_cli(_cfg(), dispatch, expect_exit=True)
+
+        self._assert_review_row(repo, success=False)
+
+    def test_pr_view_failure_row_in_data_dir(self, repo):
+        dispatch = _make_dispatcher("", {("gh", "pr", "view"): _ok(returncode=1)})
+
+        self._run_cli(_cfg(), dispatch, expect_exit=True)
+
+        self._assert_review_row(repo, success=False)
+
+    def test_review_completion_row_in_data_dir(self, repo):
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
+
+        self._run_cli(_cfg(), _make_dispatcher(pr_data), expect_exit=False)
+
+        self._assert_review_row(repo, success=True)
+
+    def test_fix_pr_worktree_review_row_in_data_dir(self, repo, tmp_path):
+        """With worktree isolation the review runs in a fix_pr worktree; the row still
+        lands in the main checkout's data dir."""
+        pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
+        wt = tmp_path / "wt"
+        wt.mkdir()
+
+        with (
+            patch("autoloop.fix_pr.ensure_pr_worktree", return_value=wt) as ensure,
+            patch("autoloop.fix_pr.checkout_branch"),
+        ):
+            self._run_cli(
+                _cfg(implement_isolation="worktree"), _make_dispatcher(pr_data), expect_exit=False
+            )
+
+        assert ensure.call_args.args[0].repo_dir == repo.resolve()
+        self._assert_review_row(repo, success=True)
+        assert not list(wt.rglob("run_history.jsonl"))
 
 
 class TestReviewPrJsonFlag:
