@@ -417,6 +417,7 @@ def main():
                 success_threshold=cfg.auto_merge_success_threshold if cfg else 0.90,
                 volume_floor=cfg.auto_merge_volume_floor if cfg else 10,
                 promotion_level=cfg.auto_merge_promotion_level if cfg else "module",
+                min_n=cfg.eval_min_n if cfg else 20,
             )
             md_path = ctx.repo_dir / "EVAL.md"
             md_path.write_text(md_content)

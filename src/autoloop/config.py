@@ -104,6 +104,7 @@ class AutoLoopConfig:
     auto_merge_volume_floor: int = 10
     auto_merge_promotion_level: str = "module"
     auto_merge: bool = False
+    eval_min_n: int = 20
     jev_mode: str = "off"
     jev_api_key_env: str = "OPENROUTER_API_KEY"
     jev_model: str = "typesafe/jev-1.13"
@@ -173,6 +174,7 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
         "comment_truncation",
         "max_pr_review_rounds",
         "max_decomposition_depth",
+        "eval_min_n",
     ):
         if key in data:
             setattr(config, key, int(data[key]))

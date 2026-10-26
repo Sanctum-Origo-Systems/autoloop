@@ -500,6 +500,7 @@ Example workflow from your phone:
 | `auto_merge_success_threshold` | `0.90` | Minimum first-attempt success rate for auto-merge eligibility (success_rate must be strictly above this) |
 | `auto_merge_volume_floor` | `10` | Minimum merged-clean PRs required before auto-merge can activate |
 | `auto_merge_promotion_level` | `"module"` | `"repo"` evaluates aggregate repo metrics; `"module"` evaluates each module independently |
+| `eval_min_n` | `20` | Minimum sample size for a headline rate in EVAL.md. Rates with fewer samples render as "insufficient data" instead of a percentage |
 | `max_pr_review_rounds` | `3` | Max rounds of automated PR review+fix when `--auto-fix` is used |
 | `implement.isolation` | `"off"` | `"off"` — run in project directory (default). `"worktree"` — run in a persistent git worktree. See [Worktree Isolation](#worktree-isolation) |
 | `triage_labels` | `["ready", "rejected", ...]` | Labels that indicate an issue has been triaged |

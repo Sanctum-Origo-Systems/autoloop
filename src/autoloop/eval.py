@@ -17,6 +17,12 @@ from autoloop.config import RepoContext
 
 _PR_LIMIT = 500
 
+# Snapshots before this date counted triage rows as implement runs (#400), so their
+# success and cost values are not comparable with later snapshots.
+BASELINE_BREAK_DATE = "2026-10-26"
+
+DEFAULT_MIN_N = 20
+
 
 def load_run_history(ctx: RepoContext) -> list[dict]:
     log_file = ctx.data_dir / "run_history.jsonl"
@@ -150,13 +156,19 @@ def compute_snapshot(
             1 for p in pr_data if not p.get("merged", False) and p.get("closed", False)
         )
 
+    total_prs = (
+        sum(1 for p in pr_data if p.get("merged", False) or not p.get("closed", False))
+        if pr_data
+        else 0
+    )
+
     snapshot = {
         "date": date or datetime.now().strftime("%Y-%m-%d"),
-        "total_implementations": sum(
-            1 for p in pr_data if p.get("merged", False) or not p.get("closed", False)
-        )
-        if pr_data
-        else total,
+        "total_prs": total_prs,
+        # Deprecated alias of total_prs (falls back to the implement-run count when there
+        # is no PR data). Kept for one release so older readers of snapshots keep working.
+        "total_implementations": total_prs if pr_data else total,
+        "implement_run_count": total,
         "first_attempt_rate": round(first_attempt_rate, 2),
         "avg_cost_usd": round(avg_cost, 2),
         "avg_duration_seconds": round(avg_duration),
@@ -168,6 +180,32 @@ def compute_snapshot(
         "modules": module_stats,
     }
     return snapshot
+
+
+def snapshot_total_prs(snapshot: dict) -> int:
+    """PR count (merged + open) of a snapshot, reading the pre-#418 key as a fallback."""
+    if "total_prs" in snapshot:
+        return snapshot["total_prs"]
+    return snapshot.get("total_implementations", 0)
+
+
+def snapshot_implement_runs(snapshot: dict) -> int:
+    """Number of implement runs behind the run-history averages of a snapshot."""
+    if "implement_run_count" in snapshot:
+        return snapshot["implement_run_count"]
+    dist = snapshot.get("attempt_distribution") or {}
+    return sum(dist.get(k, 0) for k in ("1", "2", "3+"))
+
+
+def format_rate_with_n(rate: float, n: int, population: str, min_n: int = DEFAULT_MIN_N) -> str:
+    """Render a rate with its sample size, or "insufficient data" when n is below min_n."""
+    if n < min_n:
+        return f"insufficient data (n={n} {population})"
+    return f"{rate:.0%} (n={n} {population})"
+
+
+def _crosses_baseline_break(snapshot: dict, prev: dict | None) -> bool:
+    return prev is not None and prev["date"] < BASELINE_BREAK_DATE <= snapshot["date"]
 
 
 def fetch_pr_data(repo: str) -> list[dict]:
@@ -394,11 +432,15 @@ def compare_snapshots(old: dict, new: dict) -> dict:
             "delta": round(new_val - old_val, 4),
         }
 
-    comparison["changes"]["total_implementations"] = {
-        "old": old.get("total_implementations", 0),
-        "new": new.get("total_implementations", 0),
-        "delta": new.get("total_implementations", 0) - old.get("total_implementations", 0),
+    old_prs = snapshot_total_prs(old)
+    new_prs = snapshot_total_prs(new)
+    comparison["changes"]["total_prs"] = {
+        "old": old_prs,
+        "new": new_prs,
+        "delta": new_prs - old_prs,
     }
+    # Deprecated alias of total_prs, kept for one release.
+    comparison["changes"]["total_implementations"] = dict(comparison["changes"]["total_prs"])
 
     old_modules = old.get("modules", {})
     new_modules = new.get("modules", {})
@@ -419,14 +461,14 @@ def compare_snapshots(old: dict, new: dict) -> dict:
 
 def format_snapshot(snapshot: dict) -> str:
     lines = [f"Eval Snapshot ({snapshot['date']})"]
-    lines.append(f"  Issues implemented:     {snapshot['total_implementations']}")
+    lines.append(f"  Total PRs:              {snapshot_total_prs(snapshot)}")
 
     rate = snapshot["first_attempt_rate"]
-    total = snapshot["total_implementations"]
-    first = round(rate * total)
-    lines.append(f"  First-attempt success:  {rate:.0%} ({first}/{total})")
+    runs = snapshot_implement_runs(snapshot)
+    first = round(rate * runs)
+    lines.append(f"  First-attempt success:  {rate:.0%} ({first}/{runs} implement runs)")
 
-    lines.append(f"  Avg cost/PR:            ${snapshot['avg_cost_usd']:.2f}")
+    lines.append(f"  Avg cost/run:           ${snapshot['avg_cost_usd']:.2f}")
 
     dur = snapshot["avg_duration_seconds"]
     minutes = int(dur) // 60
@@ -499,8 +541,8 @@ def format_comparison(comparison: dict) -> str:
         return f"  {label:<24s} {c['old']} → {c['new']} ({sign}{delta})"
 
     lines.append(_pct("first_attempt_rate", "First-attempt success:", is_pct=True))
-    lines.append(_dollar("avg_cost_usd", "Avg cost/PR:"))
-    lines.append(_int("total_implementations", "Total implementations:"))
+    lines.append(_dollar("avg_cost_usd", "Avg cost/run:"))
+    lines.append(_int("total_prs", "Total PRs:"))
     lines.append(_pct("human_edit_rate", "Human edit rate:", is_pct=True))
 
     mc = comparison.get("module_changes", {})
@@ -536,8 +578,8 @@ def _md_label(date_str: str) -> str:
 
 def _period_impl(snapshot: dict, prev: dict | None) -> int:
     if prev is None:
-        return snapshot.get("total_implementations", 0)
-    return max(0, snapshot.get("total_implementations", 0) - prev.get("total_implementations", 0))
+        return snapshot_total_prs(snapshot)
+    return max(0, snapshot_total_prs(snapshot) - snapshot_total_prs(prev))
 
 
 def _compute_period_stats(snapshot: dict, prev: dict | None) -> dict:
@@ -642,11 +684,11 @@ def format_eval_md(snapshot: dict) -> str:
     lines.append("|--------|-------|")
 
     rate = snapshot["first_attempt_rate"]
-    total = snapshot["total_implementations"]
-    first = round(rate * total)
-    lines.append(f"| Issues implemented | {total} |")
-    lines.append(f"| First-attempt success | {rate:.0%} ({first}/{total}) |")
-    lines.append(f"| Avg cost/PR | ${snapshot['avg_cost_usd']:.2f} |")
+    runs = snapshot_implement_runs(snapshot)
+    first = round(rate * runs)
+    lines.append(f"| Total PRs | {snapshot_total_prs(snapshot)} |")
+    lines.append(f"| First-attempt success | {rate:.0%} ({first}/{runs} implement runs) |")
+    lines.append(f"| Avg cost/run | ${snapshot['avg_cost_usd']:.2f} |")
 
     dur = snapshot["avg_duration_seconds"]
     minutes = int(dur) // 60
@@ -711,6 +753,7 @@ def generate_eval_md(
     volume_floor: int = 10,
     promotion_level: str = "module",
     annotations: list[str] | None = None,
+    min_n: int = DEFAULT_MIN_N,
 ) -> str:
     lines = ["# EVAL Report", ""]
 
@@ -718,12 +761,17 @@ def generate_eval_md(
     lines.append("")
     lines.append("| Metric | Value |")
     lines.append("|--------|-------|")
+    lines.append(f"| Total PRs | {snapshot_total_prs(snapshot)} |")
+    runs = snapshot_implement_runs(snapshot)
     rate = snapshot.get("first_attempt_rate", 0)
-    lines.append(f"| First-attempt success | {rate:.0%} |")
+    rate_s = format_rate_with_n(rate, runs, "implement runs", min_n)
+    lines.append(f"| First-attempt success | {rate_s} |")
     cost = snapshot.get("avg_cost_usd", 0)
-    lines.append(f"| Avg cost/PR | ${cost:.2f} |")
+    lines.append(f"| Avg cost/run | ${cost:.2f} (n={runs} implement runs) |")
     hr = snapshot.get("human_edit_rate", 0)
-    lines.append(f"| Human edit rate | {hr:.0%} |")
+    merged = snapshot.get("merged_pr_count", 0)
+    hr_s = format_rate_with_n(hr, merged, "merged PRs", min_n)
+    lines.append(f"| Human edit rate | {hr_s} |")
     lines.append("")
 
     gate_kwargs = {
@@ -772,12 +820,15 @@ def generate_eval_md(
     if recent:
         lines.append("## Trend")
         lines.append("")
-        lines.append("| Date (UTC) | Implementations | First-attempt | Avg Cost | Human Edits |")
-        lines.append("|------|----------------|---------------|----------|-------------|")
+        lines.append("| Date (UTC) | New PRs | First-attempt | Avg Cost | Human Edits |")
+        lines.append("|------|---------|---------------|----------|-------------|")
+        has_break = False
         for i, s in enumerate(recent):
             prev = recent[i - 1] if i > 0 else None
             impl = _period_impl(s, prev)
-            pstats = _compute_period_stats(s, prev) or {
+            is_break = _crosses_baseline_break(s, prev)
+            has_break = has_break or is_break
+            pstats = _compute_period_stats(s, None if is_break else prev) or {
                 k: s.get(k)
                 for k in (
                     "period_first_attempt_rate",
@@ -795,7 +846,15 @@ def generate_eval_md(
             phr = pstats.get("period_human_edit_rate")
             hr_str = "—" if phr is None else f"{phr:.0%}"
 
-            lines.append(f"| {s['date']} | {impl} | {rate_str} | {cost_str} | {hr_str} |")
+            date_str = f"{s['date']} (baseline break)" if is_break else s["date"]
+            lines.append(f"| {date_str} | {impl} | {rate_str} | {cost_str} | {hr_str} |")
+        if has_break:
+            lines.append("")
+            lines.append(
+                f"> Baseline break at {BASELINE_BREAK_DATE}: earlier snapshots counted triage "
+                "runs as implementations (#400), so their first-attempt and cost values are "
+                "not comparable with later rows."
+            )
         lines.append("")
 
     if recent:
@@ -804,6 +863,8 @@ def generate_eval_md(
             chart_points: list[dict] = []
             for i, s in enumerate(chart_snaps):
                 prev = chart_snaps[i - 1] if i > 0 else None
+                if _crosses_baseline_break(s, prev):
+                    prev = None
                 pstats = _compute_period_stats(s, prev)
                 if not pstats:
                     continue
@@ -871,7 +932,8 @@ def material_change(new: dict, old: dict) -> bool:
     return (
         abs(new["first_attempt_rate"] - old["first_attempt_rate"]) > 0.05
         or abs(new["human_edit_rate"] - old["human_edit_rate"]) > 0.05
-        or new["total_implementations"] - old["total_implementations"] >= 5
+        or snapshot_total_prs(new) - snapshot_total_prs(old) >= 5
+        or snapshot_implement_runs(new) - snapshot_implement_runs(old) >= 5
         or set(new.get("modules", {}).keys()) != set(old.get("modules", {}).keys())
     )
 
@@ -983,6 +1045,7 @@ def main(
     auto_merge_success_threshold: float = 0.90,
     auto_merge_volume_floor: int = 10,
     auto_merge_promotion_level: str = "module",
+    eval_min_n: int = DEFAULT_MIN_N,
 ):
     repo_dir = str(ctx.repo_dir)
 
@@ -1029,6 +1092,7 @@ def main(
             success_threshold=auto_merge_success_threshold,
             volume_floor=auto_merge_volume_floor,
             promotion_level=auto_merge_promotion_level,
+            min_n=eval_min_n,
         )
         eval_path = ctx.repo_dir / "EVAL.md"
         eval_path.write_text(content)
