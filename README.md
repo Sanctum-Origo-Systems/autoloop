@@ -508,7 +508,7 @@ Example workflow from your phone:
 | `auto_merge_volume_floor` | `10` | Minimum merged-clean PRs required before auto-merge can activate |
 | `auto_merge_promotion_level` | `"module"` | `"repo"` evaluates aggregate repo metrics; `"module"` evaluates each module independently |
 | `eval_min_n` | `20` | Minimum sample size for a headline rate in EVAL.md. Rates with fewer samples render as "insufficient data" instead of a percentage |
-| `eval.fixup_window_days` | `7` | Days after an autoloop PR merges during which a later commit touching the same files counts as a fixup |
+| `eval.fixup_window_days` | `7` | Days after an autoloop PR merges during which a later non-autoloop PR touching the same files counts as a fixup (release and eval-report PRs never count) |
 | `eval.fixup_ignore` | `[]` | Glob patterns for shared files (e.g. `["docs/**", "*.lock"]`) that never count as fixups, in addition to the built-in ignore list |
 | `max_pr_review_rounds` | `3` | Max rounds of automated PR review+fix when `--auto-fix` is used |
 | `implement.isolation` | `"off"` | `"off"` — run in project directory (default). `"worktree"` — run in a persistent git worktree. See [Worktree Isolation](#worktree-isolation) |

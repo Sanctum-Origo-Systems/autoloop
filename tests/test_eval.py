@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from datetime import UTC, datetime, timedelta
 
 from autoloop.config import RepoContext
 from autoloop.eval import (
@@ -3852,8 +3853,10 @@ def _patch_eval_env(monkeypatch, calls, date_holder, *, prs=None, fail=None, rea
             return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
         return _REAL_RUN(cmd, **kw)
 
-    def fake_compute(runs, pr_data=None, date=None, module_prefixes=None):
-        return _REAL_COMPUTE_SNAPSHOT(runs, pr_data, date=date_holder[0])
+    def fake_compute(runs, pr_data=None, date=None, module_prefixes=None, fixup_window_days=None):
+        return _REAL_COMPUTE_SNAPSHOT(
+            runs, pr_data, date=date_holder[0], fixup_window_days=fixup_window_days
+        )
 
     monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
     monkeypatch.setattr("autoloop.eval.compute_snapshot", fake_compute)
@@ -4887,3 +4890,235 @@ def test_restore_to_head_resets_tracked_and_removes_untracked(tmp_path, monkeypa
     assert not untracked.exists()
     assert not staged.exists()
     assert _git(ctx, "status", "--porcelain") == ""
+
+
+# --- fixup window, ignored files and excluded PRs (#455) ---
+
+_FIXUP_MERGED_AT = "2026-09-10T00:00:00Z"
+
+
+def _autoloop_pr(files, number=10, merged_at=_FIXUP_MERGED_AT):
+    return [({"number": number, "mergedAt": merged_at}, set(files))]
+
+
+def _human_pr(files, days_after=3, branch="fix/widget-tweak", title="fix: tweak widget"):
+    merged = datetime(2026, 9, 10, tzinfo=UTC) + timedelta(days=days_after)
+    return {
+        "merged_at": merged.isoformat().replace("+00:00", "Z"),
+        "files": set(files),
+        "branch": branch,
+        "title": title,
+    }
+
+
+def test_detect_post_merge_fixups_outside_default_window_is_not_fixup():
+    shared = ["src/autoloop/eval.py"]
+    late = _human_pr(shared, days_after=30)
+    assert _detect_post_merge_fixups(_autoloop_pr(shared), [late]) == set()
+
+
+def test_detect_post_merge_fixups_inside_default_window_is_fixup():
+    shared = ["src/autoloop/eval.py"]
+    soon = _human_pr(shared, days_after=3)
+    assert _detect_post_merge_fixups(_autoloop_pr(shared), [soon]) == {10}
+
+
+def test_detect_post_merge_fixups_window_boundary_is_inclusive():
+    shared = ["src/autoloop/eval.py"]
+    assert _detect_post_merge_fixups(_autoloop_pr(shared), [_human_pr(shared, 7)]) == {10}
+    assert _detect_post_merge_fixups(_autoloop_pr(shared), [_human_pr(shared, 8)]) == set()
+
+
+def test_detect_post_merge_fixups_ignores_bookkeeping_files():
+    for path in ("pyproject.toml", "uv.lock", "CHANGELOG.md"):
+        files = ["src/autoloop/eval.py", path]
+        human = _human_pr([path, "src/autoloop/cli.py"])
+        assert _detect_post_merge_fixups(_autoloop_pr(files), [human]) == set(), path
+
+
+def test_detect_post_merge_fixups_ignores_eval_reports_and_snapshots():
+    files = ["EVAL.md", "JEV.md", "autoloop/eval_snapshots/2026-09-10.json"]
+    human = _human_pr(files)
+    assert _detect_post_merge_fixups(_autoloop_pr(files), [human]) == set()
+
+
+def test_detect_post_merge_fixups_readme_still_counts():
+    human = _human_pr(["README.md"])
+    assert _detect_post_merge_fixups(_autoloop_pr(["README.md", "uv.lock"]), [human]) == {10}
+
+
+def test_detect_post_merge_fixups_excludes_eval_and_release_branches():
+    shared = ["src/autoloop/eval.py"]
+    for branch in ("chore/eval-2026-10-26", "chore/release-v0.17.0"):
+        human = _human_pr(shared, branch=branch, title="chore: misc")
+        assert _detect_post_merge_fixups(_autoloop_pr(shared), [human]) == set(), branch
+
+
+def test_detect_post_merge_fixups_excludes_changelog_and_eval_report_titles():
+    shared = ["src/autoloop/eval.py"]
+    for title in (
+        "chore: update changelog and version (v0.18.0)",
+        "chore: update eval report (2026-09-12)",
+    ):
+        human = _human_pr(shared, branch="chore/misc", title=title)
+        assert _detect_post_merge_fixups(_autoloop_pr(shared), [human]) == set(), title
+
+
+def test_detect_post_merge_fixups_uses_configured_window_and_ignore(tmp_path, monkeypatch):
+    from autoloop.config import load_config
+
+    for var in ("AUTOLOOP_TRIAGE_MODEL", "AUTOLOOP_IMPL_MODEL", "AUTOLOOP_TIMEOUT"):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text(
+        'repo = "acme-corp/widget"\n\n[eval]\nfixup_window_days = 2\nfixup_ignore = ["docs/**"]\n'
+    )
+    cfg = load_config(toml_path)
+    assert cfg.fixup_window_days == 2
+    assert cfg.fixup_ignore == ["docs/**"]
+
+    code = ["src/autoloop/eval.py"]
+    day3 = [_human_pr(code, days_after=3)]
+    assert _detect_post_merge_fixups(_autoloop_pr(code), day3) == {10}
+    narrowed = _detect_post_merge_fixups(
+        _autoloop_pr(code), day3, cfg.fixup_window_days, cfg.fixup_ignore
+    )
+    assert narrowed == set()
+
+    docs = ["docs/guide/setup.md"]
+    day1 = [_human_pr(docs, days_after=1)]
+    assert _detect_post_merge_fixups(_autoloop_pr(docs), day1) == {10}
+    ignored = _detect_post_merge_fixups(
+        _autoloop_pr(docs), day1, cfg.fixup_window_days, cfg.fixup_ignore
+    )
+    assert ignored == set()
+
+
+def test_fetch_pr_data_applies_fixup_rules(monkeypatch):
+    prs = [
+        {
+            "number": 1,
+            "title": "feat: widget",
+            "state": "MERGED",
+            "mergedAt": "2026-09-10T00:00:00Z",
+            "headRefName": "autoloop/1-feat-widget",
+            "files": [{"path": "src/widget.py"}, {"path": "CHANGELOG.md"}],
+        },
+        {
+            "number": 2,
+            "title": "feat: gadget",
+            "state": "MERGED",
+            "mergedAt": "2026-09-10T00:00:00Z",
+            "headRefName": "autoloop/2-feat-gadget",
+            "files": [{"path": "src/gadget.py"}],
+        },
+        {
+            "number": 3,
+            "title": "chore: update changelog and version (v0.18.0)",
+            "state": "MERGED",
+            "mergedAt": "2026-09-11T00:00:00Z",
+            "headRefName": "chore/bump",
+            "files": [{"path": "CHANGELOG.md"}, {"path": "src/widget.py"}],
+        },
+        {
+            "number": 4,
+            "title": "fix: gadget edge case",
+            "state": "MERGED",
+            "mergedAt": "2026-09-12T00:00:00Z",
+            "headRefName": "fix/gadget",
+            "files": [{"path": "src/gadget.py"}],
+        },
+    ]
+    seen = []
+
+    def fake_run(cmd, **kwargs):
+        seen.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(prs), stderr="")
+
+    monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
+    data = {p["number"]: p for p in fetch_pr_data("owner/repo")}
+    assert data[1]["human_edited"] is False
+    assert data[2]["human_edited"] is True
+    assert "title" in seen[0][seen[0].index("--json") + 1].split(",")
+
+    narrow = {p["number"]: p for p in fetch_pr_data("owner/repo", fixup_window_days=1)}
+    assert narrow[2]["human_edited"] is False
+
+
+def test_generate_eval_md_human_edit_rate_states_window():
+    snap = {**_make_snapshot(hr=0.1, total=164), "fixup_window_days": 7}
+    content = generate_eval_md(snap, [snap])
+    assert "(n=164 merged PRs; edited by a human PR within 7 days)" in content
+
+    snap14 = {**snap, "fixup_window_days": 14}
+    content14 = generate_eval_md(snap14, [snap14])
+    assert "edited by a human PR within 14 days" in content14
+    assert "within 7 days" not in content14
+
+
+def test_generate_eval_md_window_wording_from_computed_snapshot():
+    runs, pr_data = _ten_merged_three_open()
+    snap = compute_snapshot(runs, pr_data, date="2026-10-27", fixup_window_days=7)
+    content = generate_eval_md(snap, [snap], min_n=1)
+    assert "edited by a human PR within 7 days" in content
+
+
+def test_compute_snapshot_records_fixup_window_days():
+    snap = compute_snapshot([], [], date="2026-10-27", fixup_window_days=14)
+    assert snap["fixup_window_days"] == 14
+
+
+def test_main_saved_snapshot_records_fixup_window_days(tmp_path, capsys):
+    main(ctx=_make_ctx(tmp_path), fixup_window_days=14)
+    files = list((tmp_path / "autoloop" / "eval_snapshots").glob("*.json"))
+    assert len(files) == 1
+    assert json.loads(files[0].read_text())["fixup_window_days"] == 14
+
+
+def test_main_saved_snapshot_records_default_fixup_window_days(tmp_path, capsys):
+    main(ctx=_make_ctx(tmp_path))
+    files = list((tmp_path / "autoloop" / "eval_snapshots").glob("*.json"))
+    assert json.loads(files[0].read_text())["fixup_window_days"] == 7
+
+
+def _edit_trend_pair(prev_window, curr_window):
+    prev = {
+        **_make_snapshot(date="2026-10-27", total=40),
+        "human_edit_count": 20,
+        "merged_pr_count": 40,
+    }
+    curr = {
+        **_make_snapshot(date="2026-10-28", hr=0.05, total=44),
+        "human_edit_count": 2,
+        "merged_pr_count": 44,
+    }
+    if prev_window is not None:
+        prev["fixup_window_days"] = prev_window
+    if curr_window is not None:
+        curr["fixup_window_days"] = curr_window
+    return prev, curr
+
+
+def test_generate_eval_md_marks_fixup_window_change_as_baseline_break():
+    for prev_window in (None, 30):
+        prev, curr = _edit_trend_pair(prev_window, 7)
+        content = generate_eval_md(curr, [prev, curr])
+        row = [ln for ln in content.split("\n") if ln.startswith("| 2026-10-28")][0]
+        assert "2026-10-28 (baseline break)" in row
+        # The edit rate restarts from the new rule instead of diffing edit counts.
+        assert row.rstrip().endswith("| 5% |")
+        assert "Baseline break at 2026-10-28" in content
+        assert "7-day window" in content
+
+
+def test_generate_eval_md_no_fixup_break_when_window_matches():
+    prev, curr = _edit_trend_pair(7, 7)
+    content = generate_eval_md(curr, [prev, curr])
+    assert "baseline break" not in content.lower()
+
+
+def test_compute_period_stats_restarts_edit_rate_on_fixup_window_change():
+    prev, curr = _edit_trend_pair(14, 7)
+    assert _compute_period_stats(curr, prev)["period_human_edit_rate"] == 0.05
+    prev, curr = _edit_trend_pair(7, 7)
+    assert _compute_period_stats(curr, prev)["period_human_edit_rate"] == INVALID_RATE
