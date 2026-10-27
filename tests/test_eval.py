@@ -7,6 +7,8 @@ import subprocess
 
 from autoloop.config import RepoContext
 from autoloop.eval import (
+    INVALID_RATE,
+    METRIC_DEFINITIONS,
     _choose_eval_branch,
     _compute_period_stats,
     _detect_module_prefixes,
@@ -17,19 +19,24 @@ from autoloop.eval import (
     _publish_via_pr,
     _restore_to_head,
     _sample_for_chart,
+    bounded_rate,
     classify_module,
     compare_snapshots,
     compute_snapshot,
+    data_freshness,
     enrich_pr_data_with_runs,
     fetch_pr_data,
     format_comparison,
     format_cost_with_n,
     format_eval_md,
+    format_pct,
     format_rate_with_n,
     format_snapshot,
     format_trend,
     generate_eval_md,
     is_auto_merge_ready,
+    is_valid_rate,
+    latest_run_timestamp,
     load_all_snapshots,
     load_latest_snapshot,
     load_run_history,
@@ -38,8 +45,10 @@ from autoloop.eval import (
     material_change,
     migrate_unpublished_snapshots,
     module_implement_runs,
+    module_resolved_runs,
     save_snapshot,
     snapshot_implement_runs,
+    snapshot_resolved_runs,
     snapshot_total_prs,
 )
 
@@ -2936,7 +2945,7 @@ def test_generate_eval_md_trend_shows_deltas():
     ]
     content = generate_eval_md(snaps[-1], snaps)
     lines = content.split("\n")
-    row_08_31 = [ln for ln in lines if "2026-08-31" in ln][0]
+    row_08_31 = [ln for ln in lines if ln.startswith("| 2026-08-31")][0]
     assert "| 2 " in row_08_31
     assert "| 30 " not in row_08_31
 
@@ -3258,7 +3267,7 @@ def test_generate_eval_md_trend_uses_period_values():
     ]
     content = generate_eval_md(snaps[-1], snaps)
     lines = content.split("\n")
-    row_14 = [ln for ln in lines if "2026-09-14" in ln][0]
+    row_14 = [ln for ln in lines if ln.startswith("| 2026-09-14")][0]
     assert "100%" in row_14
     assert "$0.80" in row_14
     assert "0%" in row_14
@@ -3276,7 +3285,7 @@ def test_generate_eval_md_trend_dash_for_zero_impl():
     ]
     content = generate_eval_md(snaps[-1], snaps)
     lines = content.split("\n")
-    row_14 = [ln for ln in lines if "2026-09-14" in ln][0]
+    row_14 = [ln for ln in lines if ln.startswith("| 2026-09-14")][0]
     assert "—" in row_14
 
 
@@ -3566,7 +3575,7 @@ def test_chart_values_match_table():
     ]
     content = generate_eval_md(snaps[-1], snaps)
     lines = content.split("\n")
-    table_row = [ln for ln in lines if "2026-09-14" in ln][0]
+    table_row = [ln for ln in lines if ln.startswith("| 2026-09-14")][0]
     assert "60%" in table_row
     assert "bar [80, 60]" in content
 
@@ -4246,6 +4255,384 @@ def test_cli_eval_passes_force_to_eval_main():
 def test_cli_eval_force_defaults_false_in_eval_main():
     called = _dispatch_eval(["eval", "--publish"])
     assert called["force"] is False
+
+
+# --- #452: definitions, bounded rates, pending counts, freshness ---
+
+
+def _pct_values(content):
+    import re
+
+    return [int(m) for m in re.findall(r"(-?\d+)%", content)]
+
+
+def _fresh_snapshot(**overrides):
+    snap = {
+        **_make_snapshot(date="2026-10-27"),
+        "data_as_of": "2026-10-26T12:00:00+00:00",
+        "history_rows": 40,
+    }
+    snap.update(overrides)
+    return snap
+
+
+def test_bounded_rate_in_range():
+    assert bounded_rate(1, 4, "x") == 0.25
+    assert bounded_rate(0, 4, "x") == 0.0
+    assert bounded_rate(4, 4, "x") == 1.0
+
+
+def test_bounded_rate_no_denominator_is_none():
+    assert bounded_rate(3, 0, "x") is None
+    assert bounded_rate(3, -2, "x") is None
+
+
+def test_bounded_rate_numerator_above_denominator_is_invalid(capsys):
+    assert bounded_rate(10, 3, "period human edit rate") == INVALID_RATE
+    err = capsys.readouterr().err
+    assert "Warning: period human edit rate" in err
+    assert "invalid" in err
+
+
+def test_bounded_rate_negative_numerator_is_invalid(capsys):
+    assert bounded_rate(-1, 3, "x") == INVALID_RATE
+    assert "Warning" in capsys.readouterr().err
+
+
+def test_is_valid_rate():
+    assert is_valid_rate(0)
+    assert is_valid_rate(0.5)
+    assert is_valid_rate(1.0)
+    assert not is_valid_rate(3.33)
+    assert not is_valid_rate(-0.1)
+    assert not is_valid_rate(None)
+    assert not is_valid_rate(INVALID_RATE)
+    assert not is_valid_rate(True)
+
+
+def test_format_pct_renders_dash_value_and_invalid(capsys):
+    assert format_pct(None) == "—"
+    assert format_pct(0.7) == "70%"
+    assert format_pct(INVALID_RATE) == "invalid"
+    assert capsys.readouterr().err == ""
+    assert format_pct(3.33, "legacy row") == "invalid"
+    assert "Warning: legacy row" in capsys.readouterr().err
+
+
+def test_format_rate_with_n_out_of_range_is_invalid():
+    assert format_rate_with_n(1.5, 30, "merged PRs") == "invalid (n=30 merged PRs)"
+
+
+def test_compute_period_stats_edits_above_merges_is_invalid(capsys):
+    """Late-flagged older PRs can push period edits past period merges (was 333%)."""
+    prev = _make_full_snapshot(
+        date="2026-09-07",
+        attempt_dist={"1": 20, "2": 5, "3+": 5},
+        human_edit_count=3,
+        merged_pr_count=25,
+    )
+    curr = _make_full_snapshot(
+        date="2026-09-14",
+        attempt_dist={"1": 22, "2": 6, "3+": 5},
+        human_edit_count=13,
+        merged_pr_count=28,
+    )
+    result = _compute_period_stats(curr, prev)
+    assert result["period_human_edit_rate"] == INVALID_RATE
+    assert "2026-09-14 period human edit rate" in capsys.readouterr().err
+
+
+def test_generate_eval_md_period_edits_above_merges_renders_invalid():
+    prev = {
+        **_make_snapshot(date="2026-09-07", total=30),
+        "human_edit_count": 3,
+        "merged_pr_count": 25,
+    }
+    curr = {
+        **_make_snapshot(date="2026-09-14", total=33),
+        "human_edit_count": 13,
+        "merged_pr_count": 28,
+    }
+    content = generate_eval_md(curr, [prev, curr])
+    row = [ln for ln in content.split("\n") if ln.startswith("| 2026-09-14")][0]
+    assert row.endswith("| invalid |")
+    assert "333%" not in content
+    assert all(0 <= v <= 100 for v in _pct_values(content))
+
+
+def test_generate_eval_md_legacy_stored_rate_above_100_renders_invalid():
+    """Old snapshots without attempt counts fall back to stored values; those are checked too."""
+    prev = {"date": "2026-09-07", "total_implementations": 10, "first_attempt_rate": 0.8}
+    curr = {
+        "date": "2026-09-14",
+        "total_implementations": 12,
+        "first_attempt_rate": 0.8,
+        "avg_cost_usd": 1.0,
+        "period_first_attempt_rate": 0.5,
+        "period_avg_cost_usd": 1.0,
+        "period_human_edit_rate": 1.96,
+    }
+    content = generate_eval_md(curr, [prev, curr])
+    row = [ln for ln in content.split("\n") if ln.startswith("| 2026-09-14")][0]
+    assert "invalid" in row
+    assert "196%" not in content
+
+
+def test_format_trend_period_edits_above_merges_renders_invalid():
+    prev = _make_full_snapshot(date="2026-09-07", human_edit_count=3, merged_pr_count=25)
+    curr = _make_full_snapshot(
+        date="2026-09-14",
+        attempt_dist={"1": 33, "2": 3, "3+": 1},
+        human_edit_count=13,
+        merged_pr_count=28,
+    )
+    output = format_trend([prev, curr])
+    row = [ln for ln in output.split("\n") if "2026-09-14" in ln][0]
+    assert "invalid" in row
+    assert "333%" not in output
+
+
+def test_chart_skips_invalid_period_rate():
+    prev = {
+        **_make_snapshot(date="2026-09-07", total=10),
+        "resolved_run_count": 10,
+        "first_attempt_count": 8,
+    }
+    curr = {
+        **_make_snapshot(date="2026-09-14", total=12),
+        "resolved_run_count": 11,
+        "first_attempt_count": 12,
+    }
+    content = generate_eval_md(curr, [prev, curr])
+    success_chart = content.split("```mermaid")[1]
+    assert "9/14" not in success_chart
+
+
+def test_compute_period_stats_uses_resolved_counts_when_present():
+    prev = {
+        **_make_full_snapshot(date="2026-09-07", attempt_dist={"1": 20, "2": 5, "3+": 5}),
+        "resolved_run_count": 28,
+        "first_attempt_count": 18,
+    }
+    curr = {
+        **_make_full_snapshot(date="2026-09-14", attempt_dist={"1": 25, "2": 5, "3+": 5}),
+        "resolved_run_count": 32,
+        "first_attempt_count": 21,
+    }
+    result = _compute_period_stats(curr, prev)
+    assert result["period_first_attempt_rate"] == 0.75
+
+
+def _ten_merged_three_open():
+    runs = []
+    pr_data = []
+    for i in range(1, 14):
+        merged = i <= 10
+        attempts = 2 if 8 <= i <= 10 else 1
+        runs.append(
+            {"type": "implement", "issue": i, "success": True, "attempts": attempts, "cost_usd": 1}
+        )
+        pr_data.append(
+            {
+                "number": 100 + i,
+                "issue": i,
+                "merged": merged,
+                "closed": False,
+                "changed_files": ["src/app/a.py"],
+                "human_edited": False,
+            }
+        )
+    return runs, enrich_pr_data_with_runs(pr_data, runs)
+
+
+def test_compute_snapshot_excludes_open_prs_from_first_attempt():
+    runs, pr_data = _ten_merged_three_open()
+    snap = compute_snapshot(runs, pr_data, date="2026-10-27")
+    assert snap["first_attempt_rate"] == 0.7
+    assert snap["first_attempt_count"] == 7
+    assert snap["resolved_run_count"] == 10
+    assert snap["pending_run_count"] == 3
+    assert snap["pending_pr_count"] == 3
+    assert snap["implement_run_count"] == 13
+    assert snap["avg_cost_usd"] == 1.0
+
+
+def test_generate_eval_md_reports_pending_count_not_seven_of_thirteen():
+    runs, pr_data = _ten_merged_three_open()
+    snap = compute_snapshot(runs, pr_data, date="2026-10-27")
+    content = generate_eval_md(snap, [snap], min_n=1)
+    assert "| First-attempt success | 70% (n=10 implement runs) | pending: 3 |" in content
+    assert "| Human edit rate | 0% (n=10 merged PRs) | pending: 3 |" in content
+    assert "54%" not in content  # 7/13
+
+
+def test_compute_snapshot_module_success_excludes_open_prs():
+    runs, pr_data = _ten_merged_three_open()
+    snap = compute_snapshot(runs, pr_data, date="2026-10-27")
+    mod = snap["modules"]["src/app/"]
+    assert mod["first_attempt_rate"] == 0.7
+    assert mod["resolved_run_count"] == 10
+    assert mod["pending_count"] == 3
+    assert mod["implement_run_count"] == 13
+
+
+def test_compute_snapshot_failed_run_with_open_pr_is_not_pending():
+    runs = [{"type": "implement", "issue": 5, "success": False, "attempts": 3}]
+    pr_data = [{"number": 9, "issue": 5, "merged": False, "closed": False}]
+    snap = compute_snapshot(runs, pr_data)
+    assert snap["pending_run_count"] == 0
+    assert snap["resolved_run_count"] == 1
+
+
+def test_compute_snapshot_pending_matches_pr_number_first():
+    """A run that logged a merged PR is resolved even if its issue has a newer open PR."""
+    runs = [
+        {"type": "implement", "issue": 5, "success": True, "attempts": 1, "pr_number": 8},
+        {"type": "implement", "issue": 5, "success": True, "attempts": 1, "pr_number": 9},
+    ]
+    pr_data = [
+        {"number": 8, "issue": 5, "merged": True, "closed": False},
+        {"number": 9, "issue": 5, "merged": False, "closed": False},
+    ]
+    snap = compute_snapshot(runs, pr_data)
+    assert snap["pending_run_count"] == 1
+    assert snap["first_attempt_count"] == 1
+
+
+def test_compute_snapshot_no_pr_data_has_no_pending():
+    runs = [{"type": "implement", "issue": 5, "success": True, "attempts": 1}]
+    snap = compute_snapshot(runs)
+    assert snap["pending_run_count"] == 0
+    assert snap["pending_pr_count"] == 0
+    assert snap["first_attempt_rate"] == 1.0
+
+
+def test_snapshot_resolved_runs_falls_back_for_old_snapshots():
+    assert snapshot_resolved_runs({"resolved_run_count": 4, "implement_run_count": 6}) == 4
+    assert snapshot_resolved_runs({"implement_run_count": 6}) == 6
+
+
+def test_module_resolved_runs_falls_back_for_old_snapshots():
+    assert module_resolved_runs({"resolved_run_count": 4, "implement_run_count": 6}) == 4
+    assert module_resolved_runs({"implement_run_count": 6}) == 6
+    assert module_resolved_runs({"implementations": 3}) == 3
+
+
+def test_latest_run_timestamp_picks_newest_across_types():
+    runs = [
+        {"type": "implement", "timestamp": "2026-10-20T08:00:00+00:00"},
+        {"type": "triage", "timestamp": "2026-10-25T09:30:00+00:00"},
+        {"type": "implement", "timestamp": "2026-10-22T10:00:00"},
+        {"type": "implement"},
+        {"type": "implement", "timestamp": "not a date"},
+    ]
+    assert latest_run_timestamp(runs) == "2026-10-25T09:30:00+00:00"
+
+
+def test_latest_run_timestamp_none_without_timestamps():
+    assert latest_run_timestamp([]) is None
+    assert latest_run_timestamp([{"type": "implement"}]) is None
+
+
+def test_compute_snapshot_records_freshness():
+    runs = [
+        {"type": "implement", "issue": 1, "timestamp": "2026-10-24T10:00:00+00:00"},
+        {"type": "triage", "issue": 2, "timestamp": "2026-10-25T11:00:00+00:00"},
+    ]
+    snap = compute_snapshot(runs, date="2026-10-27")
+    assert snap["data_as_of"] == "2026-10-25T11:00:00+00:00"
+    assert snap["history_rows"] == 2
+
+
+def test_data_freshness_fresh_and_stale():
+    fresh = {"date": "2026-10-27", "data_as_of": "2026-10-25T00:00:00+00:00", "history_rows": 3}
+    line, stale = data_freshness(fresh)
+    assert line == "data as of 2026-10-25T00:00:00+00:00, 3 history rows"
+    assert stale is False
+    old = {"date": "2026-10-27", "data_as_of": "2026-10-24T23:59:00+00:00", "history_rows": 3}
+    assert data_freshness(old)[1] is True
+
+
+def test_data_freshness_unknown_timestamp_is_stale():
+    line, stale = data_freshness({"date": "2026-10-27", "history_rows": 0})
+    assert line == "data as of unknown, 0 history rows"
+    assert stale is True
+
+
+def test_generate_eval_md_shows_stale_flag_for_old_history():
+    snap = _fresh_snapshot(data_as_of="2026-10-20T12:00:00+00:00")
+    content = generate_eval_md(snap, [snap])
+    assert "data as of 2026-10-20T12:00:00+00:00, 40 history rows" in content
+    assert "**Stale data:**" in content
+
+
+def test_generate_eval_md_no_stale_flag_for_fresh_history():
+    snap = _fresh_snapshot()
+    content = generate_eval_md(snap, [snap])
+    assert "data as of 2026-10-26T12:00:00+00:00, 40 history rows" in content
+    assert "Stale data" not in content
+
+
+def test_generate_eval_md_has_definitions_and_data_as_of():
+    snap = _fresh_snapshot()
+    content = generate_eval_md(snap, [snap])
+    header = content.split("## Overall")[0]
+    assert "Report date 2026-10-27: data as of" in header
+    assert "## Definitions" in content
+    assert "| Metric | Numerator | Denominator | Counts | Window |" in content
+    for d in METRIC_DEFINITIONS:
+        assert f"| {d['metric']} | {d['numerator']} | {d['denominator']} |" in content
+    assert "Pending:" in content
+
+
+def test_metric_definitions_cover_required_fields():
+    metrics = {d["metric"] for d in METRIC_DEFINITIONS}
+    assert metrics == {"First-attempt success", "Human edit rate", "Avg cost/run"}
+    for d in METRIC_DEFINITIONS:
+        for key in ("numerator", "denominator", "counts", "window"):
+            assert d[key]
+        assert "lifetime" in d["window"]
+        assert "|" not in "".join(d.values())
+
+
+def test_format_eval_md_has_definitions_freshness_and_pending():
+    snap = {
+        **_fresh_snapshot(),
+        "avg_duration_seconds": 60,
+        "resolved_run_count": 10,
+        "pending_run_count": 3,
+        "pending_pr_count": 3,
+        "first_attempt_rate": 0.7,
+    }
+    output = format_eval_md(snap)
+    assert "## Definitions" in output
+    assert "data as of 2026-10-26T12:00:00+00:00" in output
+    assert "70% (7/10 implement runs), pending: 3" in output
+
+
+def test_main_publish_eval_md_has_data_as_of(tmp_path, monkeypatch):
+    from datetime import UTC, datetime
+
+    log_dir = tmp_path / "autoloop"
+    log_dir.mkdir()
+    stamp = datetime.now(UTC).isoformat()
+    entry = {
+        "type": "implement",
+        "issue": 1,
+        "success": True,
+        "attempts": 1,
+        "cost_usd": 1.0,
+        "timestamp": stamp,
+    }
+    (log_dir / "run_history.jsonl").write_text(json.dumps(entry) + "\n")
+    monkeypatch.setattr("autoloop.eval.subprocess.run", _fake_subprocess_on_main([]))
+
+    main(publish=True, ctx=_make_ctx(tmp_path))
+
+    content = (tmp_path / "EVAL.md").read_text()
+    assert f"data as of {stamp}, 1 history rows" in content
+    assert "Stale data" not in content
+    assert "## Definitions" in content
 
 
 # --- eval --publish --pr with an existing chore/eval-<date> branch (#446) ---
