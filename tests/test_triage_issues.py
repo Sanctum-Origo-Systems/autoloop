@@ -721,11 +721,11 @@ def test_evaluate_issue_uses_cfg_tree_truncation(monkeypatch):
 
 def test_log_run_resolves_path_from_data_dir(tmp_path):
     """log_run writes to the given data_dir, not a frozen module-level constant."""
-    log_run(1, True, 1, 1.0, 0.01, tmp_path)
+    log_run(1, True, 1, 1.0, 0.01, tmp_path, model="model-a")
 
     second_dir = tmp_path / "other"
     second_dir.mkdir()
-    log_run(2, True, 1, 1.0, 0.01, second_dir)
+    log_run(2, True, 1, 1.0, 0.01, second_dir, model="model-a")
 
     log1 = tmp_path / "run_history.jsonl"
     log2 = second_dir / "run_history.jsonl"
@@ -736,7 +736,7 @@ def test_log_run_resolves_path_from_data_dir(tmp_path):
 
 
 def test_log_run_writes_jsonl(tmp_path):
-    log_run(42, True, 1, 10.0, 0.05, tmp_path)
+    log_run(42, True, 1, 10.0, 0.05, tmp_path, model="model-a")
 
     log_file = tmp_path / "run_history.jsonl"
     lines = log_file.read_text().strip().split("\n")
@@ -747,7 +747,7 @@ def test_log_run_writes_jsonl(tmp_path):
 
 
 def test_log_run_includes_cache_creation_tokens(tmp_path):
-    log_run(42, True, 1, 10.0, 0.05, tmp_path, 1000, 200, 500, 300)
+    log_run(42, True, 1, 10.0, 0.05, tmp_path, 1000, 200, 500, 300, model="model-a")
 
     log_file = tmp_path / "run_history.jsonl"
     entry = json.loads(log_file.read_text().strip())
@@ -758,18 +758,19 @@ def test_log_run_includes_cache_creation_tokens(tmp_path):
 
 
 def test_log_run_triage_writes_type_and_issues_triaged(tmp_path):
-    log_run(0, True, 0, 5.0, 0.10, tmp_path, run_type="triage", issues_triaged=3)
+    log_run(0, True, 0, 5.0, 0.10, tmp_path, run_type="triage", issues_triaged=3, model="model-t")
 
     log_file = tmp_path / "run_history.jsonl"
     entry = json.loads(log_file.read_text().strip())
     assert entry["type"] == "triage"
+    assert entry["model"] == "model-t"
     assert entry["issue"] == 0
     assert entry["attempts"] == 0
     assert entry["issues_triaged"] == 3
 
 
 def test_log_run_default_type_is_implement(tmp_path):
-    log_run(1, True, 1, 10.0, 0.05, tmp_path)
+    log_run(1, True, 1, 10.0, 0.05, tmp_path, model="model-a")
 
     log_file = tmp_path / "run_history.jsonl"
     entry = json.loads(log_file.read_text().strip())
@@ -3088,6 +3089,32 @@ def test_main_with_issue_triages_single_issue(monkeypatch):
     assert triaged == [42]
 
 
+def test_main_logs_triage_model(monkeypatch, tmp_path):
+    """The triage row records triage_model, even when impl and review models differ."""
+    cfg = _cfg(triage_model="model-t", impl_model="model-a", review_model="model-b")
+    monkeypatch.setattr("autoloop.config.load_config", lambda: cfg)
+    monkeypatch.setattr(
+        "autoloop.implement_issue.detect_active_claude_session",
+        lambda project_dir=None: False,
+    )
+    monkeypatch.setattr(
+        "autoloop.triage_issues.fetch_single_issue",
+        lambda issue_number, cfg: {"number": 42, "title": "T", "body": "b", "labels": []},
+    )
+    monkeypatch.setattr(
+        "autoloop.triage_issues.triage_issue",
+        lambda ctx, issue, cfg: [ClaudeResult("ok", 0.01, 100, 50, 0, 0, True)],
+    )
+
+    from autoloop.triage_issues import main
+
+    main(issue=42, ctx=_mock_ctx(repo_dir=tmp_path, data_dir=tmp_path / "data"))
+
+    entry = json.loads((tmp_path / "data" / "run_history.jsonl").read_text().strip())
+    assert entry["type"] == "triage"
+    assert entry["model"] == "model-t"
+
+
 def test_main_with_issue_not_found(monkeypatch, capsys):
     """main(issue=99) should print not-found message when issue doesn't exist."""
     cfg = _cfg()
@@ -4199,7 +4226,7 @@ def test_log_run_uses_data_dir(tmp_path):
     data_dir = tmp_path / "data"
     data_dir.mkdir()
 
-    log_run(1, True, 1, 1.0, 0.01, data_dir)
+    log_run(1, True, 1, 1.0, 0.01, data_dir, model="model-a")
 
     log_file = data_dir / "run_history.jsonl"
     assert log_file.exists()

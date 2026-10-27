@@ -1419,7 +1419,7 @@ def _history_path(repo_dir: Path) -> Path:
 
 def test_log_run_writes_json_entry(repo_ctx):
     log_path = repo_ctx.data_dir / "run_history.jsonl"
-    log_run(17, True, 2, 120.0, 5.00, 45000, 2300, 16832, 2903, ctx=repo_ctx)
+    log_run(17, True, 2, 120.0, 5.00, 45000, 2300, 16832, 2903, ctx=repo_ctx, model="model-a")
 
     lines = log_path.read_text().strip().splitlines()
     assert len(lines) == 1
@@ -1427,6 +1427,7 @@ def test_log_run_writes_json_entry(repo_ctx):
     assert entry["issue"] == 17
     assert entry["success"] is True
     assert entry["type"] == "implement"
+    assert entry["model"] == "model-a"
     assert entry["cache_creation_tokens"] == 2903
     assert entry["cache_read_tokens"] == 16832
     assert "pr_number" not in entry
@@ -1435,13 +1436,26 @@ def test_log_run_writes_json_entry(repo_ctx):
 def test_log_run_review_entry_includes_cost_fields(repo_ctx):
     log_path = repo_ctx.data_dir / "run_history.jsonl"
     log_run(
-        0, True, 1, 30.0, 0.12, 1500, 300, 100, 50, ctx=repo_ctx, run_type="review", pr_number=42
+        0,
+        True,
+        1,
+        30.0,
+        0.12,
+        1500,
+        300,
+        100,
+        50,
+        ctx=repo_ctx,
+        model="model-b",
+        run_type="review",
+        pr_number=42,
     )
 
     lines = log_path.read_text().strip().splitlines()
     assert len(lines) == 1
     entry = json.loads(lines[0])
     assert entry["type"] == "review"
+    assert entry["model"] == "model-b"
     assert entry["pr_number"] == 42
     assert entry["success"] is True
     assert entry["cost_usd"] == 0.12
@@ -1457,12 +1471,39 @@ def test_log_run_review_entry_includes_cost_fields(repo_ctx):
 
 def test_log_run_records_impl_and_review_cost_split(repo_ctx):
     """log_run records impl_cost_usd and review_cost_usd next to the total cost_usd."""
-    log_run(42, True, 1, 60.0, 1.40, ctx=repo_ctx, impl_cost_usd=1.0, review_cost_usd=0.4)
+    log_run(
+        42,
+        True,
+        1,
+        60.0,
+        1.40,
+        ctx=repo_ctx,
+        model="model-a",
+        impl_cost_usd=1.0,
+        review_cost_usd=0.4,
+    )
 
     entry = json.loads((repo_ctx.data_dir / "run_history.jsonl").read_text().strip())
     assert entry["cost_usd"] == 1.40
     assert entry["impl_cost_usd"] == 1.00
     assert entry["review_cost_usd"] == 0.40
+
+
+def test_load_run_history_reads_rows_with_and_without_model(repo_ctx):
+    """Rows logged before #462 have no model key; they load next to rows that do."""
+    from autoloop.eval import load_run_history
+
+    log_path = repo_ctx.data_dir / "run_history.jsonl"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy = {"type": "implement", "issue": 1, "success": True, "attempts": 1}
+    log_path.write_text(json.dumps(legacy) + "\n")
+    log_run(2, True, 1, 60.0, 1.50, ctx=repo_ctx, model="model-a")
+
+    rows = load_run_history(repo_ctx)
+
+    assert [r["issue"] for r in rows] == [1, 2]
+    assert "model" not in rows[0]
+    assert rows[1]["model"] == "model-a"
 
 
 # --- create_branch tests ---
@@ -5458,6 +5499,7 @@ def test_log_run_includes_auto_merge_field(repo_ctx):
         60.0,
         1.50,
         ctx=repo_ctx,
+        model="model-a",
         auto_merge={"decision": "merged", "gates": {"success_rate": 0.95}},
     )
 
@@ -5469,7 +5511,7 @@ def test_log_run_includes_auto_merge_field(repo_ctx):
 def test_log_run_omits_auto_merge_when_none(repo_ctx):
     """auto_merge field is absent when not provided."""
     log_path = repo_ctx.data_dir / "run_history.jsonl"
-    log_run(42, True, 1, 60.0, 1.50, ctx=repo_ctx)
+    log_run(42, True, 1, 60.0, 1.50, ctx=repo_ctx, model="model-a")
 
     entry = json.loads(log_path.read_text().strip())
     assert "auto_merge" not in entry
@@ -5564,10 +5606,10 @@ def test_release_lock_uses_repo_dir(tmp_path):
 def test_log_run_appends_one_line_to_ctx_data_dir(repo_ctx):
     """Regression (#438): log_run writes to ctx.data_dir, never repo_dir/autoloop."""
     log_path = repo_ctx.data_dir / "run_history.jsonl"
-    log_run(41, True, 1, 30.0, 0.50, ctx=repo_ctx)
+    log_run(41, True, 1, 30.0, 0.50, ctx=repo_ctx, model="model-a")
     before = log_path.read_text().splitlines()
 
-    log_run(42, True, 1, 60.0, 1.50, ctx=repo_ctx)
+    log_run(42, True, 1, 60.0, 1.50, ctx=repo_ctx, model="model-a")
 
     lines = log_path.read_text().splitlines()
     assert len(lines) == len(before) + 1
@@ -5590,11 +5632,11 @@ def test_legacy_run_history_path_only_in_init_and_config():
 def test_log_run_requires_ctx_and_rejects_repo_dir(repo_ctx):
     """Regression (#438): no cwd fallback and no repo_dir parameter."""
     with pytest.raises(TypeError):
-        log_run(42, True, 1, 60.0, 1.50)
+        log_run(42, True, 1, 60.0, 1.50, model="model-a")
     with pytest.raises(TypeError):
-        log_run(42, True, 1, 60.0, 1.50, repo_dir=repo_ctx.repo_dir)
+        log_run(42, True, 1, 60.0, 1.50, model="model-a", repo_dir=repo_ctx.repo_dir)
     with pytest.raises(TypeError):
-        log_run(42, True, 1, 60.0, 1.50, ctx=repo_ctx, repo_dir=repo_ctx.repo_dir)
+        log_run(42, True, 1, 60.0, 1.50, ctx=repo_ctx, model="model-a", repo_dir=repo_ctx.repo_dir)
     assert not (repo_ctx.data_dir / "run_history.jsonl").exists()
     assert not (repo_ctx.repo_dir / "autoloop").exists()
 
@@ -5949,6 +5991,55 @@ def test_implement_single_issue_worktree_logs_run_to_main_ctx(monkeypatch, tmp_p
     assert [(r["issue"], r["success"]) for r in runs] == [(42, verify_ok)]
     assert not list(wt_path.rglob("run_history.jsonl"))
     assert not (ctx.repo_dir / "autoloop").exists()
+
+
+@pytest.mark.parametrize("verify_ok", [True, False])
+def test_implement_single_issue_logs_impl_model(monkeypatch, tmp_path, verify_ok):
+    """Both implement log_run sites record impl_model, not review_model."""
+    from autoloop.eval import load_run_history
+
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(
+            implement_isolation="worktree",
+            max_retries=1,
+            impl_model="model-a",
+            review_model="model-b",
+        ),
+    )
+    ctx = RepoContext.for_data_dir(tmp_path / "data", repo_dir=tmp_path / "checkout")
+    wt_path = ctx.worktree_dir / "autoloop/42-add-feature"
+    wt_path.mkdir(parents=True)
+    _patch_single_issue_steps(monkeypatch, ctx, wt_path, {}, verify_ok=verify_ok)
+    monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
+
+    assert implement_single_issue(_FAKE_ISSUE, ctx=ctx) is verify_ok
+
+    assert [r["model"] for r in load_run_history(ctx)] == ["model-a"]
+
+
+def test_implement_single_issue_logs_env_override_model(monkeypatch, tmp_path):
+    """AUTOLOOP_IMPL_MODEL wins over autoloop.toml and is the model recorded on the row."""
+    from autoloop.config import load_config
+    from autoloop.eval import load_run_history
+
+    toml = tmp_path / "autoloop.toml"
+    toml.write_text('repo = "acme-corp/widget"\nimpl_model = "model-a"\n')
+    monkeypatch.setenv("AUTOLOOP_IMPL_MODEL", "model-env")
+    cfg = load_config(toml)
+    assert cfg.impl_model == "model-env"
+    cfg.implement_isolation = "worktree"
+    cfg.max_retries = 1
+    monkeypatch.setattr(implement_issue, "cfg", cfg)
+    ctx = RepoContext.for_data_dir(tmp_path / "data", repo_dir=tmp_path / "checkout")
+    wt_path = ctx.worktree_dir / "autoloop/42-add-feature"
+    wt_path.mkdir(parents=True)
+    _patch_single_issue_steps(monkeypatch, ctx, wt_path, {})
+
+    assert implement_single_issue(_FAKE_ISSUE, ctx=ctx) is True
+
+    assert [r["model"] for r in load_run_history(ctx)] == ["model-env"]
 
 
 def test_implement_single_issue_worktree_fetches_instead_of_cleaning_main(monkeypatch, tmp_path):
