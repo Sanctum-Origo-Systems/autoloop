@@ -350,6 +350,163 @@ def test_status_reports_data_dir_runs(mcp_tools, tmp_path, monkeypatch):
     assert "#99" not in result
 
 
+# --- _get_timer_info ---
+
+
+def _R(returncode=0, stdout=""):
+    return type("R", (), {"returncode": returncode, "stdout": stdout, "stderr": ""})()
+
+
+def _fake_systemctl_show(units: dict[str, str]):
+    """Return a fake subprocess.run answering `systemctl --user show <unit>` from *units*."""
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        if cmd[0] == "gh":
+            return _R(stdout="[]")
+        if cmd[0] == "systemctl" and "show" in cmd:
+            unit = cmd[cmd.index("show") + 1]
+            if unit in units:
+                return _R(stdout=units[unit])
+            return _R(stdout="NextElapseUSecRealtime=\nActiveState=inactive\n")
+        return _R(returncode=1)
+
+    fake_run.calls = calls
+    return fake_run
+
+
+ACTIVE_TRIAGE = "NextElapseUSecRealtime=Tue 2026-10-27 00:00:00 UTC\nActiveState=active\n"
+ACTIVE_IMPLEMENT = "NextElapseUSecRealtime=Tue 2026-10-27 09:00:00 UTC\nActiveState=active\n"
+
+
+def test_get_timer_info_active_timers():
+    """Active triage and implement timers both report their next run and time remaining."""
+    from datetime import UTC, datetime
+
+    from autoloop.mcp_server import _get_timer_info
+
+    fake_run = _fake_systemctl_show(
+        {"autoloop-triage.timer": ACTIVE_TRIAGE, "autoloop-implement.timer": ACTIVE_IMPLEMENT}
+    )
+    now = datetime(2026, 10, 26, 20, 16, tzinfo=UTC)
+    with patch("autoloop.mcp_server.subprocess.run", fake_run):
+        timers = _get_timer_info("autoloop", now=now)
+
+    assert timers == {
+        "triage": "2026-10-27 00:00 UTC (in 3h 44min)",
+        "implement": "2026-10-27 09:00 UTC (in 12h 44min)",
+    }
+    units = [cmd[3] for cmd, _ in fake_run.calls]
+    assert units == ["autoloop-triage.timer", "autoloop-implement.timer"]
+    for cmd, kwargs in fake_run.calls:
+        assert cmd[:3] == ["systemctl", "--user", "show"]
+        assert "NextElapseUSecRealtime" in cmd and "ActiveState" in cmd
+        assert kwargs["env"]["TZ"] == "UTC"
+
+
+def test_get_timer_info_uses_prefix():
+    """The timer prefix selects which units are queried."""
+    from autoloop.mcp_server import _get_timer_info
+
+    fake_run = _fake_systemctl_show({"widget-implement.timer": ACTIVE_IMPLEMENT})
+    with patch("autoloop.mcp_server.subprocess.run", fake_run):
+        timers = _get_timer_info("widget")
+
+    assert list(timers) == ["implement"]
+    assert timers["implement"].startswith("2026-10-27 09:00 UTC (in ")
+
+
+def test_get_timer_info_missing_or_inactive_timer_left_out():
+    """A missing (not-found) or inactive timer is omitted from the result."""
+    from autoloop.mcp_server import _get_timer_info
+
+    fake_run = _fake_systemctl_show(
+        {
+            "autoloop-triage.timer": "NextElapseUSecRealtime=Tue 2026-10-27 00:00:00 UTC\n"
+            "ActiveState=inactive\n",
+        }
+    )
+    with patch("autoloop.mcp_server.subprocess.run", fake_run):
+        assert _get_timer_info("autoloop") == {}
+
+    fake_run = _fake_systemctl_show(
+        {
+            "autoloop-triage.timer": ACTIVE_TRIAGE,
+            "autoloop-implement.timer": "NextElapseUSecRealtime=n/a\nActiveState=active\n",
+        }
+    )
+    with patch("autoloop.mcp_server.subprocess.run", fake_run):
+        assert list(_get_timer_info("autoloop")) == ["triage"]
+
+
+def test_get_timer_info_systemctl_missing_returns_empty():
+    """FileNotFoundError from systemctl returns {}."""
+    from autoloop.mcp_server import _get_timer_info
+
+    def fake_run(cmd, **kwargs):
+        raise FileNotFoundError("systemctl")
+
+    with patch("autoloop.mcp_server.subprocess.run", fake_run):
+        assert _get_timer_info("autoloop") == {}
+
+
+def test_get_timer_info_systemctl_failure_returns_empty():
+    """systemctl exiting non-zero returns {}."""
+    from autoloop.mcp_server import _get_timer_info
+
+    def fake_run(cmd, **kwargs):
+        return _R(returncode=1, stdout=ACTIVE_IMPLEMENT)
+
+    with patch("autoloop.mcp_server.subprocess.run", fake_run):
+        assert _get_timer_info("autoloop") == {}
+
+
+def test_format_remaining():
+    """Durations format as minutes, hours+minutes, or days+hours+minutes."""
+    from autoloop.mcp_server import _format_remaining
+
+    assert _format_remaining(5 * 60 + 30) == "5min"
+    assert _format_remaining(12 * 3600 + 44 * 60) == "12h 44min"
+    assert _format_remaining(2 * 86400 + 3 * 3600 + 1 * 60) == "2d 3h 1min"
+    assert _format_remaining(-120) == "0min"
+
+
+def test_parse_systemd_timestamp():
+    """systemd timestamps parse as UTC; empty or 'n/a' values return None."""
+    from datetime import UTC, datetime
+
+    from autoloop.mcp_server import _parse_systemd_timestamp
+
+    assert _parse_systemd_timestamp("Tue 2026-10-27 09:00:00 UTC") == datetime(
+        2026, 10, 27, 9, 0, tzinfo=UTC
+    )
+    assert _parse_systemd_timestamp("") is None
+    assert _parse_systemd_timestamp("n/a") is None
+
+
+def test_status_reports_implement_timer_next_run(mcp_tools, tmp_path, monkeypatch):
+    """autoloop_status includes the implement timer's next run when it is active."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "autoloop.toml").write_text('repo = "acme-corp/widget"\n')
+    for var in (
+        "AUTOLOOP_TRIAGE_MODEL",
+        "AUTOLOOP_IMPL_MODEL",
+        "AUTOLOOP_TIMEOUT",
+        "AUTOLOOP_REVIEWER",
+        "AUTOLOOP_REPO",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    fake_run = _fake_systemctl_show({"autoloop-implement.timer": ACTIVE_IMPLEMENT})
+    with patch("autoloop.mcp_server.subprocess.run", fake_run):
+        result = mcp_tools["autoloop_status"](repo_dir=str(repo))
+
+    assert "Next scheduled: implement: 2026-10-27 09:00 UTC (in " in result
+    assert "no scheduled timers found" not in result
+
+
 def test_no_legacy_run_history_path_in_mcp_server():
     """mcp_server.py must not reference the legacy autoloop/run_history.jsonl path."""
     from pathlib import Path

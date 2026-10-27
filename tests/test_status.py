@@ -18,12 +18,6 @@ Sun 2026-07-13 20:00:00 UTC     23min left    Sun 2026-07-13 02:00:30 UTC     17
 Mon 2026-07-14 00:00:00 UTC     4h 23min left Sun 2026-07-13 18:00:30 UTC     1h ago       patina-triage.timer       patina-triage.service
 """
 
-AUTOLOOP_TIMER_OUTPUT = """\
-NEXT                            LEFT          LAST                            PASSED       UNIT                        ACTIVATES
-Sun 2026-07-13 20:00:00 UTC     23min left    Sun 2026-07-13 02:00:30 UTC     17h ago      autoloop-implement.timer    autoloop-implement.service
-Mon 2026-07-14 00:00:00 UTC     4h 23min left Sun 2026-07-13 18:00:30 UTC     1h ago       autoloop-triage.timer       autoloop-triage.service
-"""
-
 
 def _fake_systemctl(stdout, returncode=0):
     def fake_run(cmd, **kwargs):
@@ -32,28 +26,42 @@ def _fake_systemctl(stdout, returncode=0):
     return fake_run
 
 
+def _fake_systemctl_show(prefix):
+    """Answer `systemctl --user show <unit>` with active timers only for *prefix* units."""
+
+    def fake_run(cmd, **kwargs):
+        unit = cmd[cmd.index("show") + 1]
+        if unit in (f"{prefix}-triage.timer", f"{prefix}-implement.timer"):
+            stdout = "NextElapseUSecRealtime=Mon 2026-07-14 00:00:00 UTC\nActiveState=active\n"
+        else:
+            stdout = "NextElapseUSecRealtime=\nActiveState=inactive\n"
+        return type("R", (), {"returncode": 0, "stdout": stdout, "stderr": ""})()
+
+    return fake_run
+
+
 def test_get_timer_info_default_prefix_finds_autoloop_timers():
-    with patch("autoloop.mcp_server.subprocess.run", _fake_systemctl(AUTOLOOP_TIMER_OUTPUT)):
+    with patch("autoloop.mcp_server.subprocess.run", _fake_systemctl_show("autoloop")):
         timers = _get_timer_info()
     assert "triage" in timers
     assert "implement" in timers
 
 
 def test_get_timer_info_default_prefix_misses_patina_timers():
-    with patch("autoloop.mcp_server.subprocess.run", _fake_systemctl(TIMER_OUTPUT)):
+    with patch("autoloop.mcp_server.subprocess.run", _fake_systemctl_show("patina")):
         timers = _get_timer_info()
     assert timers == {}
 
 
 def test_get_timer_info_patina_prefix_finds_patina_timers():
-    with patch("autoloop.mcp_server.subprocess.run", _fake_systemctl(TIMER_OUTPUT)):
+    with patch("autoloop.mcp_server.subprocess.run", _fake_systemctl_show("patina")):
         timers = _get_timer_info("patina")
     assert "triage" in timers
     assert "implement" in timers
 
 
 def test_get_timer_info_patina_prefix_misses_autoloop_timers():
-    with patch("autoloop.mcp_server.subprocess.run", _fake_systemctl(AUTOLOOP_TIMER_OUTPUT)):
+    with patch("autoloop.mcp_server.subprocess.run", _fake_systemctl_show("autoloop")):
         timers = _get_timer_info("patina")
     assert timers == {}
 
