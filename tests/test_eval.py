@@ -7,12 +7,15 @@ import subprocess
 
 from autoloop.config import RepoContext
 from autoloop.eval import (
+    _choose_eval_branch,
     _compute_period_stats,
     _detect_module_prefixes,
     _detect_post_merge_fixups,
+    _eval_branch_action,
     _extract_issue_from_branch,
     _md_label,
     _publish_via_pr,
+    _restore_to_head,
     _sample_for_chart,
     classify_module,
     compare_snapshots,
@@ -2078,7 +2081,9 @@ def _fake_subprocess_all_ok(calls=None):
     def _fake(cmd, **kw):
         calls.append(cmd)
         stdout = ""
-        if cmd[:2] == ["gh", "pr"]:
+        if cmd[:3] == ["gh", "pr", "list"]:
+            stdout = "[]"
+        elif cmd[:2] == ["gh", "pr"]:
             stdout = "https://github.com/owner/repo/pull/99\n"
         return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
 
@@ -3816,13 +3821,23 @@ def _commit_published(ctx, snapshot):
     _git(ctx, "commit", "-q", "-m", f"chore: update eval report ({snapshot['date']})")
 
 
-def _patch_eval_env(monkeypatch, calls, date_holder):
-    """Run real git, fake `git push` / `gh`, and pin the snapshot date."""
+def _patch_eval_env(monkeypatch, calls, date_holder, *, prs=None, fail=None, real_push=False):
+    """Run real git, fake `git push` / `gh`, and pin the snapshot date.
+
+    `prs` maps a branch to the JSON that `gh pr list --head <branch>` returns. Commands
+    starting with `fail` exit 1. `real_push` pushes to the test repo's real origin.
+    """
 
     def fake_run(cmd, **kw):
         calls.append(cmd)
-        if cmd[:2] == ["git", "push"]:
+        if fail and cmd[: len(fail)] == fail:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="simulated failure")
+        if cmd[:2] == ["git", "push"] and not real_push:
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if cmd[:3] == ["gh", "pr", "list"]:
+            branch = cmd[cmd.index("--head") + 1]
+            stdout = json.dumps((prs or {}).get(branch, []))
+            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
         if cmd[:1] == ["gh"]:
             stdout = "https://github.com/acme-corp/widget/pull/7\n"
             return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
@@ -4231,3 +4246,257 @@ def test_cli_eval_passes_force_to_eval_main():
 def test_cli_eval_force_defaults_false_in_eval_main():
     called = _dispatch_eval(["eval", "--publish"])
     assert called["force"] is False
+
+
+# --- eval --publish --pr with an existing chore/eval-<date> branch (#446) ---
+
+_EVAL_BRANCH = "chore/eval-2026-10-02"
+_PR_URL = "https://github.com/acme-corp/widget/pull/7"
+
+
+def _setup_publish_day(ctx, monkeypatch):
+    """Repo with a 2026-10-01 baseline and run history that differs materially from it."""
+    _init_repo(ctx, monkeypatch)
+    _commit_published(ctx, _REAL_COMPUTE_SNAPSHOT(_runs(50, 0), [], date="2026-10-01"))
+    _write_runs(ctx, _runs(50, 10))
+
+
+def _commit_on_branch(ctx, branch, filename, text):
+    _git(ctx, "checkout", "-q", "-b", branch)
+    (ctx.repo_dir / filename).write_text(text)
+    _git(ctx, "add", filename)
+    _git(ctx, "commit", "-q", "-m", f"chore: {filename}")
+    _git(ctx, "checkout", "-q", "main")
+
+
+def _branches(ctx):
+    return _git(ctx, "branch", "--format=%(refname:short)").split()
+
+
+def _committed_files(ctx, ref):
+    return sorted(_git(ctx, "show", "--name-only", "--format=", ref).split())
+
+
+def _assert_main_clean(ctx):
+    assert _git(ctx, "status", "--porcelain") == ""
+    assert _git(ctx, "rev-parse", "--abbrev-ref", "HEAD").strip() == "main"
+    assert (ctx.repo_dir / "EVAL.md").read_text() == "# Eval\n"
+    assert not (ctx.repo_dir / "autoloop" / "eval_snapshots" / "2026-10-02.json").exists()
+    assert (ctx.data_dir / "eval_snapshots" / "2026-10-02.json").exists()
+
+
+def test_publish_pr_replaces_stale_merged_local_branch(tmp_path, monkeypatch, capsys):
+    ctx = _make_split_ctx(tmp_path)
+    _setup_publish_day(ctx, monkeypatch)
+    _commit_on_branch(ctx, _EVAL_BRANCH, "old.txt", "earlier publish\n")
+    _git(ctx, "merge", "-q", "--ff-only", _EVAL_BRANCH)
+    _git(ctx, "update-ref", "refs/remotes/origin/main", "main")
+
+    calls = []
+    _patch_eval_env(monkeypatch, calls, ["2026-10-02"])
+    main(publish=True, pr=True, ctx=ctx)
+
+    out = capsys.readouterr().out
+    assert "PR created:" in out
+    assert ["git", "branch", "-D", _EVAL_BRANCH] in calls
+    assert _branches(ctx) == [_EVAL_BRANCH, "main"]
+    assert _committed_files(ctx, _EVAL_BRANCH) == [
+        "EVAL.md",
+        "autoloop/eval_snapshots/2026-10-02.json",
+    ]
+    assert _git(ctx, "status", "--porcelain") == ""
+
+
+def test_publish_pr_replaces_local_branch_whose_pr_is_closed(tmp_path, monkeypatch, capsys):
+    ctx = _make_split_ctx(tmp_path)
+    _setup_publish_day(ctx, monkeypatch)
+    _commit_on_branch(ctx, _EVAL_BRANCH, "old.txt", "unmerged\n")
+
+    prs = {_EVAL_BRANCH: [{"state": "CLOSED", "url": _PR_URL}]}
+    _patch_eval_env(monkeypatch, [], ["2026-10-02"], prs=prs)
+    main(publish=True, pr=True, ctx=ctx)
+
+    assert "PR created:" in capsys.readouterr().out
+    assert _branches(ctx) == [_EVAL_BRANCH, "main"]
+    assert "old.txt" not in _git(ctx, "ls-tree", "-r", "--name-only", _EVAL_BRANCH)
+
+
+def test_publish_pr_uses_suffix_when_local_branch_is_unmerged(tmp_path, monkeypatch, capsys):
+    ctx = _make_split_ctx(tmp_path)
+    _setup_publish_day(ctx, monkeypatch)
+    _commit_on_branch(ctx, _EVAL_BRANCH, "old.txt", "unmerged\n")
+    old_tip = _git(ctx, "rev-parse", _EVAL_BRANCH)
+
+    _patch_eval_env(monkeypatch, [], ["2026-10-02"])
+    main(publish=True, pr=True, ctx=ctx)
+
+    assert "PR created:" in capsys.readouterr().out
+    assert _git(ctx, "rev-parse", _EVAL_BRANCH) == old_tip
+    assert "autoloop/eval_snapshots/2026-10-02.json" in _committed_files(ctx, f"{_EVAL_BRANCH}-2")
+    assert _git(ctx, "status", "--porcelain") == ""
+
+
+def test_publish_pr_commits_to_branch_with_open_pr(tmp_path, monkeypatch, capsys):
+    ctx = _make_split_ctx(tmp_path)
+    _setup_publish_day(ctx, monkeypatch)
+    origin = tmp_path / "origin.git"
+    _REAL_RUN(["git", "init", "-q", "--bare", str(origin)], check=True, capture_output=True)
+    _git(ctx, "remote", "add", "origin", str(origin))
+    _git(ctx, "push", "-q", "origin", "main")
+    # An earlier publish today: its PR is still open and touches the same files.
+    _git(ctx, "checkout", "-q", "-b", _EVAL_BRANCH)
+    (ctx.repo_dir / "EVAL.md").write_text("# Eval (earlier today)\n")
+    save_snapshot({"date": "2026-10-02", "v": "earlier"}, ctx, published=True)
+    _git(ctx, "add", "-A")
+    _git(ctx, "commit", "-q", "-m", "chore: update eval report (2026-10-02)")
+    _git(ctx, "push", "-q", "origin", _EVAL_BRANCH)
+    earlier_tip = _git(ctx, "rev-parse", "HEAD").strip()
+    _git(ctx, "checkout", "-q", "main")
+    _git(ctx, "branch", "-q", "-D", _EVAL_BRANCH)
+
+    calls = []
+    prs = {_EVAL_BRANCH: [{"state": "OPEN", "url": _PR_URL}]}
+    _patch_eval_env(monkeypatch, calls, ["2026-10-02"], prs=prs, real_push=True)
+    main(publish=True, pr=True, ctx=ctx)
+
+    out = capsys.readouterr().out
+    assert f"PR updated: {_PR_URL}" in out
+    assert not [c for c in calls if c[:3] == ["gh", "pr", "create"]]
+    remote_tip = _git(ctx, "rev-parse", f"origin/{_EVAL_BRANCH}").strip()
+    assert _git(ctx, "rev-parse", f"{remote_tip}^").strip() == earlier_tip
+    published = json.loads(
+        _git(ctx, "show", f"{remote_tip}:autoloop/eval_snapshots/2026-10-02.json")
+    )
+    assert published.get("v") != "earlier"
+    assert published["date"] == "2026-10-02"
+    assert "# EVAL Report" in _git(ctx, "show", f"{remote_tip}:EVAL.md")
+    _assert_main_clean(ctx)
+
+
+def test_publish_pr_branch_creation_failure_leaves_main_clean(tmp_path, monkeypatch, capsys):
+    ctx = _make_split_ctx(tmp_path)
+    _setup_publish_day(ctx, monkeypatch)
+
+    _patch_eval_env(monkeypatch, [], ["2026-10-02"], fail=["git", "checkout", "-b"])
+    main(publish=True, pr=True, ctx=ctx)
+
+    assert f"Error: could not create branch {_EVAL_BRANCH}" in capsys.readouterr().out
+    _assert_main_clean(ctx)
+    assert _branches(ctx) == ["main"]
+
+
+def test_publish_pr_push_failure_leaves_main_clean(tmp_path, monkeypatch, capsys):
+    ctx = _make_split_ctx(tmp_path)
+    _setup_publish_day(ctx, monkeypatch)
+
+    _patch_eval_env(monkeypatch, [], ["2026-10-02"], fail=["git", "push"])
+    main(publish=True, pr=True, ctx=ctx)
+
+    assert "Error: git push failed" in capsys.readouterr().out
+    _assert_main_clean(ctx)
+    assert _branches(ctx) == ["main"]
+
+
+def test_publish_pr_failure_restores_tracked_snapshot(tmp_path, monkeypatch, capsys):
+    """Same-day --force republish: the snapshot is tracked on main and must be restored."""
+    ctx = _make_split_ctx(tmp_path)
+    _init_repo(ctx, monkeypatch)
+    runs = _runs(50, 0)
+    _commit_published(ctx, _REAL_COMPUTE_SNAPSHOT(runs, [], date="2026-10-02"))
+    committed = (ctx.repo_dir / "autoloop" / "eval_snapshots" / "2026-10-02.json").read_text()
+    _write_runs(ctx, runs)
+
+    _patch_eval_env(monkeypatch, [], ["2026-10-02"], fail=["git", "push"])
+    main(publish=True, pr=True, force=True, ctx=ctx)
+
+    assert "Error: git push failed" in capsys.readouterr().out
+    assert _git(ctx, "status", "--porcelain") == ""
+    snap = ctx.repo_dir / "autoloop" / "eval_snapshots" / "2026-10-02.json"
+    assert snap.read_text() == committed
+
+
+def test_publish_pr_gh_list_failure_leaves_main_clean(tmp_path, monkeypatch, capsys):
+    ctx = _make_split_ctx(tmp_path)
+    _setup_publish_day(ctx, monkeypatch)
+
+    calls = []
+    _patch_eval_env(monkeypatch, calls, ["2026-10-02"], fail=["gh", "pr", "list"])
+    main(publish=True, pr=True, ctx=ctx)
+
+    assert f"Error: could not list PRs for {_EVAL_BRANCH}" in capsys.readouterr().out
+    _assert_main_clean(ctx)
+    assert not [c for c in calls if c[:3] == ["git", "checkout", "-b"]]
+
+
+def test_eval_branch_action_free_branch_is_created(tmp_path, monkeypatch):
+    ctx = _make_split_ctx(tmp_path)
+    _init_repo(ctx, monkeypatch)
+    _patch_eval_env(monkeypatch, [], ["2026-10-02"])
+    assert _eval_branch_action(ctx, _EVAL_BRANCH) == ("create", "")
+
+
+def test_eval_branch_action_open_pr_is_reused(tmp_path, monkeypatch):
+    ctx = _make_split_ctx(tmp_path)
+    _init_repo(ctx, monkeypatch)
+    prs = {_EVAL_BRANCH: [{"state": "MERGED", "url": "x"}, {"state": "OPEN", "url": _PR_URL}]}
+    _patch_eval_env(monkeypatch, [], ["2026-10-02"], prs=prs)
+    assert _eval_branch_action(ctx, _EVAL_BRANCH) == ("reuse", _PR_URL)
+
+
+def test_eval_branch_action_remote_branch_without_open_pr_is_taken(tmp_path, monkeypatch):
+    ctx = _make_split_ctx(tmp_path)
+    _init_repo(ctx, monkeypatch)
+    origin = tmp_path / "origin.git"
+    _REAL_RUN(["git", "init", "-q", "--bare", str(origin)], check=True, capture_output=True)
+    _git(ctx, "remote", "add", "origin", str(origin))
+    _git(ctx, "push", "-q", "origin", f"main:refs/heads/{_EVAL_BRANCH}")
+    prs = {_EVAL_BRANCH: [{"state": "CLOSED", "url": _PR_URL}]}
+    _patch_eval_env(monkeypatch, [], ["2026-10-02"], prs=prs)
+    assert _eval_branch_action(ctx, _EVAL_BRANCH) == ("taken", "")
+
+
+def test_eval_branch_action_unparseable_gh_output_is_error(tmp_path, monkeypatch):
+    ctx = _make_split_ctx(tmp_path)
+
+    def fake_run(cmd, **kw):
+        stdout = "not json" if cmd[:1] == ["gh"] else ""
+        return subprocess.CompletedProcess(cmd, 1 if cmd[:1] == ["git"] else 0, stdout=stdout)
+
+    monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
+    action, detail = _eval_branch_action(ctx, _EVAL_BRANCH)
+    assert action == "error"
+    assert "could not parse PRs" in detail
+
+
+def test_choose_eval_branch_skips_taken_names(tmp_path, monkeypatch):
+    ctx = _make_split_ctx(tmp_path)
+    _init_repo(ctx, monkeypatch)
+    _commit_on_branch(ctx, _EVAL_BRANCH, "a.txt", "a\n")
+    _commit_on_branch(ctx, f"{_EVAL_BRANCH}-2", "b.txt", "b\n")
+    _patch_eval_env(monkeypatch, [], ["2026-10-02"])
+    assert _choose_eval_branch(ctx, "2026-10-02") == (f"{_EVAL_BRANCH}-3", "create", "")
+
+
+def test_choose_eval_branch_errors_when_all_names_taken(tmp_path, monkeypatch):
+    ctx = _make_split_ctx(tmp_path)
+    monkeypatch.setattr("autoloop.eval._eval_branch_action", lambda ctx, branch: ("taken", ""))
+    branch, action, detail = _choose_eval_branch(ctx, "2026-10-02")
+    assert action == "error"
+    assert "no free branch name" in detail
+
+
+def test_restore_to_head_resets_tracked_and_removes_untracked(tmp_path, monkeypatch):
+    ctx = _make_split_ctx(tmp_path)
+    _init_repo(ctx, monkeypatch)
+    eval_path = ctx.repo_dir / "EVAL.md"
+    eval_path.write_text("# Changed\n")
+    untracked = save_snapshot({"date": "2026-10-02"}, ctx, published=True)
+    staged = save_snapshot({"date": "2026-10-03"}, ctx, published=True)
+    _git(ctx, "add", str(eval_path), str(staged))
+
+    _restore_to_head(ctx, [eval_path, untracked, staged])
+
+    assert eval_path.read_text() == "# Eval\n"
+    assert not untracked.exists()
+    assert not staged.exists()
+    assert _git(ctx, "status", "--porcelain") == ""
