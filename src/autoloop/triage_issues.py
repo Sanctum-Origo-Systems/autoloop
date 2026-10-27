@@ -360,6 +360,11 @@ def parse_rewritten_body(stdout: str) -> str | None:
     return text
 
 
+# Largest sub-issue that validate_decomposition will build by merging, and the largest
+# needs-decomposition verdict a sub-issue (depth >= 1) is approved at instead of re-split.
+SUB_ISSUE_MAX_POINTS = 5
+
+
 def _merge_steps(a: dict, b: dict) -> dict:
     """Merge two decomposition steps into one consolidated step."""
     files_a = a.get("files", [])
@@ -393,7 +398,11 @@ def validate_decomposition(decomposition: list[dict], max_sub_issues: int = 12) 
     for s in steps:
         s.setdefault("_original_orders", {s.get("order", 0)})
 
-    # Pass 1: Merge steps that share any file
+    def combined_points(a: dict, b: dict) -> int:
+        return a.get("points", 1) + b.get("points", 1)
+
+    # Pass 1: Merge steps that share any file, unless the result would exceed the
+    # sub-issue ceiling. Unmerged steps that share a file are ordered instead.
     changed = True
     while changed:
         changed = False
@@ -406,22 +415,38 @@ def validate_decomposition(decomposition: list[dict], max_sub_issues: int = 12) 
             j = i + 1
             while j < len(steps):
                 files_j = set(steps[j].get("files", []))
-                if files_i & files_j:
+                if not files_i & files_j:
+                    j += 1
+                elif combined_points(steps[i], steps[j]) <= SUB_ISSUE_MAX_POINTS:
                     steps[i] = _merge_steps(steps[i], steps[j])
                     files_i = set(steps[i].get("files", []))
                     del steps[j]
                     changed = True
                 else:
+                    deps_i = set(steps[i].get("depends_on", []))
+                    if not deps_i & steps[j]["_original_orders"]:
+                        dep = min(steps[i]["_original_orders"])
+                        deps_j = list(steps[j].get("depends_on", []))
+                        if dep not in deps_j:
+                            steps[j]["depends_on"] = deps_j + [dep]
                     j += 1
             i += 1
 
-    # Pass 2: Absorb steps with < 2 story points into nearest neighbor
+    # Pass 2: Absorb steps with < 2 story points into nearest neighbor, preferring
+    # one that stays within the sub-issue ceiling
     changed = True
     while changed and len(steps) > 1:
         changed = False
         for i, s in enumerate(steps):
             if s.get("points", 0) < 2:
-                neighbor = i + 1 if i + 1 < len(steps) else i - 1
+                candidates = [n for n in (i + 1, i - 1) if 0 <= n < len(steps)]
+                fitting = [
+                    n for n in candidates if combined_points(steps[n], s) <= SUB_ISSUE_MAX_POINTS
+                ]
+                if fitting:
+                    neighbor = fitting[0]
+                else:
+                    neighbor = min(candidates, key=lambda n: steps[n].get("points", 0))
                 steps[neighbor] = _merge_steps(steps[neighbor], steps[i])
                 del steps[i]
                 changed = True
@@ -1290,8 +1315,13 @@ def triage_issue(
                     f" >= max {cfg.max_decomposition_depth}. Requires manual decomposition.",
                 ],
             )
-        elif depth >= 1 and points <= 5:
-            approve_issue(issue["number"], verdict["priority"], verdict["reason"], cfg)
+        elif depth >= 1 and points <= SUB_ISSUE_MAX_POINTS:
+            reason = (
+                f"Approved at depth {depth}: sub-issue size limit is {SUB_ISSUE_MAX_POINTS}"
+                f" points, so this {points}-point sub-issue is not split further despite a"
+                f" needs-decomposition verdict. Model's note: {verdict['reason']}"
+            )
+            approve_issue(issue["number"], verdict["priority"], reason, cfg)
         else:
             decompose_issue(
                 issue["number"],

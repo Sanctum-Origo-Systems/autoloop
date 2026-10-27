@@ -832,6 +832,79 @@ def test_validate_decomposition_merges_shared_files():
     assert conftest_step["points"] == 2
 
 
+def test_validate_decomposition_shared_file_respects_points_ceiling():
+    """Regression #453: steps sharing a file stay split when merging would exceed 5 points."""
+    steps = [
+        {
+            "order": 1,
+            "title": "Storage foundation",
+            "points": 5,
+            "files": ["src/store.py", "src/migrations.py"],
+            "depends_on": [],
+        },
+        {
+            "order": 2,
+            "title": "Write-path wiring",
+            "points": 3,
+            "files": ["src/store.py", "src/pipeline.py"],
+            "depends_on": [],
+        },
+    ]
+    result = validate_decomposition(steps)
+    assert len(result) == 2
+    assert [s["title"] for s in result] == ["Storage foundation", "Write-path wiring"]
+    assert result[0]["depends_on"] == []
+    assert result[1]["depends_on"] == [1]
+
+
+def test_validate_decomposition_shared_file_small_steps_still_merge():
+    steps = [
+        {"order": 1, "title": "A", "points": 2, "files": ["src/shared.py"]},
+        {"order": 2, "title": "B", "points": 2, "files": ["src/shared.py"]},
+    ]
+    result = validate_decomposition(steps)
+    assert len(result) == 1
+    assert result[0]["points"] == 4
+
+
+def test_validate_decomposition_shared_file_no_cycle_with_existing_dep():
+    """An unmerged earlier step that already depends on the later one gets no back-edge."""
+    steps = [
+        {"order": 1, "title": "A", "points": 4, "files": ["x.py"], "depends_on": [2]},
+        {"order": 2, "title": "B", "points": 4, "files": ["x.py"], "depends_on": []},
+    ]
+    result = validate_decomposition(steps)
+    assert len(result) == 2
+    assert result[0]["depends_on"] == [2]
+    assert result[1]["depends_on"] == []
+
+
+def test_validate_decomposition_small_step_prefers_neighbor_within_ceiling():
+    steps = [
+        {"order": 1, "title": "Small base", "points": 2, "files": ["a.py"]},
+        {"order": 2, "title": "Tiny", "points": 1, "files": ["b.py"]},
+        {"order": 3, "title": "Big", "points": 5, "files": ["c.py"]},
+    ]
+    result = validate_decomposition(steps)
+    assert len(result) == 2
+    assert result[0]["points"] == 3
+    assert result[1]["points"] == 5
+
+
+def test_validate_decomposition_small_step_still_absorbed_over_ceiling():
+    """With no neighbor under the ceiling, a tiny step is still absorbed (smallest neighbor)."""
+    steps = [
+        {"order": 1, "title": "Big A", "points": 6, "files": ["a.py"]},
+        {"order": 2, "title": "Tiny", "points": 1, "files": ["b.py"]},
+        {"order": 3, "title": "Big B", "points": 5, "files": ["c.py"]},
+    ]
+    result = validate_decomposition(steps)
+    assert len(result) == 2
+    assert result[0]["title"] == "Big A"
+    assert result[1]["title"] == "Big B + Tiny"
+    assert result[1]["points"] == 6
+
+
 def test_validate_decomposition_merges_small_steps():
     steps = [
         {"order": 1, "title": "Tiny fix", "points": 1, "files": ["a.py"]},
@@ -1508,6 +1581,9 @@ def test_triage_issue_caps_depth_1_small_points_routes_to_ready(monkeypatch):
     assert any("ready" in c[c.index("--add-label") + 1] for c in label_calls)
     create_calls = [c for c in calls if "create" in c]
     assert len(create_calls) == 0
+    comment_bodies = [c[c.index("--body") + 1] for c in calls if "comment" in c]
+    assert any("approved at depth 1" in b.lower() for b in comment_bodies)
+    assert any("sub-issue size limit is 5 points" in b for b in comment_bodies)
 
 
 def test_triage_issue_allows_decomposition_depth_0(monkeypatch):
