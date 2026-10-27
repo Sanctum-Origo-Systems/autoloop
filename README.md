@@ -14,7 +14,7 @@ Config-driven AI pipeline that triages GitHub issues, implements them via Claude
 ## TLDR: First PR in 5 Minutes
 
 ```bash
-uv tool install git+https://github.com/Sanctum-Origo-Systems/autoloop@v0.12.1
+uv tool install git+https://github.com/Sanctum-Origo-Systems/autoloop@v0.18.0
 cd your-repo
 autoloop init --repo your-org/your-repo --verify-cmd "npm test"
 autoloop doctor                           # verify environment
@@ -94,7 +94,7 @@ Most users start local. Graduate to unattended when you trust it.
 
 ### As a CLI tool (recommended)
 
-Replace `<tag>` with the latest version from the [releases page](https://github.com/Sanctum-Origo-Systems/autoloop/tags) (e.g. `v0.12.1`):
+Replace `<tag>` with the latest version from the [tags page](https://github.com/Sanctum-Origo-Systems/autoloop/tags) (e.g. `v0.18.0`). Pinning a tag is recommended; `@main` tracks unreleased changes:
 
 ```bash
 uv tool install git+https://github.com/Sanctum-Origo-Systems/autoloop@<tag>
@@ -129,6 +129,8 @@ pip install --upgrade git+https://github.com/Sanctum-Origo-Systems/autoloop@main
 ```
 
 Verify: `autoloop version`
+
+If you use the MCP server, include the `mcp` extra when you upgrade: `uv tool install --force "autoloop[mcp] @ git+https://github.com/Sanctum-Origo-Systems/autoloop@v<new-version>"`. `--force` rebuilds the tool environment with only the extras you name, so leaving it out removes `fastmcp` and `autoloop-mcp` stops starting.
 
 If running on a VPS with systemd timers, reinstall there too and restart any Claude Code sessions in tmux to pick up the new MCP tools.
 
@@ -191,7 +193,7 @@ Checks that everything is set up correctly before your first run:
 ```
 ✓ autoloop.toml found and valid
 ✓ .claude/settings.json found
-✓ claude CLI installed (v2.1.160)
+✓ claude CLI installed (v2.1.310)
 ✓ claude CLI authenticated
 ✓ gh CLI installed and authenticated
 ✓ No active Claude Code session conflict
