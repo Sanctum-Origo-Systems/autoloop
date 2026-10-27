@@ -66,7 +66,7 @@
 > Baseline break at 2026-10-26: earlier snapshots counted triage runs as implementations (#400), so their first-attempt and cost values are not comparable with later rows.
 
 ```mermaid
-xychart-beta
+xychart-beta horizontal
     title "Weekly First-Attempt Success Rate (2026)"
     x-axis ["7/19 (n=2)", "7/26 (n=9)", "8/2 (n=19)", "8/9 (n=3)", "9/6 (n=15)", "9/13 (n=14)", "9/20 (n=70)", "9/27 (n=32)", "10/4 (n=70)", "10/11 (n=2)", "10/26 (n=201)"]
     y-axis "Success %" 0 --> 100
@@ -74,7 +74,7 @@ xychart-beta
 ```
 
 ```mermaid
-xychart-beta
+xychart-beta horizontal
     title "Weekly Avg Cost/PR (2026)"
     x-axis ["7/19 (n=2)", "7/26 (n=9)", "8/2 (n=19)", "8/9 (n=3)", "9/6 (n=15)", "9/13 (n=14)", "9/20 (n=70)", "9/27 (n=32)", "10/4 (n=70)", "10/11 (n=2)", "10/26 (n=201)"]
     y-axis "Cost ($)" 0 --> 3

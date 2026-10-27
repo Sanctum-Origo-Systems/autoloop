@@ -1141,7 +1141,7 @@ def generate_eval_md(
                 success_vals = ", ".join(str(round(p["rate"] * 100)) for p in chart_points)
 
                 lines.append("```mermaid")
-                lines.append("xychart-beta")
+                lines.append("xychart-beta horizontal")
                 lines.append(f'    title "Weekly First-Attempt Success Rate ({year})"')
                 lines.append(f"    x-axis [{dates}]")
                 lines.append('    y-axis "Success %" 0 --> 100')
@@ -1156,7 +1156,7 @@ def generate_eval_md(
                 cost_nums = [p["cost"] for p in chart_points]
                 y_max = max(1, int(max(cost_nums, default=0)) + 1)
                 lines.append("```mermaid")
-                lines.append("xychart-beta")
+                lines.append("xychart-beta horizontal")
                 lines.append(f'    title "Weekly Avg Cost/PR ({year})"')
                 lines.append(f"    x-axis [{dates}]")
                 lines.append(f'    y-axis "Cost ($)" 0 --> {y_max}')
