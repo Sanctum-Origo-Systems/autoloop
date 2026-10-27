@@ -1155,6 +1155,8 @@ def test_eval_publish_commits_repo_snapshot_not_data_dir(mcp_tools, tmp_path):
     def fake_run(cmd, **kwargs):
         calls.append(cmd)
         stdout = "https://github.com/owner/repo/pull/56\n" if cmd[:1] == ["gh"] else ""
+        if cmd[:3] == ["gh", "pr", "list"]:
+            stdout = "[]"
         return type("R", (), {"returncode": 0, "stdout": stdout, "stderr": ""})()
 
     with (

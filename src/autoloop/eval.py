@@ -1193,96 +1193,144 @@ def material_change(new: dict, old: dict) -> bool:
     )
 
 
-def _publish_via_pr(ctx: RepoContext, snapshot_path: Path, eval_path: Path, date: str) -> str:
-    branch_name = f"chore/eval-{date}"
-    pr_created = False
-    repo_dir = str(ctx.repo_dir)
-    try:
-        result = subprocess.run(
-            ["git", "checkout", "-b", branch_name],
-            capture_output=True,
-            text=True,
-            cwd=repo_dir,
-        )
-    except FileNotFoundError:
-        return "Error: git not found"
-    if result.returncode != 0:
-        return f"Error: could not create branch {branch_name}"
+MAX_EVAL_BRANCH_SUFFIX = 20
 
+
+def _run(ctx: RepoContext, cmd: list[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, capture_output=True, text=True, cwd=str(ctx.repo_dir))
+
+
+def _eval_branch_action(ctx: RepoContext, branch: str) -> tuple[str, str]:
+    """Decide how an eval publish can use `branch`.
+
+    Returns (action, detail): "create" (branch is free), "recreate" (only a stale local
+    copy exists — merged into origin/main, or its PR is merged or closed), "reuse" (it has
+    an open PR; detail is the PR URL), "taken", or "error" (detail is the message).
+    """
+    local = _run(ctx, ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"])
+    remote = _run(ctx, ["git", "ls-remote", "--heads", "origin", f"refs/heads/{branch}"])
+    on_remote = remote.returncode == 0 and bool((remote.stdout or "").strip())
+
+    listed = _run(
+        ctx, ["gh", "pr", "list", "--head", branch, "--state", "all", "--json", "state,url"]
+    )
+    if listed.returncode != 0:
+        return "error", f"could not list PRs for {branch}\n{listed.stderr}"
     try:
-        try:
-            result = subprocess.run(
-                ["git", "add", str(snapshot_path), str(eval_path)],
-                capture_output=True,
-                text=True,
-                cwd=repo_dir,
-            )
-        except FileNotFoundError:
-            return "Error: git not found"
+        prs = json.loads(listed.stdout or "[]")
+    except json.JSONDecodeError:
+        return "error", f"could not parse PRs for {branch}"
+
+    open_pr = next((p for p in prs if p.get("state") == "OPEN"), None)
+    if open_pr:
+        return "reuse", open_pr.get("url", "")
+    if on_remote:
+        return "taken", ""
+    if local.returncode != 0:
+        return "create", ""
+    if prs:
+        return "recreate", ""
+    merged = _run(
+        ctx, ["git", "merge-base", "--is-ancestor", f"refs/heads/{branch}", "origin/main"]
+    )
+    return ("recreate", "") if merged.returncode == 0 else ("taken", "")
+
+
+def _choose_eval_branch(ctx: RepoContext, date: str) -> tuple[str, str, str]:
+    """Return (branch, action, detail) for the first usable chore/eval-<date>[-N] branch."""
+    base = f"chore/eval-{date}"
+    for n in range(1, MAX_EVAL_BRANCH_SUFFIX + 1):
+        branch = base if n == 1 else f"{base}-{n}"
+        action, detail = _eval_branch_action(ctx, branch)
+        if action != "taken":
+            return branch, action, detail
+    return base, "error", f"no free branch name for {base}"
+
+
+def _restore_to_head(ctx: RepoContext, paths: list[Path]) -> None:
+    """Reset `paths` to their HEAD version; remove any that HEAD does not track."""
+    for path in paths:
+        rel = path.relative_to(ctx.repo_dir).as_posix()
+        if _run(ctx, ["git", "cat-file", "-e", f"HEAD:{rel}"]).returncode == 0:
+            _run(ctx, ["git", "checkout", "HEAD", "--", rel])
+        else:
+            _run(ctx, ["git", "rm", "--cached", "-q", "--ignore-unmatch", "--", rel])
+            path.unlink(missing_ok=True)
+
+
+def _publish_via_pr(ctx: RepoContext, snapshot_path: Path, eval_path: Path, date: str) -> str:
+    """Commit the snapshot and EVAL.md on an eval branch and open (or update) its PR.
+
+    On failure both files are restored to their HEAD state on main.
+    """
+    paths = [snapshot_path, eval_path]
+    branch_name = ""
+    created = False
+    published = False
+    try:
+        branch_name, action, detail = _choose_eval_branch(ctx, date)
+        if action == "error":
+            return f"Error: {detail}"
+
+        if action == "reuse":
+            # The PR branch has its own EVAL.md and snapshot, so main must be clean to switch.
+            contents = {p: p.read_bytes() for p in paths}
+            _restore_to_head(ctx, paths)
+            result = _run(ctx, ["git", "fetch", "origin", branch_name])
+            if result.returncode != 0:
+                return f"Error: could not fetch {branch_name}\n{result.stderr}"
+            result = _run(ctx, ["git", "checkout", "-B", branch_name, "FETCH_HEAD"])
+            if result.returncode != 0:
+                return f"Error: could not check out {branch_name}"
+            for path, data in contents.items():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+        else:
+            if action == "recreate":
+                _run(ctx, ["git", "branch", "-D", branch_name])
+            result = _run(ctx, ["git", "checkout", "-b", branch_name])
+            if result.returncode != 0:
+                return f"Error: could not create branch {branch_name}"
+            created = True
+
+        result = _run(ctx, ["git", "add", str(snapshot_path), str(eval_path)])
         if result.returncode != 0:
             return "Error: git add failed"
 
         commit_msg = f"chore: update eval report ({date})"
-        try:
-            result = subprocess.run(
-                ["git", "commit", "-m", commit_msg],
-                capture_output=True,
-                text=True,
-                cwd=repo_dir,
-            )
-        except FileNotFoundError:
-            return "Error: git not found"
+        result = _run(ctx, ["git", "commit", "-m", commit_msg])
         if result.returncode != 0:
             return "Error: git commit failed"
 
-        try:
-            result = subprocess.run(
-                ["git", "push", "-u", "origin", branch_name],
-                capture_output=True,
-                text=True,
-                cwd=repo_dir,
-            )
-        except FileNotFoundError:
-            return "Error: git not found"
+        result = _run(ctx, ["git", "push", "-u", "origin", branch_name])
         if result.returncode != 0:
             return f"Error: git push failed\n{result.stderr}"
 
+        if action == "reuse":
+            published = True
+            return f"PR updated: {detail}"
+
         pr_title = f"chore: update eval report ({date})"
-        try:
-            result = subprocess.run(
-                [
-                    "gh",
-                    "pr",
-                    "create",
-                    "--title",
-                    pr_title,
-                    "--body",
-                    "Automated eval report update.",
-                ],
-                capture_output=True,
-                text=True,
-                cwd=repo_dir,
-            )
-        except FileNotFoundError:
-            return "Error: gh not found"
+        result = _run(
+            ctx,
+            ["gh", "pr", "create", "--title", pr_title, "--body", "Automated eval report update."],
+        )
         if result.returncode != 0:
             return f"Error: PR creation failed\n{result.stderr}"
 
-        pr_created = True
+        published = True
         return f"PR created: {result.stdout.strip()}"
+    except FileNotFoundError as e:
+        return f"Error: {e.filename or 'git'} not found"
     finally:
         try:
-            subprocess.run(
-                ["git", "checkout", "main"],
-                capture_output=True,
-                cwd=repo_dir,
-            )
-            if not pr_created:
-                subprocess.run(
-                    ["git", "branch", "-D", branch_name],
-                    capture_output=True,
-                    cwd=repo_dir,
-                )
+            if not published:
+                _restore_to_head(ctx, paths)
+            _run(ctx, ["git", "checkout", "main"])
+            if not published:
+                _restore_to_head(ctx, paths)
+                if created:
+                    _run(ctx, ["git", "branch", "-D", branch_name])
         except FileNotFoundError:
             pass
 

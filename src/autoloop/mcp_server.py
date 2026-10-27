@@ -10,6 +10,7 @@ Configure in .mcp.json:
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import threading
 from datetime import UTC, datetime
@@ -58,30 +59,75 @@ def _read_last_runs(ctx: RepoContext) -> tuple[dict | None, dict | None]:
     return last_impl, last_review
 
 
-def _get_timer_info(prefix: str = "autoloop") -> dict[str, str]:
-    """Parse systemd timer state for timers matching the given prefix."""
+def _format_remaining(seconds: float) -> str:
+    """Format a time-remaining duration like '12h 44min' (or '3d 2h 5min')."""
+    total_min = max(int(seconds // 60), 0)
+    days, rem = divmod(total_min, 24 * 60)
+    hours, minutes = divmod(rem, 60)
+    if days:
+        return f"{days}d {hours}h {minutes}min"
+    if hours:
+        return f"{hours}h {minutes}min"
+    return f"{minutes}min"
+
+
+def _parse_systemd_timestamp(value: str) -> datetime | None:
+    """Parse a systemd timestamp like 'Tue 2026-10-27 09:00:00 UTC' as a UTC datetime.
+
+    The caller runs systemctl with TZ=UTC, so the wall-clock part is UTC.
+    """
+    parts = value.split()
+    if len(parts) < 3:
+        return None
     try:
-        result = subprocess.run(
-            ["systemctl", "--user", "list-timers"],
-            capture_output=True,
-            text=True,
-        )
-    except FileNotFoundError:
-        return {}
-    if result.returncode != 0:
-        return {}
+        dt = datetime.strptime(f"{parts[1]} {parts[2]}", "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+    return dt.replace(tzinfo=UTC)
+
+
+def _get_timer_info(prefix: str = "autoloop", now: datetime | None = None) -> dict[str, str]:
+    """Return next-run info for the active triage and implement timers with the given prefix.
+
+    Queries each timer's properties with `systemctl --user show`. Timers that don't
+    exist, are inactive, or have no next elapse time are left out.
+    """
+    now = now or datetime.now(UTC)
+    env = {**os.environ, "TZ": "UTC"}
     timers = {}
-    for line in result.stdout.splitlines():
-        if f"{prefix}-triage" in line:
-            parts = line.split()
-            left_idx = next((i for i, p in enumerate(parts) if "left" in p.lower()), None)
-            if left_idx and left_idx >= 2:
-                timers["triage"] = f"in {parts[left_idx - 2]} {parts[left_idx - 1]}"
-        elif f"{prefix}-implement" in line:
-            parts = line.split()
-            left_idx = next((i for i, p in enumerate(parts) if "left" in p.lower()), None)
-            if left_idx and left_idx >= 2:
-                timers["implement"] = f"in {parts[left_idx - 2]} {parts[left_idx - 1]}"
+    for kind in ("triage", "implement"):
+        try:
+            result = subprocess.run(
+                [
+                    "systemctl",
+                    "--user",
+                    "show",
+                    f"{prefix}-{kind}.timer",
+                    "-p",
+                    "NextElapseUSecRealtime",
+                    "-p",
+                    "ActiveState",
+                ],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+        except FileNotFoundError:
+            return {}
+        if result.returncode != 0:
+            continue
+        props = {}
+        for line in result.stdout.splitlines():
+            key, sep, value = line.partition("=")
+            if sep:
+                props[key.strip()] = value.strip()
+        if props.get("ActiveState") != "active":
+            continue
+        next_run = _parse_systemd_timestamp(props.get("NextElapseUSecRealtime", ""))
+        if next_run is None:
+            continue
+        remaining = _format_remaining((next_run - now).total_seconds())
+        timers[kind] = f"{next_run:%Y-%m-%d %H:%M} UTC (in {remaining})"
     return timers
 
 
