@@ -112,6 +112,13 @@ def _claude_result(
     )
 
 
+def _free_review():
+    """A review ClaudeResult with zero cost and tokens, so it leaves run totals unchanged."""
+    return _claude_result(
+        cost_usd=0.0, input_tokens=0, output_tokens=0, cache_read_tokens=0, cache_creation_tokens=0
+    )
+
+
 # --- Pure function tests: parse_dependency_numbers ---
 
 
@@ -1444,6 +1451,18 @@ def test_log_run_review_entry_includes_cost_fields(repo_ctx):
     assert entry["cache_creation_tokens"] == 50
     assert entry["duration_seconds"] == 30
     assert "timestamp" in entry
+    assert "impl_cost_usd" not in entry
+    assert "review_cost_usd" not in entry
+
+
+def test_log_run_records_impl_and_review_cost_split(repo_ctx):
+    """log_run records impl_cost_usd and review_cost_usd next to the total cost_usd."""
+    log_run(42, True, 1, 60.0, 1.40, ctx=repo_ctx, impl_cost_usd=1.0, review_cost_usd=0.4)
+
+    entry = json.loads((repo_ctx.data_dir / "run_history.jsonl").read_text().strip())
+    assert entry["cost_usd"] == 1.40
+    assert entry["impl_cost_usd"] == 1.00
+    assert entry["review_cost_usd"] == 0.40
 
 
 # --- create_branch tests ---
@@ -1554,7 +1573,9 @@ def test_implement_single_issue_returns_true_on_success(monkeypatch, tmp_path):
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: None)
     monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
     monkeypatch.setattr(
-        implement_issue, "review_implementation", lambda issue, branch, **kw: (True, "")
+        implement_issue,
+        "review_implementation",
+        lambda issue, branch, **kw: (True, "", _free_review()),
     )
 
     result = implement_single_issue(_FAKE_ISSUE)
@@ -1680,7 +1701,9 @@ def test_implement_single_issue_logs_summed_token_totals(monkeypatch, tmp_path):
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: None)
     monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
     monkeypatch.setattr(
-        implement_issue, "review_implementation", lambda issue, branch, **kw: (True, "")
+        implement_issue,
+        "review_implementation",
+        lambda issue, branch, **kw: (True, "", _free_review()),
     )
     monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch, repo_dir=None: False)
 
@@ -2467,7 +2490,7 @@ def test_implement_single_issue_review_rejection_returns_false_not_systemic(monk
     monkeypatch.setattr(
         implement_issue,
         "review_implementation",
-        lambda issue, branch, **kw: (False, "Review rejected"),
+        lambda issue, branch, **kw: (False, "Review rejected", _free_review()),
     )
     monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
 
@@ -3641,7 +3664,9 @@ def test_implement_single_issue_mutation_gate_triggers_retry(monkeypatch, tmp_pa
     )
     monkeypatch.setattr(implement_issue, "mutation_gate", fake_mutation_gate)
     monkeypatch.setattr(
-        implement_issue, "review_implementation", lambda issue, branch, **kw: (True, "")
+        implement_issue,
+        "review_implementation",
+        lambda issue, branch, **kw: (True, "", _free_review()),
     )
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: None)
     monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
@@ -3693,7 +3718,9 @@ def test_implement_single_issue_mutation_gate_timeout_triggers_retry(monkeypatch
     )
     monkeypatch.setattr(implement_issue, "mutation_gate", fake_mutation_gate)
     monkeypatch.setattr(
-        implement_issue, "review_implementation", lambda issue, branch, **kw: (True, "")
+        implement_issue,
+        "review_implementation",
+        lambda issue, branch, **kw: (True, "", _free_review()),
     )
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: None)
     monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
@@ -3753,7 +3780,9 @@ def test_implement_single_issue_mutation_gate_called_process_error_triggers_retr
     )
     monkeypatch.setattr(implement_issue, "mutation_gate", fake_mutation_gate)
     monkeypatch.setattr(
-        implement_issue, "review_implementation", lambda issue, branch, **kw: (True, "")
+        implement_issue,
+        "review_implementation",
+        lambda issue, branch, **kw: (True, "", _free_review()),
     )
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: None)
     monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
@@ -3977,7 +4006,9 @@ def test_auto_fix_not_called_without_flag(monkeypatch, tmp_path):
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: 99)
     monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
     monkeypatch.setattr(
-        implement_issue, "review_implementation", lambda issue, branch, **kw: (True, "")
+        implement_issue,
+        "review_implementation",
+        lambda issue, branch, **kw: (True, "", _free_review()),
     )
 
     result = implement_single_issue(_FAKE_ISSUE, auto_fix=False)
@@ -4147,7 +4178,9 @@ def test_auto_fix_skipped_when_review_passes(monkeypatch, tmp_path):
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: 99)
     monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
     monkeypatch.setattr(
-        implement_issue, "review_implementation", lambda issue, branch, **kw: (True, "")
+        implement_issue,
+        "review_implementation",
+        lambda issue, branch, **kw: (True, "", _free_review()),
     )
 
     result = implement_single_issue(_FAKE_ISSUE, auto_fix=True)
@@ -4185,7 +4218,9 @@ def test_auto_fix_posts_comment_when_review_passes(monkeypatch, tmp_path):
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: 99)
     monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
     monkeypatch.setattr(
-        implement_issue, "review_implementation", lambda issue, branch, **kw: (True, "")
+        implement_issue,
+        "review_implementation",
+        lambda issue, branch, **kw: (True, "", _free_review()),
     )
 
     result = implement_single_issue(_FAKE_ISSUE, auto_fix=True)
@@ -4199,7 +4234,7 @@ def test_auto_fix_posts_comment_when_review_passes(monkeypatch, tmp_path):
     assert len(comment_calls) == 1
     body = comment_calls[0][comment_calls[0].index("--body") + 1]
     assert "Review passed" in body
-    assert "Review cost" in body
+    assert "**Cost:**" in body
 
 
 def test_auto_fix_runs_when_review_fails(monkeypatch, tmp_path):
@@ -4230,7 +4265,9 @@ def test_auto_fix_runs_when_review_fails(monkeypatch, tmp_path):
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: 99)
     monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
     monkeypatch.setattr(
-        implement_issue, "review_implementation", lambda issue, branch, **kw: (False, "needs work")
+        implement_issue,
+        "review_implementation",
+        lambda issue, branch, **kw: (False, "needs work", _free_review()),
     )
 
     result = implement_single_issue(_FAKE_ISSUE, auto_fix=True)
@@ -4238,6 +4275,151 @@ def test_auto_fix_runs_when_review_fails(monkeypatch, tmp_path):
 
     review_calls = [c for c in calls if isinstance(c, list) and c[:2] == ["autoloop", "review-pr"]]
     assert len(review_calls) >= 1
+
+
+# --- In-implement review cost accounting (#451) ---
+
+
+def _stub_cost_run(monkeypatch, tmp_path, impl_results, review_outcomes, max_retries=3):
+    """Stub implement_single_issue's collaborators for cost-accounting tests.
+
+    impl_results and review_outcomes are consumed one per attempt; review_outcomes holds
+    (approved, feedback, ClaudeResult) tuples. Returns the list of subprocess calls.
+    """
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(max_retries=max_retries))
+    monkeypatch.chdir(tmp_path)
+    calls = []
+
+    def fake_subprocess_run(cmd, **kwargs):
+        calls.append(cmd)
+        if isinstance(cmd, list) and cmd[:3] == ["git", "rev-list", "--count"]:
+            return type("R", (), {"returncode": 0, "stdout": "1\n", "stderr": ""})()
+        if isinstance(cmd, str):
+            return type("R", (), {"returncode": 0, "stdout": "passed", "stderr": ""})()
+        if isinstance(cmd, list) and cmd[:3] == ["git", "diff", "--name-only"]:
+            return type("R", (), {"returncode": 0, "stdout": "tests/test_x.py\n", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    impl_iter = iter(impl_results)
+    review_iter = iter(review_outcomes)
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(
+        implement_issue, "implement", lambda issue, previous_errors=None, **kw: next(impl_iter)
+    )
+    monkeypatch.setattr(
+        implement_issue, "create_branch", lambda issue, repo_dir=None: "autoloop/42-add-feature"
+    )
+    monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: 99)
+    monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
+    monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
+    monkeypatch.setattr(
+        implement_issue, "review_implementation", lambda issue, branch, **kw: next(review_iter)
+    )
+    return calls
+
+
+def _implement_rows(tmp_path):
+    lines = _history_path(tmp_path).read_text().strip().splitlines()
+    return [json.loads(line) for line in lines if json.loads(line)["type"] == "implement"]
+
+
+def test_review_implementation_returns_review_claude_result(monkeypatch):
+    """review_implementation returns the review call's ClaudeResult alongside the verdict."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
+    review_result = ClaudeResult(
+        text='{"approved": true, "issues": [], "summary": "ok"}',
+        cost_usd=0.4,
+        input_tokens=10,
+        output_tokens=5,
+        cache_read_tokens=0,
+        cache_creation_tokens=0,
+        success=True,
+    )
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda cmd, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
+    monkeypatch.setattr(implement_issue, "run_claude", lambda *a, **kw: review_result)
+
+    approved, feedback, result = review_implementation(
+        {"number": 1, "title": "T", "body": ""}, "branch"
+    )
+
+    assert approved is True
+    assert result is review_result
+
+
+def test_implement_logs_review_cost_in_run_total(monkeypatch, tmp_path):
+    """Regression (#451): the logged row includes the review call's cost and tokens."""
+    impl = _claude_result(cost_usd=1.00, input_tokens=1000, output_tokens=200)
+    review = _claude_result(cost_usd=0.40, input_tokens=300, output_tokens=50)
+    _stub_cost_run(monkeypatch, tmp_path, [impl], [(True, "", review)])
+
+    assert implement_single_issue(_FAKE_ISSUE) is True
+
+    rows = _implement_rows(tmp_path)
+    assert len(rows) == 1
+    assert rows[0]["cost_usd"] == 1.40
+    assert rows[0]["impl_cost_usd"] == 1.00
+    assert rows[0]["review_cost_usd"] == 0.40
+    assert rows[0]["input_tokens"] == 1300
+    assert rows[0]["output_tokens"] == 250
+    assert rows[0]["cache_read_tokens"] == 1000
+    assert rows[0]["cache_creation_tokens"] == 600
+
+
+def test_implement_sums_impl_and_review_cost_across_attempts(monkeypatch, tmp_path):
+    """Regression (#451): two attempts that each reach review log all four Claude calls."""
+    impls = [_claude_result(cost_usd=1.00), _claude_result(cost_usd=0.75)]
+    reviews = [
+        (False, "needs work", _claude_result(cost_usd=0.40)),
+        (True, "", _claude_result(cost_usd=0.25)),
+    ]
+    _stub_cost_run(monkeypatch, tmp_path, impls, reviews)
+
+    assert implement_single_issue(_FAKE_ISSUE) is True
+
+    rows = _implement_rows(tmp_path)
+    assert len(rows) == 1
+    assert rows[0]["attempts"] == 2
+    assert rows[0]["cost_usd"] == 2.40
+    assert rows[0]["impl_cost_usd"] == 1.75
+    assert rows[0]["review_cost_usd"] == 0.65
+    assert rows[0]["input_tokens"] == 4000
+    assert rows[0]["output_tokens"] == 800
+
+
+def test_implement_failed_run_logs_review_cost(monkeypatch, tmp_path):
+    """Regression (#451): a run whose reviews all reject still logs the review cost."""
+    impl = _claude_result(cost_usd=1.00)
+    review = _claude_result(cost_usd=0.40)
+    _stub_cost_run(monkeypatch, tmp_path, [impl], [(False, "needs work", review)], max_retries=1)
+    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch, repo_dir=None: None)
+
+    assert implement_single_issue(_FAKE_ISSUE) is False
+
+    rows = _implement_rows(tmp_path)
+    assert rows[0]["success"] is False
+    assert rows[0]["cost_usd"] == 1.40
+    assert rows[0]["impl_cost_usd"] == 1.00
+    assert rows[0]["review_cost_usd"] == 0.40
+
+
+def test_review_passed_comment_splits_implementation_and_review_cost(monkeypatch, tmp_path):
+    """Regression (#451): the comment shows total, implementation and review cost separately."""
+    impl = _claude_result(cost_usd=1.00)
+    review = _claude_result(cost_usd=0.40)
+    calls = _stub_cost_run(monkeypatch, tmp_path, [impl], [(True, "", review)])
+
+    assert implement_single_issue(_FAKE_ISSUE, auto_fix=True) is True
+
+    comment_calls = [c for c in calls if isinstance(c, list) and c[:3] == ["gh", "pr", "comment"]]
+    assert len(comment_calls) == 1
+    body = comment_calls[0][comment_calls[0].index("--body") + 1]
+    assert "Review passed" in body
+    assert "**Cost:** $1.40 total ($1.00 implementation + $0.40 review)" in body
+    assert "Review cost" not in body
 
 
 # --- review_implementation Jev shadow-mode wiring ---
@@ -4293,7 +4475,7 @@ def test_review_implementation_jev_off_no_jev_call(monkeypatch, tmp_path):
         lambda *a, **kw: jev_called.append(True) or {},
     )
 
-    approved, feedback = review_implementation(
+    approved, feedback, _ = review_implementation(
         {"number": 1, "title": "T", "body": "body"}, "branch"
     )
 
@@ -4317,7 +4499,7 @@ def test_review_implementation_jev_shadow_logs_decision(monkeypatch, tmp_path):
     }
     monkeypatch.setattr("autoloop.jev.should_auto_merge", lambda *a, **kw: jev_response)
 
-    approved, feedback = review_implementation(
+    approved, feedback, _ = review_implementation(
         {"number": 5, "title": "Test", "body": "body"}, "branch"
     )
 
@@ -4374,7 +4556,7 @@ def test_review_implementation_jev_shadow_returns_incumbent(monkeypatch, tmp_pat
     }
     monkeypatch.setattr("autoloop.jev.should_auto_merge", lambda *a, **kw: jev_response)
 
-    approved, feedback = review_implementation(
+    approved, feedback, _ = review_implementation(
         {"number": 7, "title": "Test", "body": "body"}, "branch"
     )
 
@@ -4399,7 +4581,7 @@ def test_review_implementation_jev_shadow_failure_continues(monkeypatch, tmp_pat
 
     monkeypatch.setattr("autoloop.jev.should_auto_merge", exploding_jev)
 
-    approved, feedback = review_implementation(
+    approved, feedback, _ = review_implementation(
         {"number": 9, "title": "Test", "body": "body"}, "branch"
     )
 
@@ -4638,7 +4820,9 @@ def test_implement_single_issue_integrity_guard_labels_on_violation(monkeypatch,
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: 99)
     monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
     monkeypatch.setattr(
-        implement_issue, "review_implementation", lambda issue, branch, **kw: (True, "")
+        implement_issue,
+        "review_implementation",
+        lambda issue, branch, **kw: (True, "", _free_review()),
     )
     monkeypatch.setattr(
         implement_issue,
@@ -4683,7 +4867,9 @@ def test_implement_single_issue_integrity_guard_no_violation_no_label(monkeypatc
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: 99)
     monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
     monkeypatch.setattr(
-        implement_issue, "review_implementation", lambda issue, branch, **kw: (True, "")
+        implement_issue,
+        "review_implementation",
+        lambda issue, branch, **kw: (True, "", _free_review()),
     )
     monkeypatch.setattr(implement_issue, "check_test_integrity", lambda branch, repo_dir=None: [])
 
@@ -5114,7 +5300,9 @@ def _auto_merge_integration_setup(monkeypatch, tmp_path, auto_merge_decision, au
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: 99)
     monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
     monkeypatch.setattr(
-        implement_issue, "review_implementation", lambda issue, branch, **kw: (True, "")
+        implement_issue,
+        "review_implementation",
+        lambda issue, branch, **kw: (True, "", _free_review()),
     )
     monkeypatch.setattr(
         implement_issue,
@@ -5230,7 +5418,9 @@ def test_implement_single_issue_auto_merge_skipped_integrity(monkeypatch, tmp_pa
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: 99)
     monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
     monkeypatch.setattr(
-        implement_issue, "review_implementation", lambda issue, branch, **kw: (True, "")
+        implement_issue,
+        "review_implementation",
+        lambda issue, branch, **kw: (True, "", _free_review()),
     )
     monkeypatch.setattr(
         implement_issue,
@@ -5320,7 +5510,9 @@ def test_implement_single_issue_uses_ctx_repo_dir(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: None)
     monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
-    monkeypatch.setattr(implement_issue, "review_implementation", lambda *a, **kw: (True, ""))
+    monkeypatch.setattr(
+        implement_issue, "review_implementation", lambda *a, **kw: (True, "", _free_review())
+    )
 
     result = implement_single_issue(_FAKE_ISSUE, ctx=ctx)
     assert result is True
@@ -5678,7 +5870,9 @@ def _patch_single_issue_steps(monkeypatch, ctx, wt_path, received, *, verify_ok=
     monkeypatch.setattr(implement_issue, "is_branch_empty", lambda b, rd=None: False)
     monkeypatch.setattr(implement_issue, "verify_implementation", fake_verify)
     monkeypatch.setattr(implement_issue, "mutation_gate", lambda b, t, rd=None: None)
-    monkeypatch.setattr(implement_issue, "review_implementation", lambda *a, **kw: (True, ""))
+    monkeypatch.setattr(
+        implement_issue, "review_implementation", lambda *a, **kw: (True, "", _free_review())
+    )
     monkeypatch.setattr(implement_issue, "check_test_integrity", fake_integrity)
     monkeypatch.setattr(implement_issue, "create_pr", fake_create_pr)
     monkeypatch.setattr(implement_issue, "cleanup_worktree_branch", fake_cleanup_worktree)
@@ -5877,7 +6071,9 @@ def test_implement_single_issue_worktree_keeps_main_checkout_on_main(monkeypatch
     monkeypatch.setattr(implement_issue, "design_gate", lambda issue, rd=False: True)
     monkeypatch.setattr(implement_issue, "post_in_progress_comment", lambda n: None)
     monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
-    monkeypatch.setattr(implement_issue, "review_implementation", lambda *a, **kw: (True, ""))
+    monkeypatch.setattr(
+        implement_issue, "review_implementation", lambda *a, **kw: (True, "", _free_review())
+    )
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: 7)
 
     (checkout / "README.md").write_text("widget\nuncommitted edit\n")
@@ -6052,7 +6248,9 @@ def test_implement_single_issue_appends_to_created_prs_on_success(monkeypatch, t
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: 101)
     monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
     monkeypatch.setattr(
-        implement_issue, "review_implementation", lambda issue, branch, **kw: (True, "")
+        implement_issue,
+        "review_implementation",
+        lambda issue, branch, **kw: (True, "", _free_review()),
     )
 
     created_prs = []
@@ -6090,7 +6288,9 @@ def test_implement_single_issue_does_not_append_when_no_pr_number(monkeypatch, t
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: None)
     monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
     monkeypatch.setattr(
-        implement_issue, "review_implementation", lambda issue, branch, **kw: (True, "")
+        implement_issue,
+        "review_implementation",
+        lambda issue, branch, **kw: (True, "", _free_review()),
     )
 
     created_prs = []

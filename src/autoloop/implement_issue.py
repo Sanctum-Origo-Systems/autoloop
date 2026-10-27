@@ -277,8 +277,13 @@ def log_run(
     run_type: str = "implement",
     pr_number: int | None = None,
     auto_merge: dict | None = None,
+    impl_cost_usd: float | None = None,
+    review_cost_usd: float | None = None,
 ):
-    """Append a JSON entry to ctx.data_dir/run_history.jsonl, the file eval reads."""
+    """Append a JSON entry to ctx.data_dir/run_history.jsonl, the file eval reads.
+
+    cost_usd is the run total; impl_cost_usd and review_cost_usd record its split when given.
+    """
     entry = {
         "timestamp": datetime.now(UTC).isoformat(),
         "type": run_type,
@@ -292,6 +297,10 @@ def log_run(
         "cache_read_tokens": cache_read_tokens,
         "cache_creation_tokens": cache_creation_tokens,
     }
+    if impl_cost_usd is not None:
+        entry["impl_cost_usd"] = round(impl_cost_usd, 2)
+    if review_cost_usd is not None:
+        entry["review_cost_usd"] = round(review_cost_usd, 2)
     if pr_number is not None:
         entry["pr_number"] = pr_number
     if auto_merge is not None:
@@ -1057,8 +1066,11 @@ def parse_review_response(text: str) -> tuple[bool, str]:
 
 def review_implementation(
     issue: dict, branch: str, pr_number: int | None = None, repo_dir: Path | None = None
-) -> tuple[bool, str]:
+) -> tuple[bool, str, ClaudeResult]:
     """Review the implementation for semantic quality via Claude.
+
+    Returns (approved, feedback, result); result is the review call's ClaudeResult so the
+    caller can count its cost and tokens.
 
     When pr_number is provided, uses `gh pr diff` for the canonical GitHub diff.
     Falls back to `git diff` for pre-PR reviews during implementation.
@@ -1153,7 +1165,7 @@ def review_implementation(
         except Exception:
             logging.exception("Failed to log Jev auto-merge decision")
 
-    return approved, feedback
+    return approved, feedback, result
 
 
 def ensure_clean_main(repo_dir: Path | None = None):
@@ -1659,6 +1671,7 @@ def implement_single_issue(
 
         start_time = time.time()
         claude_results: list[ClaudeResult] = []
+        review_results: list[ClaudeResult] = []
         final_attempt = 0
         success = False
 
@@ -1738,7 +1751,10 @@ def implement_single_issue(
                 continue
 
             print("  Verification passed. Reviewing implementation...")
-            approved, feedback = review_implementation(issue, branch, repo_dir=work_dir)
+            approved, feedback, review_result = review_implementation(
+                issue, branch, repo_dir=work_dir
+            )
+            review_results.append(review_result)
             if not approved:
                 print(f"  Review failed:\n{feedback}")
                 last_errors = feedback
@@ -1753,11 +1769,14 @@ def implement_single_issue(
             break
 
         elapsed = time.time() - start_time
-        total_cost = sum(r.cost_usd for r in claude_results)
-        total_input = sum(r.input_tokens for r in claude_results)
-        total_output = sum(r.output_tokens for r in claude_results)
-        total_cache_read = sum(r.cache_read_tokens for r in claude_results)
-        total_cache_creation = sum(r.cache_creation_tokens for r in claude_results)
+        impl_cost = sum(r.cost_usd for r in claude_results)
+        review_cost = sum(r.cost_usd for r in review_results)
+        total_cost = impl_cost + review_cost
+        all_results = claude_results + review_results
+        total_input = sum(r.input_tokens for r in all_results)
+        total_output = sum(r.output_tokens for r in all_results)
+        total_cache_read = sum(r.cache_read_tokens for r in all_results)
+        total_cache_creation = sum(r.cache_creation_tokens for r in all_results)
         total_all = total_input + total_cache_creation + total_cache_read + total_output
         # Run rows belong to the main checkout's data dir, never one derived from work_dir.
         log_ctx = ctx if ctx is not None else RepoContext(Path.cwd())
@@ -1800,6 +1819,8 @@ def implement_single_issue(
                 total_cache_read,
                 total_cache_creation,
                 ctx=log_ctx,
+                impl_cost_usd=impl_cost,
+                review_cost_usd=review_cost,
             )
             return False
 
@@ -1867,7 +1888,8 @@ def implement_single_issue(
         elif auto_fix and pr_number is not None and approved:
             comment = (
                 "**Review passed:** mutation gate and semantic review both passed."
-                f"\n\n**Review cost:** ${total_cost:.2f}, "
+                f"\n\n**Cost:** ${total_cost:.2f} total "
+                f"(${impl_cost:.2f} implementation + ${review_cost:.2f} review), "
                 f"tokens: {total_input:,} input / {total_output:,} output"
             )
             subprocess.run(
@@ -1897,7 +1919,7 @@ def implement_single_issue(
 
         print(f"\n--- AutoLoop Run Stats (#{issue['number']}) ---")
         print(f"  Duration: {elapsed:.0f}s")
-        print(f"  Claude calls: {len(claude_results)}")
+        print(f"  Claude calls: {len(all_results)}")
         print(f"  Input tokens: {total_input:,}")
         print(f"  Cache creation tokens: {total_cache_creation:,}")
         print(f"  Cache read tokens: {total_cache_read:,}")
@@ -1915,6 +1937,8 @@ def implement_single_issue(
             total_cache_read,
             total_cache_creation,
             ctx=log_ctx,
+            impl_cost_usd=impl_cost,
+            review_cost_usd=review_cost,
             auto_merge={
                 "decision": auto_merge_decision,
                 "gates": auto_merge_gates,
