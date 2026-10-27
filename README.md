@@ -8,7 +8,9 @@ Config-driven AI pipeline that triages GitHub issues, implements them via Claude
 - **uv** (recommended): [install](https://docs.astral.sh/uv/getting-started/installation/) or use pip instead
 - **Node.js 22+**: required by Claude Code CLI
 - **GitHub CLI (`gh`)**: [install](https://cli.github.com/) then run `gh auth login`
-- **Claude Code CLI (`claude`)**: `npm install -g @anthropic-ai/claude-code` (requires Claude Max or Pro subscription)
+- **Claude Code CLI (`claude`) v2.1.310 or later**: `npm install -g @anthropic-ai/claude-code@latest`, then check with `claude --version` (requires a Claude Max or Pro subscription)
+  - The default `impl_model` (and `review_model`) is `claude-opus-5-5`. Older CLIs such as 2.1.160 can't run it. Upgrade the CLI, or set `impl_model` in `autoloop.toml` to a model your CLI and plan support.
+  - Implement runs pass permission rules with `--settings`, so the CLI must support that flag. `autoloop doctor` checks this.
 - A GitHub repo with a test command (`pytest`, `npm test`, `make test`, etc.)
 
 ## TLDR: First PR in 5 Minutes

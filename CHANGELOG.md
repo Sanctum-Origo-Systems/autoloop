@@ -19,7 +19,7 @@ Eval metrics are now defined and bounded. EVAL.md has a Definitions section and 
 - fix: read the next timer run via `systemctl show`, not `list-timers` (#448) ($0.68)
 
 ### Docs
-- docs: README install examples point at the current tag, and upgrading notes the `mcp` extra
+- docs: README install examples point at the current tag; prerequisites name Claude Code CLI v2.1.310+ (needed for the `claude-opus-5-5` default) and `--settings` support; upgrading notes the `mcp` extra
 
 Total: 6 PRs, $6.95
 
