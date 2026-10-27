@@ -506,6 +506,7 @@ def review_pr(pr_number, cfg, repo_dir: Path | None = None, ctx: RepoContext | N
             run_type="review",
             pr_number=pr_number,
             ctx=ctx,
+            model=cfg.review_model,
         )
         return _zero_result
 
@@ -536,6 +537,7 @@ def review_pr(pr_number, cfg, repo_dir: Path | None = None, ctx: RepoContext | N
                 run_type="review",
                 pr_number=pr_number,
                 ctx=ctx,
+                model=cfg.review_model,
             )
             return _zero_result
 
@@ -684,6 +686,7 @@ def review_pr(pr_number, cfg, repo_dir: Path | None = None, ctx: RepoContext | N
             run_type="review",
             pr_number=pr_number,
             ctx=ctx,
+            model=cfg.review_model,
         )
 
         if success:

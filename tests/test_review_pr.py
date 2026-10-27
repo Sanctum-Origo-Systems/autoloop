@@ -1194,8 +1194,9 @@ class TestReviewPrCliLogsToDataDir:
 
         ctx = RepoContext(repo)
         rows = load_run_history(ctx)
-        assert [(r["type"], r["pr_number"], r["success"]) for r in rows] == [
-            ("review", 42, success)
+        # _cfg() sets review_model "sonnet" and impl_model "opus"; the row records the review model.
+        assert [(r["type"], r["pr_number"], r["success"], r["model"]) for r in rows] == [
+            ("review", 42, success, "sonnet")
         ]
         assert not (repo / "autoloop" / "run_history.jsonl").exists()
 

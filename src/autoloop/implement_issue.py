@@ -274,6 +274,7 @@ def log_run(
     cache_creation_tokens: int = 0,
     *,
     ctx: RepoContext,
+    model: str,
     run_type: str = "implement",
     pr_number: int | None = None,
     auto_merge: dict | None = None,
@@ -283,11 +284,13 @@ def log_run(
     """Append a JSON entry to ctx.data_dir/run_history.jsonl, the file eval reads.
 
     cost_usd is the run total; impl_cost_usd and review_cost_usd record its split when given.
+    model is the resolved model id that did the work, after autoloop.toml and env overrides.
     """
     entry = {
         "timestamp": datetime.now(UTC).isoformat(),
         "type": run_type,
         "issue": issue_number,
+        "model": model,
         "success": success,
         "attempts": attempts,
         "duration_seconds": round(duration),
@@ -1819,6 +1822,7 @@ def implement_single_issue(
                 total_cache_read,
                 total_cache_creation,
                 ctx=log_ctx,
+                model=cfg.impl_model,
                 impl_cost_usd=impl_cost,
                 review_cost_usd=review_cost,
             )
@@ -1937,6 +1941,7 @@ def implement_single_issue(
             total_cache_read,
             total_cache_creation,
             ctx=log_ctx,
+            model=cfg.impl_model,
             impl_cost_usd=impl_cost,
             review_cost_usd=review_cost,
             auto_merge={
