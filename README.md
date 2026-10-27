@@ -9,7 +9,8 @@ Config-driven AI pipeline that triages GitHub issues, implements them via Claude
 - **Node.js 22+**: required by Claude Code CLI
 - **GitHub CLI (`gh`)**: [install](https://cli.github.com/) then run `gh auth login`
 - **Claude Code CLI (`claude`) v2.1.310 or later**: `npm install -g @anthropic-ai/claude-code@latest`, then check with `claude --version` (requires a Claude Max or Pro subscription)
-  - The default `impl_model` (and `review_model`) is `claude-opus-5-5`. Older CLIs such as 2.1.160 can't run it. Upgrade the CLI, or set `impl_model` in `autoloop.toml` to a model your CLI and plan support.
+  - **Which Claude models you can use depends on the installed `claude` CLI version** (and your plan). autoloop passes `triage_model`, `impl_model` and `review_model` straight to `claude --model`, so a model newer than your CLI fails at run time. Upgrade the CLI before switching to a newer model.
+  - The default `impl_model` (and `review_model`) is `claude-opus-5-5`, which needs CLI v2.1.310 or later. Older CLIs such as 2.1.160 can't run it. Upgrade, or set `impl_model` in `autoloop.toml` to a model your CLI supports.
   - Implement runs pass permission rules with `--settings`, so the CLI must support that flag. `autoloop doctor` checks this.
 - A GitHub repo with a test command (`pytest`, `npm test`, `make test`, etc.)
 
@@ -485,7 +486,7 @@ Example workflow from your phone:
 |-------|---------|-------------|
 | `repo` | (required) | GitHub `owner/repo` (required) |
 | `triage_model` | `sonnet` | Claude model for triage |
-| `impl_model` | `claude-opus-5-5` | Claude model for implementation |
+| `impl_model` | `claude-opus-5-5` | Claude model for implementation. Must be supported by the installed `claude` CLI (Opus 5.5 needs v2.1.310+) |
 | `review_model` | (defaults to `impl_model`) | Claude model for semantic PR review. Falls back to `impl_model` when omitted |
 | `impl_timeout` | `900` | Implementation timeout (seconds) |
 | `triage_timeout` | `90` | Triage timeout (seconds) |
