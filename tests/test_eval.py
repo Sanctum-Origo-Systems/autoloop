@@ -35,6 +35,7 @@ from autoloop.eval import (
     format_snapshot,
     format_trend,
     generate_eval_md,
+    impl_cost,
     is_auto_merge_ready,
     is_valid_rate,
     latest_run_timestamp,
@@ -47,6 +48,7 @@ from autoloop.eval import (
     migrate_unpublished_snapshots,
     module_implement_runs,
     module_resolved_runs,
+    review_cost_summary,
     save_snapshot,
     snapshot_implement_runs,
     snapshot_resolved_runs,
@@ -4615,12 +4617,139 @@ def test_generate_eval_md_has_definitions_and_data_as_of():
 
 def test_metric_definitions_cover_required_fields():
     metrics = {d["metric"] for d in METRIC_DEFINITIONS}
-    assert metrics == {"First-attempt success", "Human edit rate", "Avg cost/run"}
+    assert metrics == {
+        "First-attempt success",
+        "Human edit rate",
+        "Avg cost/run",
+        "Avg review cost/run",
+    }
     for d in METRIC_DEFINITIONS:
         for key in ("numerator", "denominator", "counts", "window"):
             assert d[key]
         assert "lifetime" in d["window"]
         assert "|" not in "".join(d.values())
+
+
+# --- implementation vs review cost (#465) ---
+
+
+def _impl_run(issue, cost, **extra):
+    return {
+        "type": "implement",
+        "issue": issue,
+        "success": True,
+        "attempts": 1,
+        "cost_usd": cost,
+        "duration_seconds": 60,
+        **extra,
+    }
+
+
+def _split_runs():
+    """One pre-#451 row (implementation only) and one #451 row (total plus split)."""
+    return [
+        _impl_run(1, 1.00),
+        _impl_run(2, 1.50, impl_cost_usd=1.00, review_cost_usd=0.50),
+    ]
+
+
+def test_impl_cost_prefers_impl_cost_usd():
+    assert impl_cost({"cost_usd": 1.5, "impl_cost_usd": 1.0, "review_cost_usd": 0.5}) == 1.0
+
+
+def test_impl_cost_falls_back_to_cost_usd():
+    assert impl_cost({"cost_usd": 1.25}) == 1.25
+    assert impl_cost({"cost_usd": 1.25, "impl_cost_usd": None}) == 1.25
+    assert impl_cost({}) == 0
+
+
+def test_impl_cost_keeps_zero_impl_cost():
+    assert impl_cost({"cost_usd": 0.5, "impl_cost_usd": 0.0, "review_cost_usd": 0.5}) == 0.0
+
+
+def test_compute_snapshot_avg_cost_is_implementation_only():
+    snap = compute_snapshot(_split_runs(), date="2026-10-27")
+    assert snap["avg_cost_usd"] == 1.00
+    assert snap["avg_review_cost_usd"] == 0.50
+    assert snap["review_cost_run_count"] == 1
+
+
+def test_compute_snapshot_no_review_cost_rows():
+    snap = compute_snapshot([_impl_run(1, 1.00), _impl_run(2, 2.00)], date="2026-10-27")
+    assert snap["avg_cost_usd"] == 1.50
+    assert snap["review_cost_run_count"] == 0
+    assert review_cost_summary(snap) is None
+
+
+def test_review_cost_summary_renders_with_n():
+    snap = compute_snapshot(_split_runs(), date="2026-10-27")
+    assert review_cost_summary(snap) == "$0.50 (n=1 implement runs)"
+
+
+def test_review_cost_summary_missing_on_old_snapshot():
+    assert review_cost_summary({"avg_cost_usd": 1.0}) is None
+
+
+def test_compute_snapshot_module_cost_is_implementation_only():
+    pr_data = [
+        {
+            "number": 10,
+            "merged": True,
+            "closed": False,
+            "changed_files": ["src/autoloop/eval.py"],
+            "first_attempt_success": True,
+            "issue": 1,
+        },
+        {
+            "number": 11,
+            "merged": True,
+            "closed": False,
+            "changed_files": ["src/autoloop/eval.py"],
+            "first_attempt_success": True,
+            "issue": 2,
+        },
+    ]
+    snap = compute_snapshot(_split_runs(), pr_data, date="2026-10-27")
+    (stats,) = snap["modules"].values()
+    assert stats["implement_run_count"] == 2
+    assert stats["avg_cost_usd"] == 1.00
+
+
+def test_period_cost_has_no_step_at_review_cost_boundary():
+    old_runs = [_impl_run(i, 1.00) for i in range(1, 11)]
+    new_runs = [_impl_run(i, 1.50, impl_cost_usd=1.00, review_cost_usd=0.50) for i in range(11, 21)]
+    prev = compute_snapshot(old_runs, date="2026-10-26")
+    curr = compute_snapshot(old_runs + new_runs, date="2026-10-27")
+    pstats = _compute_period_stats(curr, prev)
+    assert pstats["period_avg_cost_usd"] == 1.00
+
+
+def test_reports_show_review_cost_line_only_when_measured():
+    base = {**_fresh_snapshot(), "avg_duration_seconds": 60}
+    measured = {**base, "avg_review_cost_usd": 0.5, "review_cost_run_count": 1}
+    unmeasured = {**base, "avg_review_cost_usd": 0.0, "review_cost_run_count": 0}
+    for render in (
+        lambda s: generate_eval_md(s, [s]),
+        format_eval_md,
+        format_snapshot,
+    ):
+        assert "$0.50 (n=1 implement runs)" in render(measured)
+        assert "Avg review cost/run" in render(measured)
+        assert "review cost/run:" not in render(unmeasured)
+        assert "| Avg review cost/run | $" not in render(unmeasured)
+        assert "$0.00 (n=0" not in render(unmeasured)
+
+
+def test_definitions_state_both_cost_definitions():
+    content = generate_eval_md(_fresh_snapshot(), [_fresh_snapshot()])
+    defs = {d["metric"]: d for d in METRIC_DEFINITIONS}
+    assert "`impl_cost_usd`" in defs["Avg cost/run"]["numerator"]
+    assert "`cost_usd`" in defs["Avg cost/run"]["numerator"]
+    assert "`review_cost_usd`" in defs["Avg review cost/run"]["numerator"]
+    assert "#451" in defs["Avg review cost/run"]["counts"]
+    definitions = content.split("## Definitions")[1]
+    assert "| Avg cost/run | sum of implementation cost" in definitions
+    assert "| Avg review cost/run | sum of `review_cost_usd`" in definitions
 
 
 def test_format_eval_md_has_definitions_freshness_and_pending():

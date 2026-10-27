@@ -126,10 +126,20 @@ METRIC_DEFINITIONS = [
     },
     {
         "metric": "Avg cost/run",
-        "numerator": "sum of `cost_usd` over implement runs",
+        "numerator": (
+            "sum of implementation cost over implement runs: `impl_cost_usd` when logged, "
+            "else `cost_usd` (rows before #451 never included review cost)"
+        ),
         "denominator": "implement runs, pending included (cost is known when a run ends)",
         "counts": _IMPLEMENT_RUNS,
         "window": "Overall: lifetime. Trend: change in total cost / change in implement runs",
+    },
+    {
+        "metric": "Avg review cost/run",
+        "numerator": "sum of `review_cost_usd` over implement runs that logged it",
+        "denominator": "implement runs with `review_cost_usd` (none is imputed for older rows)",
+        "counts": f"{_IMPLEMENT_RUNS}; logged from #451 onward only",
+        "window": "Overall: lifetime, shown only when n > 0",
     },
 ]
 PENDING_DEFINITION = (
@@ -176,6 +186,18 @@ def latest_run_timestamp(runs: list[dict]) -> str | None:
     return max(stamps).astimezone(UTC).isoformat()
 
 
+def impl_cost(run: dict) -> float:
+    """Implementation cost of a run: `impl_cost_usd` when logged, else `cost_usd`.
+
+    Since #451 `cost_usd` also includes the in-implement review; older rows are
+    implementation only, so this keeps one cost definition across all rows.
+    """
+    cost = run.get("impl_cost_usd")
+    if cost is None:
+        cost = run.get("cost_usd", 0)
+    return cost
+
+
 def compute_snapshot(
     runs: list[dict],
     pr_data: list[dict] | None = None,
@@ -194,8 +216,11 @@ def compute_snapshot(
     first_attempt = sum(1 for r in resolved_runs if r.get("success") and r.get("attempts", 1) == 1)
     first_attempt_rate = first_attempt / resolved if resolved else 0.0
 
-    costs = [r.get("cost_usd", 0) for r in impl_runs]
+    costs = [impl_cost(r) for r in impl_runs]
     avg_cost = sum(costs) / len(costs) if costs else 0.0
+
+    review_costs = [r["review_cost_usd"] for r in impl_runs if r.get("review_cost_usd") is not None]
+    avg_review_cost = sum(review_costs) / len(review_costs) if review_costs else 0.0
 
     durations = [r.get("duration_seconds", 0) for r in impl_runs]
     avg_duration = sum(durations) / len(durations) if durations else 0.0
@@ -214,7 +239,7 @@ def compute_snapshot(
     for r in impl_runs:
         issue = r.get("issue", 0)
         if issue:
-            issue_cost[issue] = r.get("cost_usd", 0)
+            issue_cost[issue] = impl_cost(r)
 
     modules: dict[str, dict] = {}
     if pr_data:
@@ -301,6 +326,8 @@ def compute_snapshot(
         "first_attempt_count": first_attempt,
         "first_attempt_rate": round(first_attempt_rate, 2),
         "avg_cost_usd": round(avg_cost, 2),
+        "avg_review_cost_usd": round(avg_review_cost, 2),
+        "review_cost_run_count": len(review_costs),
         "avg_duration_seconds": round(avg_duration),
         "attempt_distribution": attempt_dist,
         "human_edit_rate": round(human_edit_rate, 2),
@@ -444,6 +471,14 @@ def format_cost_with_n(cost: float, n: int, population: str, min_n: int = DEFAUL
     if n < min_n:
         return f"insufficient data (n={n} {population})"
     return f"${cost:.2f} (n={n} {population})"
+
+
+def review_cost_summary(snapshot: dict) -> str | None:
+    """Render avg review cost with its n, or None when no run logged review cost (#465)."""
+    n = snapshot.get("review_cost_run_count", 0)
+    if not n:
+        return None
+    return f"${snapshot.get('avg_review_cost_usd', 0):.2f} (n={n} implement runs)"
 
 
 def _crosses_baseline_break(snapshot: dict, prev: dict | None) -> bool:
@@ -763,6 +798,9 @@ def format_snapshot(snapshot: dict) -> str:
     )
 
     lines.append(f"  Avg cost/run:           ${snapshot['avg_cost_usd']:.2f}")
+    review_cost = review_cost_summary(snapshot)
+    if review_cost:
+        lines.append(f"  Avg review cost/run:    {review_cost}")
 
     dur = snapshot["avg_duration_seconds"]
     minutes = int(dur) // 60
@@ -920,6 +958,8 @@ def _compute_period_stats(snapshot: dict, prev: dict | None) -> dict:
         period_first, period_resolved, f"{snapshot.get('date')} period first-attempt success"
     )
 
+    # avg_cost_usd is implementation cost only (impl_cost), so review cost logged from
+    # #451 onward does not put a step in the period cost (#465).
     curr_total_cost = snapshot.get("avg_cost_usd", 0) * curr_runs
     prev_total_cost = prev.get("avg_cost_usd", 0) * prev_runs
     period_avg_cost = round(max(0, curr_total_cost - prev_total_cost) / period_runs, 2)
@@ -1007,6 +1047,9 @@ def format_eval_md(snapshot: dict) -> str:
         f"pending: {pending_runs} |"
     )
     lines.append(f"| Avg cost/run | ${snapshot['avg_cost_usd']:.2f} |")
+    review_cost = review_cost_summary(snapshot)
+    if review_cost:
+        lines.append(f"| Avg review cost/run | {review_cost} |")
 
     dur = snapshot["avg_duration_seconds"]
     minutes = int(dur) // 60
@@ -1096,6 +1139,9 @@ def generate_eval_md(
     lines.append(f"| First-attempt success | {rate_s} | pending: {pending_runs} |")
     cost = snapshot.get("avg_cost_usd", 0)
     lines.append(f"| Avg cost/run | ${cost:.2f} (n={runs} implement runs) | included |")
+    review_cost = review_cost_summary(snapshot)
+    if review_cost:
+        lines.append(f"| Avg review cost/run | {review_cost} | included |")
     hr = snapshot.get("human_edit_rate", 0)
     merged = snapshot.get("merged_pr_count", 0)
     pending_prs = snapshot.get("pending_pr_count", 0)
