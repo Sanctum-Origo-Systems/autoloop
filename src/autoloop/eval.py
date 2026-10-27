@@ -10,7 +10,7 @@ import json
 import shutil
 import subprocess
 import sys
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from autoloop.config import RepoContext
@@ -22,6 +22,13 @@ _PR_LIMIT = 500
 BASELINE_BREAK_DATE = "2026-10-26"
 
 DEFAULT_MIN_N = 20
+
+# A report whose newest run_history row is older than this (relative to the report date)
+# is flagged stale.
+STALE_AFTER_HOURS = 48
+
+# Marker for a rate whose numerator falls outside [0, denominator].
+INVALID_RATE = "invalid"
 
 
 def load_run_history(ctx: RepoContext) -> list[dict]:
@@ -66,6 +73,85 @@ def _detect_module_prefixes(changed_files: list[str]) -> list[str]:
     return sorted(seen, key=lambda p: seen[p], reverse=True)
 
 
+# Metric definitions rendered in the EVAL.md "Definitions" section. They describe the code
+# in compute_snapshot (lifetime) and _compute_period_stats (period); change them together.
+_IMPLEMENT_RUNS = (
+    '`run_history` rows with type "implement" and a non-zero issue '
+    "(triage, review and issue-0 rows are excluded)"
+)
+METRIC_DEFINITIONS = [
+    {
+        "metric": "First-attempt success",
+        "numerator": "implement runs that succeeded with attempts == 1",
+        "denominator": "implement runs with an outcome (pending runs excluded)",
+        "counts": _IMPLEMENT_RUNS,
+        "window": (
+            "Overall: lifetime. Trend: change since the previous snapshot "
+            "(snapshots without outcome counts use the attempt distribution)"
+        ),
+    },
+    {
+        "metric": "Human edit rate",
+        "numerator": "merged PRs with a later non-autoloop PR touching the same files",
+        "denominator": "merged PRs (open PRs are pending; closed unmerged PRs excluded)",
+        "counts": f"PRs from `autoloop/` branches, up to the {_PR_LIMIT} most recent",
+        "window": (
+            "Overall: lifetime. Trend: new edits / new merges since the previous snapshot; "
+            "invalid when edits exceed merges (older PRs flagged late)"
+        ),
+    },
+    {
+        "metric": "Avg cost/run",
+        "numerator": "sum of `cost_usd` over implement runs",
+        "denominator": "implement runs, pending included (cost is known when a run ends)",
+        "counts": _IMPLEMENT_RUNS,
+        "window": "Overall: lifetime. Trend: change in total cost / change in implement runs",
+    },
+]
+PENDING_DEFINITION = (
+    "Pending: a successful implement run whose PR is still open, or an open PR. Pending items "
+    "are left out of outcome-dependent denominators and shown as a separate pending count. "
+    "Any rate whose numerator exceeds its denominator renders as invalid."
+)
+
+
+def _open_prs(pr_data: list[dict] | None) -> list[dict]:
+    return [p for p in pr_data or [] if not p.get("merged", False) and not p.get("closed", False)]
+
+
+def _pending_run_filter(pr_data: list[dict] | None):
+    """Return a predicate marking implement runs whose PR outcome is still pending."""
+    open_prs = _open_prs(pr_data)
+    open_numbers = {p.get("number") for p in open_prs if p.get("number") is not None}
+    open_issues = {p.get("issue") for p in open_prs if p.get("issue")}
+
+    def is_pending(run: dict) -> bool:
+        if not run.get("success"):
+            return False
+        pr_number = run.get("pr_number")
+        if pr_number is not None:
+            return pr_number in open_numbers
+        return run.get("issue") in open_issues
+
+    return is_pending
+
+
+def _parse_timestamp(value: str) -> datetime | None:
+    try:
+        ts = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    return ts if ts.tzinfo else ts.replace(tzinfo=UTC)
+
+
+def latest_run_timestamp(runs: list[dict]) -> str | None:
+    """Newest `timestamp` across all run_history rows, as ISO-8601 UTC, or None."""
+    stamps = [ts for r in runs if (ts := _parse_timestamp(r.get("timestamp")))]
+    if not stamps:
+        return None
+    return max(stamps).astimezone(UTC).isoformat()
+
+
 def compute_snapshot(
     runs: list[dict],
     pr_data: list[dict] | None = None,
@@ -77,8 +163,11 @@ def compute_snapshot(
     ]
 
     total = len(impl_runs)
-    first_attempt = sum(1 for r in impl_runs if r.get("success") and r.get("attempts", 1) == 1)
-    first_attempt_rate = first_attempt / total if total else 0.0
+    is_pending = _pending_run_filter(pr_data)
+    resolved_runs = [r for r in impl_runs if not is_pending(r)]
+    resolved = len(resolved_runs)
+    first_attempt = sum(1 for r in resolved_runs if r.get("success") and r.get("attempts", 1) == 1)
+    first_attempt_rate = first_attempt / resolved if resolved else 0.0
 
     costs = [r.get("cost_usd", 0) for r in impl_runs]
     avg_cost = sum(costs) / len(costs) if costs else 0.0
@@ -115,6 +204,7 @@ def compute_snapshot(
                 modules[mod] = {
                     "implementations": 0,
                     "implement_run_count": 0,
+                    "pending_count": 0,
                     "first_attempt_successes": 0,
                     "total_cost": 0.0,
                     "merged_count": 0,
@@ -123,11 +213,14 @@ def compute_snapshot(
             modules[mod]["implementations"] += 1
             # Success and cost are only known for PRs whose issue has an implement run;
             # PRs opened by hand or before run history began are left out of both.
+            # Open PRs count toward cost but are pending for success.
             issue = pr.get("issue")
             if issue and issue in issue_cost:
                 modules[mod]["implement_run_count"] += 1
                 modules[mod]["total_cost"] += issue_cost[issue]
-                if pr.get("first_attempt_success", False):
+                if not pr.get("merged", False) and not pr.get("closed", False):
+                    modules[mod]["pending_count"] += 1
+                elif pr.get("first_attempt_success", False):
                     modules[mod]["first_attempt_successes"] += 1
             if pr.get("merged", False):
                 modules[mod]["merged_count"] += 1
@@ -138,12 +231,15 @@ def compute_snapshot(
     for mod, stats in sorted(modules.items()):
         imp = stats["implementations"]
         n_runs = stats["implement_run_count"]
+        n_resolved = n_runs - stats["pending_count"]
         fa = stats["first_attempt_successes"]
         merged = stats["merged_count"]
         module_stats[mod] = {
             "implementations": imp,
             "implement_run_count": n_runs,
-            "first_attempt_rate": round(fa / n_runs, 2) if n_runs else 0.0,
+            "resolved_run_count": n_resolved,
+            "pending_count": stats["pending_count"],
+            "first_attempt_rate": round(fa / n_resolved, 2) if n_resolved else 0.0,
             "avg_cost_usd": round(stats["total_cost"] / n_runs, 2) if n_runs else 0.0,
             "human_edit_rate": round(stats["human_edit_count"] / merged, 2) if merged else 0.0,
             "merged_clean_count": merged - stats["human_edit_count"],
@@ -175,6 +271,9 @@ def compute_snapshot(
         # is no PR data). Kept for one release so older readers of snapshots keep working.
         "total_implementations": total_prs if pr_data else total,
         "implement_run_count": total,
+        "resolved_run_count": resolved,
+        "pending_run_count": total - resolved,
+        "first_attempt_count": first_attempt,
         "first_attempt_rate": round(first_attempt_rate, 2),
         "avg_cost_usd": round(avg_cost, 2),
         "avg_duration_seconds": round(avg_duration),
@@ -182,7 +281,10 @@ def compute_snapshot(
         "human_edit_rate": round(human_edit_rate, 2),
         "human_edit_count": human_edit_count,
         "merged_pr_count": merged_pr_count,
+        "pending_pr_count": len(_open_prs(pr_data)),
         "closed_without_merge": closed_without_merge,
+        "data_as_of": latest_run_timestamp(runs),
+        "history_rows": len(runs),
         "modules": module_stats,
     }
     return snapshot
@@ -210,11 +312,103 @@ def module_implement_runs(stats: dict) -> int:
     return stats.get("implementations", 0)
 
 
+def snapshot_resolved_runs(snapshot: dict) -> int:
+    """Implement runs behind first-attempt success; pre-#452 snapshots had no pending split."""
+    if "resolved_run_count" in snapshot:
+        return snapshot["resolved_run_count"]
+    return snapshot_implement_runs(snapshot)
+
+
+def module_resolved_runs(stats: dict) -> int:
+    """Implement runs behind a module's first-attempt success, pending runs excluded."""
+    if "resolved_run_count" in stats:
+        return stats["resolved_run_count"]
+    return module_implement_runs(stats)
+
+
+def _warn_invalid(label: str, detail: str) -> None:
+    print(f"Warning: {label} {detail}, rendered as {INVALID_RATE}", file=sys.stderr)
+
+
+def bounded_rate(numerator: float, denominator: float, label: str) -> float | str | None:
+    """numerator / denominator rounded to 2 places.
+
+    Returns None when there is no denominator, and INVALID_RATE (with a warning) when the
+    numerator falls outside [0, denominator], so a rate can never exceed 100%.
+    """
+    if denominator <= 0:
+        return None
+    if numerator < 0 or numerator > denominator:
+        _warn_invalid(label, f"numerator {numerator} outside [0, {denominator}]")
+        return INVALID_RATE
+    return round(numerator / denominator, 2)
+
+
+def is_valid_rate(rate) -> bool:
+    return isinstance(rate, int | float) and not isinstance(rate, bool) and 0 <= rate <= 1
+
+
+def format_pct(rate, label: str = "rate") -> str:
+    """Render a rate as a percentage: "—" when missing, INVALID_RATE outside [0, 1]."""
+    if rate is None:
+        return "—"
+    if not is_valid_rate(rate):
+        if rate != INVALID_RATE:
+            _warn_invalid(label, f"value {rate!r} outside [0, 1]")
+        return INVALID_RATE
+    return f"{rate:.0%}"
+
+
 def format_rate_with_n(rate: float, n: int, population: str, min_n: int = DEFAULT_MIN_N) -> str:
     """Render a rate with its sample size, or "insufficient data" when n is below min_n."""
     if n < min_n:
         return f"insufficient data (n={n} {population})"
-    return f"{rate:.0%} (n={n} {population})"
+    return f"{format_pct(rate, population)} (n={n} {population})"
+
+
+def data_freshness(snapshot: dict) -> tuple[str, bool]:
+    """Return the "data as of" line for a snapshot and whether its source data is stale.
+
+    Stale means the newest run_history row is more than STALE_AFTER_HOURS older than the
+    start (00:00 UTC) of the report date, or that no row carries a timestamp.
+    """
+    as_of = snapshot.get("data_as_of")
+    rows = snapshot.get("history_rows", 0)
+    line = f"data as of {as_of or 'unknown'}, {rows} history rows"
+    as_of_ts = _parse_timestamp(as_of) if as_of else None
+    if as_of_ts is None:
+        return line, True
+    report_ts = datetime.strptime(snapshot["date"], "%Y-%m-%d").replace(tzinfo=UTC)
+    return line, report_ts - as_of_ts > timedelta(hours=STALE_AFTER_HOURS)
+
+
+def _freshness_lines(snapshot: dict) -> list[str]:
+    line, stale = data_freshness(snapshot)
+    lines = [f"Report date {snapshot['date']}: {line}."]
+    if stale:
+        lines.append("")
+        lines.append(
+            f"**Stale data:** the newest run_history row is more than {STALE_AFTER_HOURS} h "
+            "older than the report date (or has no timestamp). Check the history source "
+            "before using these numbers."
+        )
+    lines.append("")
+    return lines
+
+
+def _definitions_lines() -> list[str]:
+    lines = ["## Definitions", ""]
+    lines.append("| Metric | Numerator | Denominator | Counts | Window |")
+    lines.append("|--------|-----------|-------------|--------|--------|")
+    for d in METRIC_DEFINITIONS:
+        lines.append(
+            f"| {d['metric']} | {d['numerator']} | {d['denominator']} | {d['counts']} "
+            f"| {d['window']} |"
+        )
+    lines.append("")
+    lines.append(PENDING_DEFINITION)
+    lines.append("")
+    return lines
 
 
 def format_cost_with_n(cost: float, n: int, population: str, min_n: int = DEFAULT_MIN_N) -> str:
@@ -484,9 +678,13 @@ def format_snapshot(snapshot: dict) -> str:
     lines.append(f"  Total PRs:              {snapshot_total_prs(snapshot)}")
 
     rate = snapshot["first_attempt_rate"]
-    runs = snapshot_implement_runs(snapshot)
+    runs = snapshot_resolved_runs(snapshot)
     first = round(rate * runs)
-    lines.append(f"  First-attempt success:  {rate:.0%} ({first}/{runs} implement runs)")
+    pending = snapshot.get("pending_run_count", 0)
+    lines.append(
+        f"  First-attempt success:  {format_pct(rate)} ({first}/{runs} implement runs), "
+        f"pending: {pending}"
+    )
 
     lines.append(f"  Avg cost/run:           ${snapshot['avg_cost_usd']:.2f}")
 
@@ -504,19 +702,23 @@ def format_snapshot(snapshot: dict) -> str:
     hr = snapshot["human_edit_rate"]
     hc = snapshot.get("human_edit_count", 0)
     merged_count = snapshot.get("merged_pr_count", 0)
+    pending_prs = snapshot.get("pending_pr_count", 0)
     lines.append(
-        f"  Human edit rate:        {hr:.0%} ({hc}/{merged_count} PRs had post-merge fixups)"
+        f"  Human edit rate:        {format_pct(hr)} ({hc}/{merged_count} PRs had post-merge "
+        f"fixups), pending: {pending_prs}"
     )
 
     cwm = snapshot.get("closed_without_merge", 0)
     if cwm:
         lines.append(f"  Closed without merge:   {cwm}")
 
+    lines.append(f"  Freshness:              {data_freshness(snapshot)[0]}")
+
     modules = snapshot.get("modules", {})
     if modules:
         lines.append("  Retry hotspots:")
         for mod, stats in sorted(modules.items(), key=lambda x: x[1]["first_attempt_rate"]):
-            n_runs = module_implement_runs(stats)
+            n_runs = module_resolved_runs(stats)
             fa = round(stats["first_attempt_rate"] * n_runs)
             lines.append(
                 f"    {mod:<20s} {stats['first_attempt_rate']:.0%} first-attempt ({fa}/{n_runs} runs)"
@@ -630,8 +832,17 @@ def _compute_period_stats(snapshot: dict, prev: dict | None) -> dict:
             "period_n": 0,
         }
 
-    period_first = curr_dist.get("1", 0) - prev_dist.get("1", 0)
-    period_first_attempt_rate = round(max(0, period_first) / period_runs, 2)
+    # Rates go through bounded_rate: a numerator outside [0, denominator] is invalid (#452).
+    # These formulas are described by METRIC_DEFINITIONS; keep the two in step.
+    if all(k in s for s in (snapshot, prev) for k in ("resolved_run_count", "first_attempt_count")):
+        period_first = snapshot["first_attempt_count"] - prev["first_attempt_count"]
+        period_resolved = snapshot["resolved_run_count"] - prev["resolved_run_count"]
+    else:
+        period_first = max(0, curr_dist.get("1", 0) - prev_dist.get("1", 0))
+        period_resolved = period_runs
+    period_first_attempt_rate = bounded_rate(
+        period_first, period_resolved, f"{snapshot.get('date')} period first-attempt success"
+    )
 
     curr_total_cost = snapshot.get("avg_cost_usd", 0) * curr_runs
     prev_total_cost = prev.get("avg_cost_usd", 0) * prev_runs
@@ -639,7 +850,9 @@ def _compute_period_stats(snapshot: dict, prev: dict | None) -> dict:
 
     period_edits = snapshot.get("human_edit_count", 0) - prev.get("human_edit_count", 0)
     period_merged = snapshot.get("merged_pr_count", 0) - prev.get("merged_pr_count", 0)
-    period_human_edit_rate = round(period_edits / period_merged, 2) if period_merged > 0 else None
+    period_human_edit_rate = bounded_rate(
+        period_edits, period_merged, f"{snapshot.get('date')} period human edit rate"
+    )
 
     return {
         "period_first_attempt_rate": period_first_attempt_rate,
@@ -669,13 +882,13 @@ def format_trend(snapshots: list[dict]) -> str:
         }
 
         prate = pstats.get("period_first_attempt_rate")
-        rate_str = f"{'—':>11s}" if prate is None else f"{prate:>11.0%}"
+        rate_str = f"{format_pct(prate, s['date'] + ' first-attempt'):>11s}"
 
         pcost = pstats.get("period_avg_cost_usd")
         cost_str = f"{'—':>9s}" if pcost is None else f"${pcost:>8.2f}"
 
         phr = pstats.get("period_human_edit_rate")
-        hr_str = f"{'—':>11s}" if phr is None else f"{phr:>11.0%}"
+        hr_str = f"{format_pct(phr, s['date'] + ' human edit rate'):>11s}"
 
         lines.append(f"  {s['date']:<14s} {impl:>6d} {rate_str} {cost_str} {hr_str}")
 
@@ -698,16 +911,21 @@ def format_eval_md(snapshot: dict) -> str:
     lines = ["# Eval Report", ""]
     lines.append(f"**Date:** {snapshot['date']}")
     lines.append("")
+    lines.extend(_freshness_lines(snapshot))
     lines.append("## Summary")
     lines.append("")
     lines.append("| Metric | Value |")
     lines.append("|--------|-------|")
 
     rate = snapshot["first_attempt_rate"]
-    runs = snapshot_implement_runs(snapshot)
+    runs = snapshot_resolved_runs(snapshot)
     first = round(rate * runs)
+    pending_runs = snapshot.get("pending_run_count", 0)
     lines.append(f"| Total PRs | {snapshot_total_prs(snapshot)} |")
-    lines.append(f"| First-attempt success | {rate:.0%} ({first}/{runs} implement runs) |")
+    lines.append(
+        f"| First-attempt success | {format_pct(rate)} ({first}/{runs} implement runs), "
+        f"pending: {pending_runs} |"
+    )
     lines.append(f"| Avg cost/run | ${snapshot['avg_cost_usd']:.2f} |")
 
     dur = snapshot["avg_duration_seconds"]
@@ -718,7 +936,10 @@ def format_eval_md(snapshot: dict) -> str:
     hr = snapshot["human_edit_rate"]
     hc = snapshot.get("human_edit_count", 0)
     merged = snapshot.get("merged_pr_count", 0)
-    lines.append(f"| Human edit rate | {hr:.0%} ({hc}/{merged} PRs) |")
+    pending_prs = snapshot.get("pending_pr_count", 0)
+    lines.append(
+        f"| Human edit rate | {format_pct(hr)} ({hc}/{merged} PRs), pending: {pending_prs} |"
+    )
 
     cwm = snapshot.get("closed_without_merge", 0)
     if cwm:
@@ -741,13 +962,14 @@ def format_eval_md(snapshot: dict) -> str:
         lines.append("|--------|-------------------|-----------------|")
         for mod, stats in sorted(modules.items(), key=lambda x: x[1]["first_attempt_rate"]):
             imp = stats["implementations"]
-            n_runs = module_implement_runs(stats)
+            n_runs = module_resolved_runs(stats)
             fa = round(stats["first_attempt_rate"] * n_runs)
             lines.append(
-                f"| {mod} | {stats['first_attempt_rate']:.0%} ({fa}/{n_runs} runs) | {imp} |"
+                f"| {mod} | {format_pct(stats['first_attempt_rate'])} ({fa}/{n_runs} runs) | {imp} |"
             )
 
     lines.append("")
+    lines.extend(_definitions_lines())
     return "\n".join(lines)
 
 
@@ -779,23 +1001,28 @@ def generate_eval_md(
     min_n: int = DEFAULT_MIN_N,
 ) -> str:
     lines = ["# EVAL Report", ""]
+    lines.extend(_freshness_lines(snapshot))
 
     lines.append("## Overall")
     lines.append("")
-    lines.append("| Metric | Value |")
-    lines.append("|--------|-------|")
-    lines.append(f"| Total PRs | {snapshot_total_prs(snapshot)} |")
+    lines.append("| Metric | Value | Pending |")
+    lines.append("|--------|-------|---------|")
+    lines.append(f"| Total PRs | {snapshot_total_prs(snapshot)} | — |")
     runs = snapshot_implement_runs(snapshot)
+    resolved = snapshot_resolved_runs(snapshot)
+    pending_runs = snapshot.get("pending_run_count", 0)
     rate = snapshot.get("first_attempt_rate", 0)
-    rate_s = format_rate_with_n(rate, runs, "implement runs", min_n)
-    lines.append(f"| First-attempt success | {rate_s} |")
+    rate_s = format_rate_with_n(rate, resolved, "implement runs", min_n)
+    lines.append(f"| First-attempt success | {rate_s} | pending: {pending_runs} |")
     cost = snapshot.get("avg_cost_usd", 0)
-    lines.append(f"| Avg cost/run | ${cost:.2f} (n={runs} implement runs) |")
+    lines.append(f"| Avg cost/run | ${cost:.2f} (n={runs} implement runs) | included |")
     hr = snapshot.get("human_edit_rate", 0)
     merged = snapshot.get("merged_pr_count", 0)
+    pending_prs = snapshot.get("pending_pr_count", 0)
     hr_s = format_rate_with_n(hr, merged, "merged PRs", min_n)
-    lines.append(f"| Human edit rate | {hr_s} |")
+    lines.append(f"| Human edit rate | {hr_s} | pending: {pending_prs} |")
     lines.append("")
+    lines.extend(_definitions_lines())
 
     gate_kwargs = {
         "edit_rate_threshold": edit_rate_threshold,
@@ -819,8 +1046,10 @@ def generate_eval_md(
             lines.append("")
             lines.append("| Metric | Value | Threshold |")
             lines.append("|--------|-------|-----------|")
-            lines.append(f"| Success rate | {repo_success_rate:.0%} | >{success_threshold:.0%} |")
-            lines.append(f"| Edit rate | {repo_edit_rate:.0%} | <{edit_rate_threshold:.0%} |")
+            success_s = format_pct(repo_success_rate, "repo success rate")
+            edit_s = format_pct(repo_edit_rate, "repo edit rate")
+            lines.append(f"| Success rate | {success_s} | >{success_threshold:.0%} |")
+            lines.append(f"| Edit rate | {edit_s} | <{edit_rate_threshold:.0%} |")
             lines.append(f"| Clean merges | {repo_merged_clean} | ≥{volume_floor} |")
             lines.append(f"| **Ready?** | **{repo_auto}** | |")
             lines.append("")
@@ -837,7 +1066,7 @@ def generate_eval_md(
             edit_r = stats.get("human_edit_rate", 0)
             clean = stats.get("merged_clean_count", 0)
             auto = is_auto_merge_ready(success, edit_r, clean, **gate_kwargs)
-            success_s = format_rate_with_n(success, n_runs, "runs", min_n)
+            success_s = format_rate_with_n(success, module_resolved_runs(stats), "runs", min_n)
             cost_s = format_cost_with_n(avg_c, n_runs, "runs", min_n)
             lines.append(f"| {mod} | {success_s} | {cost_s} | {prs} | {auto} |")
         lines.append("")
@@ -864,13 +1093,13 @@ def generate_eval_md(
             }
 
             prate = pstats.get("period_first_attempt_rate")
-            rate_str = "—" if prate is None else f"{prate:.0%}"
+            rate_str = format_pct(prate, f"{s['date']} first-attempt")
 
             pcost = pstats.get("period_avg_cost_usd")
             cost_str = "—" if pcost is None else f"${pcost:.2f}"
 
             phr = pstats.get("period_human_edit_rate")
-            hr_str = "—" if phr is None else f"{phr:.0%}"
+            hr_str = format_pct(phr, f"{s['date']} human edit rate")
 
             date_str = f"{s['date']} (baseline break)" if is_break else s["date"]
             lines.append(f"| {date_str} | {impl} | {rate_str} | {cost_str} | {hr_str} |")
@@ -895,7 +1124,7 @@ def generate_eval_md(
                 if not pstats:
                     continue
                 rate = pstats.get("period_first_attempt_rate")
-                if rate is None:
+                if not is_valid_rate(rate):
                     continue
                 chart_points.append(
                     {

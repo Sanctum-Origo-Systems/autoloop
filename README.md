@@ -67,7 +67,7 @@ Issue --> Triage --> Implement --> Review PR
                                  Exhausted? --> needs-human label
 ```
 
-**[View live performance dashboard (EVAL.md)](EVAL.md)** — first-attempt success rate, cost trends, and per-module breakdown. Updated daily.
+**[View live performance dashboard (EVAL.md)](EVAL.md)** — first-attempt success rate, cost trends, and per-module breakdown, with a Definitions section (numerator, denominator, run types and window for each metric), pending counts for open PRs, and a "data as of" stamp that flags history more than 48 h old. Updated daily.
 
 **[View the decision-model shadow report (JEV.md)](JEV.md)** — how often Jev agrees with triage and auto-merge decisions, and whether it's ready to act. Updated daily.
 
