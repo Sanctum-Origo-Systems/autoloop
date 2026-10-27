@@ -540,6 +540,53 @@ def test_eval_min_n_from_toml(tmp_path, monkeypatch):
     assert config.eval_min_n == 5
 
 
+# --- eval.fixup_window_days / eval.fixup_ignore config fields ---
+
+
+def test_fixup_defaults():
+    config = AutoLoopConfig()
+    assert config.fixup_window_days == 7
+    assert config.fixup_ignore == []
+
+
+def test_fixup_ignore_default_not_shared():
+    a = AutoLoopConfig()
+    b = AutoLoopConfig()
+    assert a.fixup_ignore is not b.fixup_ignore
+    a.fixup_ignore.append("docs/**")
+    assert b.fixup_ignore == []
+
+
+def test_fixup_fields_from_toml(tmp_path, monkeypatch):
+    for var in ("AUTOLOOP_TRIAGE_MODEL", "AUTOLOOP_IMPL_MODEL", "AUTOLOOP_TIMEOUT"):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('[eval]\nfixup_window_days = 14\nfixup_ignore = ["docs/**", "*.lock"]\n')
+    config = load_config(toml_path)
+    assert config.fixup_window_days == 14
+    assert config.fixup_ignore == ["docs/**", "*.lock"]
+
+
+def test_fixup_fields_absent_from_eval_section_yield_defaults(tmp_path, monkeypatch):
+    for var in ("AUTOLOOP_TRIAGE_MODEL", "AUTOLOOP_IMPL_MODEL", "AUTOLOOP_TIMEOUT"):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('repo = "example-org/example-repo"\n\n[eval]\n')
+    config = load_config(toml_path)
+    assert config.fixup_window_days == 7
+    assert config.fixup_ignore == []
+
+
+def test_fixup_fields_no_eval_section_yield_defaults(tmp_path, monkeypatch):
+    for var in ("AUTOLOOP_TRIAGE_MODEL", "AUTOLOOP_IMPL_MODEL", "AUTOLOOP_TIMEOUT"):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('repo = "example-org/example-repo"\n')
+    config = load_config(toml_path)
+    assert config.fixup_window_days == 7
+    assert config.fixup_ignore == []
+
+
 def test_auto_merge_promotion_level_default():
     config = AutoLoopConfig()
     assert config.auto_merge_promotion_level == "module"
