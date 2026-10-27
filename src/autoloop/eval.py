@@ -6,12 +6,13 @@ metrics. No LLM calls. Purely deterministic.
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import shutil
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from autoloop.config import RepoContext
 
@@ -20,6 +21,26 @@ _PR_LIMIT = 500
 # Snapshots before this date counted triage rows as implement runs (#400), so their
 # success and cost values are not comparable with later snapshots.
 BASELINE_BREAK_DATE = "2026-10-26"
+
+# A later non-autoloop PR counts as a fixup only if it merged within this many days.
+DEFAULT_FIXUP_WINDOW_DAYS = 7
+
+# Bookkeeping files whose overlap never makes a later PR a fixup.
+FIXUP_ALWAYS_IGNORED = [
+    "pyproject.toml",
+    "uv.lock",
+    "CHANGELOG*",
+    "EVAL.md",
+    "JEV.md",
+    "autoloop/eval_snapshots/**",
+]
+
+# Release and eval-report PRs touch many files but are never fixups.
+FIXUP_EXCLUDED_BRANCHES = ["chore/eval-*", "chore/release-*"]
+FIXUP_EXCLUDED_TITLE_PREFIXES = [
+    "chore: update changelog and version",
+    "chore: update eval report",
+]
 
 DEFAULT_MIN_N = 20
 
@@ -92,7 +113,10 @@ METRIC_DEFINITIONS = [
     },
     {
         "metric": "Human edit rate",
-        "numerator": "merged PRs with a later non-autoloop PR touching the same files",
+        "numerator": (
+            "merged PRs with a non-autoloop PR merged within the fixup window that touches "
+            "the same files (bookkeeping files, release and eval-report PRs are ignored)"
+        ),
         "denominator": "merged PRs (open PRs are pending; closed unmerged PRs excluded)",
         "counts": f"PRs from `autoloop/` branches, up to the {_PR_LIMIT} most recent",
         "window": (
@@ -157,6 +181,7 @@ def compute_snapshot(
     pr_data: list[dict] | None = None,
     date: str | None = None,
     module_prefixes: list[str] | None = None,
+    fixup_window_days: int | None = None,
 ) -> dict:
     impl_runs = [
         r for r in runs if r.get("type", "implement") == "implement" and r.get("issue", 0) != 0
@@ -287,6 +312,9 @@ def compute_snapshot(
         "history_rows": len(runs),
         "modules": module_stats,
     }
+    # The fixup rule pr_data was built with; a change breaks the edit-rate trend.
+    if fixup_window_days is not None:
+        snapshot["fixup_window_days"] = fixup_window_days
     return snapshot
 
 
@@ -422,7 +450,16 @@ def _crosses_baseline_break(snapshot: dict, prev: dict | None) -> bool:
     return prev is not None and prev["date"] < BASELINE_BREAK_DATE <= snapshot["date"]
 
 
-def fetch_pr_data(repo: str) -> list[dict]:
+def _crosses_fixup_rule_break(snapshot: dict, prev: dict | None) -> bool:
+    """True when the fixup window changed (or was first recorded) since `prev`."""
+    return prev is not None and prev.get("fixup_window_days") != snapshot.get("fixup_window_days")
+
+
+def fetch_pr_data(
+    repo: str,
+    fixup_window_days: int = DEFAULT_FIXUP_WINDOW_DAYS,
+    fixup_ignore: list[str] | None = None,
+) -> list[dict]:
     try:
         result = subprocess.run(
             [
@@ -436,7 +473,7 @@ def fetch_pr_data(repo: str) -> list[dict]:
                 "--limit",
                 str(_PR_LIMIT),
                 "--json",
-                "number,state,mergedAt,closedAt,headRefName,files,author",
+                "number,title,state,mergedAt,closedAt,headRefName,files,author",
             ],
             capture_output=True,
             text=True,
@@ -463,9 +500,18 @@ def fetch_pr_data(repo: str) -> list[dict]:
         if branch.startswith("autoloop/"):
             autoloop_prs.append((pr, files))
         elif merged_at:
-            non_autoloop_merged.append({"merged_at": merged_at, "files": files})
+            non_autoloop_merged.append(
+                {
+                    "merged_at": merged_at,
+                    "files": files,
+                    "branch": branch,
+                    "title": pr.get("title", ""),
+                }
+            )
 
-    fixup_numbers = _detect_post_merge_fixups(autoloop_prs, non_autoloop_merged)
+    fixup_numbers = _detect_post_merge_fixups(
+        autoloop_prs, non_autoloop_merged, fixup_window_days, fixup_ignore
+    )
 
     pr_data = []
     for pr, files in autoloop_prs:
@@ -488,17 +534,47 @@ def fetch_pr_data(repo: str) -> list[dict]:
     return pr_data
 
 
+def _is_fixup_ignored(path: str, patterns: list[str]) -> bool:
+    return any(PurePosixPath(path).full_match(p) for p in patterns)
+
+
+def _is_excluded_fixup_pr(nap: dict) -> bool:
+    branch = nap.get("branch") or ""
+    title = nap.get("title") or ""
+    return any(fnmatch.fnmatchcase(branch, p) for p in FIXUP_EXCLUDED_BRANCHES) or any(
+        title.startswith(p) for p in FIXUP_EXCLUDED_TITLE_PREFIXES
+    )
+
+
 def _detect_post_merge_fixups(
     autoloop_prs: list[tuple[dict, set[str]]],
     non_autoloop_merged: list[dict],
+    window_days: int = DEFAULT_FIXUP_WINDOW_DAYS,
+    ignore: list[str] | None = None,
 ) -> set[int]:
+    """Return autoloop PR numbers edited by a later non-autoloop PR.
+
+    A later PR counts only if it merged within `window_days` of the autoloop PR, shares
+    a file outside FIXUP_ALWAYS_IGNORED and `ignore`, and is not a release or eval PR.
+    """
+    patterns = FIXUP_ALWAYS_IGNORED + list(ignore or [])
+    window = timedelta(days=window_days)
+    candidates = []
+    for nap in non_autoloop_merged:
+        nap_ts = _parse_timestamp(nap["merged_at"])
+        if nap_ts is None or _is_excluded_fixup_pr(nap):
+            continue
+        files = {f for f in nap["files"] if not _is_fixup_ignored(f, patterns)}
+        if files:
+            candidates.append((nap_ts, files))
+
     fixup_numbers: set[int] = set()
     for pr, files in autoloop_prs:
-        merged_at = pr.get("mergedAt")
-        if not merged_at or not files:
+        merged_ts = _parse_timestamp(pr.get("mergedAt"))
+        if merged_ts is None or not files:
             continue
-        for nap in non_autoloop_merged:
-            if nap["merged_at"] > merged_at and nap["files"] & files:
+        for nap_ts, nap_files in candidates:
+            if merged_ts < nap_ts <= merged_ts + window and nap_files & files:
                 fixup_numbers.add(pr["number"])
                 break
     return fixup_numbers
@@ -848,11 +924,15 @@ def _compute_period_stats(snapshot: dict, prev: dict | None) -> dict:
     prev_total_cost = prev.get("avg_cost_usd", 0) * prev_runs
     period_avg_cost = round(max(0, curr_total_cost - prev_total_cost) / period_runs, 2)
 
-    period_edits = snapshot.get("human_edit_count", 0) - prev.get("human_edit_count", 0)
-    period_merged = snapshot.get("merged_pr_count", 0) - prev.get("merged_pr_count", 0)
-    period_human_edit_rate = bounded_rate(
-        period_edits, period_merged, f"{snapshot.get('date')} period human edit rate"
-    )
+    if _crosses_fixup_rule_break(snapshot, prev):
+        # Edit counts under different fixup rules do not diff; restart from lifetime.
+        period_human_edit_rate = snapshot.get("human_edit_rate")
+    else:
+        period_edits = snapshot.get("human_edit_count", 0) - prev.get("human_edit_count", 0)
+        period_merged = snapshot.get("merged_pr_count", 0) - prev.get("merged_pr_count", 0)
+        period_human_edit_rate = bounded_rate(
+            period_edits, period_merged, f"{snapshot.get('date')} period human edit rate"
+        )
 
     return {
         "period_first_attempt_rate": period_first_attempt_rate,
@@ -1019,7 +1099,11 @@ def generate_eval_md(
     hr = snapshot.get("human_edit_rate", 0)
     merged = snapshot.get("merged_pr_count", 0)
     pending_prs = snapshot.get("pending_pr_count", 0)
-    hr_s = format_rate_with_n(hr, merged, "merged PRs", min_n)
+    population = "merged PRs"
+    window = snapshot.get("fixup_window_days")
+    if window is not None:
+        population += f"; edited by a human PR within {window} days"
+    hr_s = format_rate_with_n(hr, merged, population, min_n)
     lines.append(f"| Human edit rate | {hr_s} | pending: {pending_prs} |")
     lines.append("")
     lines.extend(_definitions_lines())
@@ -1078,11 +1162,15 @@ def generate_eval_md(
         lines.append("| Date (UTC) | New PRs | First-attempt | Avg Cost | Human Edits |")
         lines.append("|------|---------|---------------|----------|-------------|")
         has_break = False
+        fixup_breaks: list[dict] = []
         for i, s in enumerate(recent):
             prev = recent[i - 1] if i > 0 else None
             impl = _period_impl(s, prev)
             is_break = _crosses_baseline_break(s, prev)
             has_break = has_break or is_break
+            edit_break = _crosses_fixup_rule_break(s, prev)
+            if edit_break:
+                fixup_breaks.append(s)
             pstats = _compute_period_stats(s, None if is_break else prev) or {
                 k: s.get(k)
                 for k in (
@@ -1101,7 +1189,8 @@ def generate_eval_md(
             phr = pstats.get("period_human_edit_rate")
             hr_str = format_pct(phr, f"{s['date']} human edit rate")
 
-            date_str = f"{s['date']} (baseline break)" if is_break else s["date"]
+            is_marked = is_break or edit_break
+            date_str = f"{s['date']} (baseline break)" if is_marked else s["date"]
             lines.append(f"| {date_str} | {impl} | {rate_str} | {cost_str} | {hr_str} |")
         if has_break:
             lines.append("")
@@ -1109,6 +1198,14 @@ def generate_eval_md(
                 f"> Baseline break at {BASELINE_BREAK_DATE}: earlier snapshots counted triage "
                 "runs as implementations (#400), so their first-attempt and cost values are "
                 "not comparable with later rows."
+            )
+        for s in fixup_breaks:
+            window = s.get("fixup_window_days")
+            rule = f"a {window}-day window" if window is not None else "no recorded window"
+            lines.append("")
+            lines.append(
+                f"> Baseline break at {s['date']}: human edits are counted under {rule} from "
+                "this row on, so earlier human edit rates are not comparable with later rows."
             )
         lines.append("")
 
@@ -1350,6 +1447,8 @@ def main(
     auto_merge_volume_floor: int = 10,
     auto_merge_promotion_level: str = "module",
     eval_min_n: int = DEFAULT_MIN_N,
+    fixup_window_days: int = DEFAULT_FIXUP_WINDOW_DAYS,
+    fixup_ignore: list[str] | None = None,
 ):
     repo_dir = str(ctx.repo_dir)
 
@@ -1371,9 +1470,9 @@ def main(
         migrate_unpublished_snapshots(ctx)
 
         runs = load_run_history(ctx)
-        pr_data = fetch_pr_data(repo) if repo else []
+        pr_data = fetch_pr_data(repo, fixup_window_days, fixup_ignore) if repo else []
         pr_data = enrich_pr_data_with_runs(pr_data, runs)
-        snapshot = compute_snapshot(runs, pr_data)
+        snapshot = compute_snapshot(runs, pr_data, fixup_window_days=fixup_window_days)
 
         previous = load_latest_snapshot(ctx)
         snapshot.update(_compute_period_stats(snapshot, previous))
@@ -1468,9 +1567,9 @@ def main(
 
     if compare == "latest":
         runs = load_run_history(ctx)
-        pr_data = fetch_pr_data(repo) if repo else []
+        pr_data = fetch_pr_data(repo, fixup_window_days, fixup_ignore) if repo else []
         pr_data = enrich_pr_data_with_runs(pr_data, runs)
-        current = compute_snapshot(runs, pr_data)
+        current = compute_snapshot(runs, pr_data, fixup_window_days=fixup_window_days)
         previous = load_latest_snapshot(ctx)
         current.update(_compute_period_stats(current, previous))
         if previous is None:
@@ -1496,9 +1595,9 @@ def main(
         return
 
     runs = load_run_history(ctx)
-    pr_data = fetch_pr_data(repo) if repo else []
+    pr_data = fetch_pr_data(repo, fixup_window_days, fixup_ignore) if repo else []
     pr_data = enrich_pr_data_with_runs(pr_data, runs)
-    snapshot = compute_snapshot(runs, pr_data)
+    snapshot = compute_snapshot(runs, pr_data, fixup_window_days=fixup_window_days)
     previous = load_latest_snapshot(ctx)
     snapshot.update(_compute_period_stats(snapshot, previous))
 

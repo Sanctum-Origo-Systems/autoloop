@@ -338,6 +338,8 @@ def main():
             auto_merge_volume_floor=cfg.auto_merge_volume_floor,
             auto_merge_promotion_level=cfg.auto_merge_promotion_level,
             eval_min_n=cfg.eval_min_n,
+            fixup_window_days=cfg.fixup_window_days,
+            fixup_ignore=cfg.fixup_ignore,
         )
 
     elif args.command == "jev-report":
