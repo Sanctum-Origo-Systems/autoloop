@@ -8,13 +8,16 @@ Config-driven AI pipeline that triages GitHub issues, implements them via Claude
 - **uv** (recommended): [install](https://docs.astral.sh/uv/getting-started/installation/) or use pip instead
 - **Node.js 22+**: required by Claude Code CLI
 - **GitHub CLI (`gh`)**: [install](https://cli.github.com/) then run `gh auth login`
-- **Claude Code CLI (`claude`)**: `npm install -g @anthropic-ai/claude-code` (requires Claude Max or Pro subscription)
+- **Claude Code CLI (`claude`) v2.1.310 or later**: `npm install -g @anthropic-ai/claude-code@latest`, then check with `claude --version` (requires a Claude Max or Pro subscription)
+  - **Which Claude models you can use depends on the installed `claude` CLI version** (and your plan). autoloop passes `triage_model`, `impl_model` and `review_model` straight to `claude --model`, so a model newer than your CLI fails at run time. Upgrade the CLI before switching to a newer model.
+  - The default `impl_model` (and `review_model`) is `claude-opus-5-5`, which needs CLI v2.1.310 or later. Older CLIs such as 2.1.160 can't run it. Upgrade, or set `impl_model` in `autoloop.toml` to a model your CLI supports.
+  - Implement runs pass permission rules with `--settings`, so the CLI must support that flag. `autoloop doctor` checks this.
 - A GitHub repo with a test command (`pytest`, `npm test`, `make test`, etc.)
 
 ## TLDR: First PR in 5 Minutes
 
 ```bash
-uv tool install git+https://github.com/Sanctum-Origo-Systems/autoloop@v0.12.1
+uv tool install git+https://github.com/Sanctum-Origo-Systems/autoloop@v0.18.0
 cd your-repo
 autoloop init --repo your-org/your-repo --verify-cmd "npm test"
 autoloop doctor                           # verify environment
@@ -94,7 +97,7 @@ Most users start local. Graduate to unattended when you trust it.
 
 ### As a CLI tool (recommended)
 
-Replace `<tag>` with the latest version from the [releases page](https://github.com/Sanctum-Origo-Systems/autoloop/tags) (e.g. `v0.12.1`):
+Replace `<tag>` with the latest version from the [tags page](https://github.com/Sanctum-Origo-Systems/autoloop/tags) (e.g. `v0.18.0`). Pinning a tag is recommended; `@main` tracks unreleased changes:
 
 ```bash
 uv tool install git+https://github.com/Sanctum-Origo-Systems/autoloop@<tag>
@@ -129,6 +132,8 @@ pip install --upgrade git+https://github.com/Sanctum-Origo-Systems/autoloop@main
 ```
 
 Verify: `autoloop version`
+
+If you use the MCP server, include the `mcp` extra when you upgrade: `uv tool install --force "autoloop[mcp] @ git+https://github.com/Sanctum-Origo-Systems/autoloop@v<new-version>"`. `--force` rebuilds the tool environment with only the extras you name, so leaving it out removes `fastmcp` and `autoloop-mcp` stops starting.
 
 If running on a VPS with systemd timers, reinstall there too and restart any Claude Code sessions in tmux to pick up the new MCP tools.
 
@@ -191,7 +196,7 @@ Checks that everything is set up correctly before your first run:
 ```
 ✓ autoloop.toml found and valid
 ✓ .claude/settings.json found
-✓ claude CLI installed (v2.1.160)
+✓ claude CLI installed (v2.1.310)
 ✓ claude CLI authenticated
 ✓ gh CLI installed and authenticated
 ✓ No active Claude Code session conflict
@@ -481,7 +486,7 @@ Example workflow from your phone:
 |-------|---------|-------------|
 | `repo` | (required) | GitHub `owner/repo` (required) |
 | `triage_model` | `sonnet` | Claude model for triage |
-| `impl_model` | `claude-opus-5-5` | Claude model for implementation |
+| `impl_model` | `claude-opus-5-5` | Claude model for implementation. Must be supported by the installed `claude` CLI (Opus 5.5 needs v2.1.310+) |
 | `review_model` | (defaults to `impl_model`) | Claude model for semantic PR review. Falls back to `impl_model` when omitted |
 | `impl_timeout` | `900` | Implementation timeout (seconds) |
 | `triage_timeout` | `90` | Triage timeout (seconds) |

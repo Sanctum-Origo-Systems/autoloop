@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.18.0
+
+Eval metrics are now defined and bounded. EVAL.md has a Definitions section and a "data as of" stamp with a 48 h stale flag. Period rates are capped at 100%, so any row that would exceed it shows as invalid instead of printing a number like 333%. The new `eval.fixup_window_days` and `eval.fixup_ignore` settings are loaded and documented, but human-edit detection doesn't use them until #455 lands.
+
+### Eval Dashboard
+- fix: define eval metrics, bound period rates, stamp data freshness (#452) ($2.95)
+- fix: reuse or replace an existing `chore/eval-<date>` branch in `--publish --pr` (#446) ($1.49)
+- feat: add `eval.fixup_window_days` and `eval.fixup_ignore` config (#454) ($0.34)
+
+### Implement
+- fix: log in-implement review cost and split implementation vs. review cost in the PR comment (#451) ($0.96)
+
+### Triage
+- fix: cap shared-file merges at 5 points in `validate_decomposition` (#453) ($0.53)
+
+### Status
+- fix: read the next timer run via `systemctl show`, not `list-timers` (#448) ($0.68)
+
+### Docs
+- docs: README install examples point at the current tag; prerequisites name Claude Code CLI v2.1.310+ (needed for the `claude-opus-5-5` default) and `--settings` support; upgrading notes the `mcp` extra
+
+Total: 6 PRs, $6.95
+
 ## v0.17.0
 
 Run history fix: implement and review runs had been logging to the legacy `<repo>/autoloop/run_history.jsonl` since the data-dir move, so eval, auto-merge gates and `status` missed them. They now log to `~/.autoloop/<hash>/run_history.jsonl`. Rows already in the legacy file are not migrated automatically.
