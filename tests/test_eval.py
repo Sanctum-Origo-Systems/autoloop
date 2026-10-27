@@ -1537,6 +1537,31 @@ def test_generate_eval_md_mermaid_cost_chart():
     assert "bar [1.50, 1.04]" in content
 
 
+def test_generate_eval_md_weekly_charts_horizontal():
+    """Regression for #463: weekly charts render horizontally so labels don't overlap."""
+    snaps = [
+        {
+            **_make_snapshot(date="2026-09-07", rate=0.80, cost=1.50),
+            "attempt_distribution": {"1": 20, "2": 5, "3+": 0},
+            "human_edit_count": 2,
+            "merged_pr_count": 20,
+        },
+        {
+            **_make_snapshot(date="2026-09-14", rate=0.83, cost=1.40),
+            "attempt_distribution": {"1": 25, "2": 7, "3+": 0},
+            "human_edit_count": 3,
+            "merged_pr_count": 25,
+        },
+    ]
+    content = generate_eval_md(snaps[-1], snaps)
+    lines = content.splitlines()
+    assert lines.count("xychart-beta horizontal") == 2
+    assert "xychart-beta" not in lines
+    for title in ("Weekly First-Attempt Success Rate", "Weekly Avg Cost/PR"):
+        idx = next(i for i, line in enumerate(lines) if title in line)
+        assert lines[idx - 1] == "xychart-beta horizontal"
+
+
 def test_generate_eval_md_mermaid_pie_chart():
     modules = {
         "src/autoloop/": {
