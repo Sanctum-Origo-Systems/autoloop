@@ -123,16 +123,47 @@ def _free_review():
 
 
 def test_parse_deps_single():
-    assert parse_dependency_numbers("Depends on: #43") == ["43"]
+    assert parse_dependency_numbers("Depends on: #43") == [43]
 
 
 def test_parse_deps_multiple():
     body = "Depends on: #43\nDepends on #44\nDepends on: #45"
-    assert parse_dependency_numbers(body) == ["43", "44", "45"]
+    assert parse_dependency_numbers(body) == [43, 44, 45]
 
 
 def test_parse_deps_none():
     assert parse_dependency_numbers("No dependencies here") == []
+
+
+def test_parse_deps_comma_separated_list():
+    # Regression (#470): only the first number on the line was read.
+    assert parse_dependency_numbers("Depends on: #13, #14, #9, #12") == [13, 14, 9, 12]
+
+
+def test_parse_deps_and_separated():
+    assert parse_dependency_numbers("Depends on #13 and #14") == [13, 14]
+
+
+def test_parse_deps_space_separated():
+    assert parse_dependency_numbers("Depends on: #13 #14") == [13, 14]
+
+
+def test_parse_deps_oxford_comma():
+    assert parse_dependency_numbers("Depends on: #13, #14, and #15") == [13, 14, 15]
+
+
+def test_parse_deps_multiple_lists_on_separate_lines():
+    body = "## Dependencies\nDepends on: #305, #306\nDepends on: #310"
+    assert parse_dependency_numbers(body) == [305, 306, 310]
+
+
+def test_parse_deps_ignores_numbers_outside_depends_on_lines():
+    body = "Fixes #99\nDepends on: #13, #14\n#77 is related\nSee #88"
+    assert parse_dependency_numbers(body) == [13, 14]
+
+
+def test_parse_deps_dedupes_repeated_numbers():
+    assert parse_dependency_numbers("Depends on: #13, #14\nDepends on: #13") == [13, 14]
 
 
 # --- Pure function tests: build_branch_name ---
@@ -615,6 +646,40 @@ def test_dependencies_met_uses_cfg_repo(monkeypatch):
     implement_issue.dependencies_met({"body": "Depends on: #10"})
 
     assert captured["cmd"][captured["cmd"].index("--repo") + 1] == "my-org/my-repo"
+
+
+def _fake_gh_states(states: dict[str, str | None]):
+    """Return a fake subprocess.run mapping issue number -> state; None means gh fails."""
+
+    def fake_run(cmd, **kwargs):
+        state = states[cmd[cmd.index("view") + 1]]
+        if state is None:
+            return type("R", (), {"returncode": 1, "stdout": "", "stderr": "network error"})()
+        return type("R", (), {"returncode": 0, "stdout": json.dumps({"state": state})})()
+
+    return fake_run
+
+
+def test_dependencies_met_all_closed(monkeypatch):
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
+    fake = _fake_gh_states({"13": "CLOSED", "14": "CLOSED"})
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake)
+    assert implement_issue.dependencies_met({"body": "Depends on: #13, #14"}) is True
+
+
+def test_dependencies_met_false_when_non_first_dep_open(monkeypatch):
+    # Regression (#470): only the first dependency on the line was checked.
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
+    fake = _fake_gh_states({"13": "CLOSED", "14": "OPEN", "9": "CLOSED", "12": "CLOSED"})
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake)
+    assert implement_issue.dependencies_met({"body": "Depends on: #13, #14, #9, #12"}) is False
+
+
+def test_dependencies_met_false_when_gh_fails(monkeypatch):
+    # Regression (#470): a failed gh call used to count as "dependency met".
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
+    monkeypatch.setattr(implement_issue.subprocess, "run", _fake_gh_states({"10": None}))
+    assert implement_issue.dependencies_met({"body": "Depends on: #10"}) is False
 
 
 def test_has_design_comment_uses_cfg_repo(monkeypatch):

@@ -119,9 +119,25 @@ def _fetch_issue_body(issue_number: int, cfg: AutoLoopConfig) -> str:
     return data.get("body", "") or ""
 
 
-def _parse_depends_on(body: str) -> list[int]:
-    """Extract dependency issue numbers from a ``Depends on: #N`` pattern."""
-    return [int(n) for n in re.findall(r"Depends on:?\s*#(\d+)", body, re.IGNORECASE)]
+# "Depends on:" followed by a run of #N refs separated by commas, spaces, or "and".
+# Separators use [ \t] so a list never spills onto the next line.
+_DEPENDS_ON_RE = re.compile(
+    r"Depends on:?\s*(#\d+(?:(?:[ \t]*,[ \t]*(?:and[ \t]+)?|[ \t]+and[ \t]+|[ \t]+)#\d+)*)",
+    re.IGNORECASE,
+)
+
+
+def parse_dependency_numbers(body: str) -> list[int]:
+    """Extract every issue number from all ``Depends on: #A, #B and #C`` lists in *body*.
+
+    Numbers are returned in order of appearance with duplicates removed.
+    """
+    numbers: list[int] = []
+    for match in _DEPENDS_ON_RE.finditer(body):
+        for n in re.findall(r"#(\d+)", match.group(1)):
+            if int(n) not in numbers:
+                numbers.append(int(n))
+    return numbers
 
 
 def order_by_dependencies(prs: list[dict], cfg: AutoLoopConfig) -> list[dict]:
@@ -135,7 +151,7 @@ def order_by_dependencies(prs: list[dict], cfg: AutoLoopConfig) -> list[dict]:
     deps: dict[int, list[int]] = {}
     for pr in prs:
         body = _fetch_issue_body(pr["issue_number"], cfg)
-        dep_issues = _parse_depends_on(body)
+        dep_issues = parse_dependency_numbers(body)
         deps[pr["issue_number"]] = [d for d in dep_issues if d in issue_to_pr]
 
     # Topological sort (Kahn's algorithm)
