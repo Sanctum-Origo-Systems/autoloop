@@ -1,16 +1,16 @@
 # EVAL Report
 
-Report date 2026-10-28: data as of 2026-10-27T19:18:54.636679+00:00, 414 history rows.
+Report date 2026-10-28: data as of 2026-10-28T09:06:25.148121+00:00, 417 history rows.
 
 ## Overall
 
 | Metric | Value | Pending |
 |--------|-------|---------|
-| Total PRs | 174 | — |
-| First-attempt success | 74% (n=211 implement runs) | pending: 0 |
-| Avg cost/run | $1.89 (n=211 implement runs) | included |
-| Avg review cost/run | $0.21 (n=4 implement runs) | included |
-| Human edit rate | 17% (n=174 merged PRs; edited by a human PR within 7 days) | pending: 0 |
+| Total PRs | 176 | — |
+| First-attempt success | 74% (n=213 implement runs) | pending: 0 |
+| Avg cost/run | $1.88 (n=213 implement runs) | included |
+| Avg review cost/run | $0.21 (n=6 implement runs) | included |
+| Human edit rate | 16% (n=176 merged PRs; edited by a human PR within 7 days) | pending: 0 |
 
 ## Definitions
 
@@ -28,7 +28,7 @@ Pending: a successful implement run whose PR is still open, or an open PR. Pendi
 | Module | Success | Avg Cost | Impl | Auto-merge ready? |
 |--------|---------|----------|------|--------------------|
 | other | insufficient data (n=11 runs) | insufficient data (n=11 runs) | 12 | No |
-| src/autoloop/ | 87% (n=163 runs) | $1.80 (n=163 runs) | 174 | No |
+| src/autoloop/ | 87% (n=165 runs) | $1.78 (n=165 runs) | 176 | No |
 
 ## Trend
 
@@ -77,7 +77,7 @@ Pending: a successful implement run whose PR is still open, or an open PR. Pendi
 | 2026-10-25 | 0 | — | — | — |
 | 2026-10-26 (baseline break) | 18 | 73% | $1.93 | 51% |
 | 2026-10-27 | 0 | — | — | — |
-| 2026-10-28 (baseline break) | 10 | 100% | $1.09 | 17% |
+| 2026-10-28 (baseline break) | 12 | 100% | $1.04 | 16% |
 
 > Baseline break at 2026-10-26: earlier snapshots counted triage runs as implementations (#400), so their first-attempt and cost values are not comparable with later rows.
 
@@ -86,22 +86,26 @@ Pending: a successful implement run whose PR is still open, or an open PR. Pendi
 ```mermaid
 xychart-beta horizontal
     title "Weekly First-Attempt Success Rate (2026)"
-    x-axis ["7/19 (n=2)", "7/26 (n=9)", "8/2 (n=19)", "8/9 (n=3)", "9/6 (n=15)", "9/13 (n=14)", "9/20 (n=70)", "9/27 (n=32)", "10/4 (n=70)", "10/11 (n=2)", "10/28 (n=211)"]
+    x-axis ["7/19 (n=2)", "7/26 (n=9)", "8/2 (n=19)", "8/9 (n=3)", "9/6 (n=15)", "9/13 (n=14)", "9/20 (n=70)", "9/27 (n=32)", "10/4 (n=70)", "10/11 (n=2)", "10/28 (n=2)"]
     y-axis "Success %" 0 --> 100
-    bar [100, 78, 68, 100, 60, 86, 57, 78, 81, 50, 74]
+    bar [100, 78, 68, 100, 60, 86, 57, 78, 81, 50, 100]
 ```
+
+> bars before 10/26 count triage runs as implementations (#400)
 
 ```mermaid
 xychart-beta horizontal
     title "Weekly Avg Cost/PR (2026)"
-    x-axis ["7/19 (n=2)", "7/26 (n=9)", "8/2 (n=19)", "8/9 (n=3)", "9/6 (n=15)", "9/13 (n=14)", "9/20 (n=70)", "9/27 (n=32)", "10/4 (n=70)", "10/11 (n=2)", "10/28 (n=211)"]
+    x-axis ["7/19 (n=2)", "7/26 (n=9)", "8/2 (n=19)", "8/9 (n=3)", "9/6 (n=15)", "9/13 (n=14)", "9/20 (n=70)", "9/27 (n=32)", "10/4 (n=70)", "10/11 (n=2)", "10/28 (n=2)"]
     y-axis "Cost ($)" 0 --> 3
-    bar [0.61, 0.55, 0.81, 0.28, 0.97, 1.04, 2.00, 1.04, 1.60, 0.26, 1.89]
+    bar [0.61, 0.55, 0.81, 0.28, 0.97, 1.04, 2.00, 1.04, 1.60, 0.26, 0.83]
 ```
+
+> bars before 10/26 count triage runs as implementations (#400)
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': {'pie1': '#4CAF50', 'pie2': '#2196F3', 'pie3': '#FF9800', 'pie4': '#E91E63', 'pie5': '#9C27B0', 'pie6': '#00BCD4', 'pieTitleTextColor': '#aaa', 'pieLegendTextColor': '#aaa', 'pieSectionTextColor': '#fff'}}}%%
 pie title Attempt Distribution by Module
     "other (73%, 12 impl)" : 12
-    "src/autoloop/ (87%, 174 impl)" : 174
+    "src/autoloop/ (87%, 176 impl)" : 176
 ```
