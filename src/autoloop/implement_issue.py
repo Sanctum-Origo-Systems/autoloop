@@ -20,7 +20,7 @@ from pathlib import Path
 from autoloop.claude_runner import ClaudeResult, run_claude
 from autoloop.config import AutoLoopConfig, RepoContext, load_config
 from autoloop.prune import delete_branch, format_report, prune, remove_worktree
-from autoloop.review_queue import post_batch_summary
+from autoloop.review_queue import parse_dependency_numbers, post_batch_summary
 
 cfg = None
 
@@ -90,11 +90,6 @@ def resolve_working_dir(
 
 
 # --- Pure functions (testable without mocking) ---
-
-
-def parse_dependency_numbers(body: str) -> list[str]:
-    """Extract dependency issue numbers from issue body."""
-    return re.findall(r"Depends on:?\s*#(\d+)", body, re.IGNORECASE)
 
 
 def build_branch_name(issue: dict) -> str:
@@ -562,14 +557,20 @@ def dependencies_met(issue: dict) -> bool:
     deps = parse_dependency_numbers(body)
     for dep_num in deps:
         result = subprocess.run(
-            ["gh", "issue", "view", dep_num, "--repo", cfg.repo, "--json", "state"],
+            ["gh", "issue", "view", str(dep_num), "--repo", cfg.repo, "--json", "state"],
             capture_output=True,
             text=True,
         )
-        if result.returncode == 0:
-            state = json.loads(result.stdout).get("state", "")
-            if state != "CLOSED":
-                return False
+        if result.returncode != 0:
+            logging.warning(
+                "Could not check dependency #%s (gh exit %s); treating as unmet",
+                dep_num,
+                result.returncode,
+            )
+            return False
+        state = json.loads(result.stdout).get("state", "")
+        if state != "CLOSED":
+            return False
     return True
 
 

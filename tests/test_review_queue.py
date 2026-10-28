@@ -7,12 +7,12 @@ import pytest
 import autoloop.review_queue as review_queue
 from autoloop.config import AutoLoopConfig
 from autoloop.review_queue import (
-    _parse_depends_on,
     fetch_ci_status,
     fetch_gate_flags,
     find_review_queue_issue,
     format_summary,
     order_by_dependencies,
+    parse_dependency_numbers,
     post_batch_summary,
 )
 
@@ -170,20 +170,24 @@ def test_fetch_gate_flags_gh_failure(monkeypatch):
     assert flags == {"owner_approved": False, "needs_human": False}
 
 
-# --- _parse_depends_on ---
+# --- parse_dependency_numbers ---
 
 
 def test_parse_depends_on_single():
-    assert _parse_depends_on("Depends on: #43") == [43]
+    assert parse_dependency_numbers("Depends on: #43") == [43]
 
 
 def test_parse_depends_on_multiple():
     body = "Depends on: #10\nSome text\nDepends on #20"
-    assert _parse_depends_on(body) == [10, 20]
+    assert parse_dependency_numbers(body) == [10, 20]
 
 
 def test_parse_depends_on_none():
-    assert _parse_depends_on("No deps here") == []
+    assert parse_dependency_numbers("No deps here") == []
+
+
+def test_parse_depends_on_list_on_one_line():
+    assert parse_dependency_numbers("Depends on: #13, #14, #9, #12") == [13, 14, 9, 12]
 
 
 # --- order_by_dependencies ---
@@ -227,6 +231,30 @@ def test_order_by_dependencies_respects_deps(monkeypatch):
     ordered = order_by_dependencies(prs, cfg)
     issues = [p["issue_number"] for p in ordered]
     assert issues.index(10) < issues.index(20)
+
+
+def test_order_by_dependencies_after_all_deps_not_just_first(monkeypatch):
+    # Regression (#470): only the first dependency on the line was used for ordering.
+    cfg = _test_cfg()
+    prs = [
+        {"pr_number": 3, "issue_number": 5, "title": "C"},
+        {"pr_number": 1, "issue_number": 10, "title": "A"},
+        {"pr_number": 2, "issue_number": 20, "title": "B"},
+    ]
+
+    bodies = {
+        "5": json.dumps({"body": "Depends on: #10, #20"}),
+        "10": json.dumps({"body": "No deps"}),
+        "20": json.dumps({"body": "No deps"}),
+    }
+
+    def fake_run(cmd, **kw):
+        return _make_result(stdout=bodies[cmd[cmd.index("view") + 1]])
+
+    monkeypatch.setattr(review_queue.subprocess, "run", fake_run)
+    issues = [p["issue_number"] for p in order_by_dependencies(prs, cfg)]
+    assert issues.index(5) > issues.index(10)
+    assert issues.index(5) > issues.index(20)
 
 
 def test_order_by_dependencies_empty():
