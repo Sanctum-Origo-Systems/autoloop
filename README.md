@@ -17,7 +17,7 @@ Config-driven AI pipeline that triages GitHub issues, implements them via Claude
 ## TLDR: First PR in 5 Minutes
 
 ```bash
-uv tool install git+https://github.com/Sanctum-Origo-Systems/autoloop@v0.18.0
+uv tool install git+https://github.com/Sanctum-Origo-Systems/autoloop@v0.19.0
 cd your-repo
 autoloop init --repo your-org/your-repo --verify-cmd "npm test"
 autoloop doctor                           # verify environment
@@ -97,7 +97,7 @@ Most users start local. Graduate to unattended when you trust it.
 
 ### As a CLI tool (recommended)
 
-Replace `<tag>` with the latest version from the [tags page](https://github.com/Sanctum-Origo-Systems/autoloop/tags) (e.g. `v0.18.0`). Pinning a tag is recommended; `@main` tracks unreleased changes:
+Replace `<tag>` with the latest version from the [tags page](https://github.com/Sanctum-Origo-Systems/autoloop/tags) (e.g. `v0.19.0`). Pinning a tag is recommended; `@main` tracks unreleased changes:
 
 ```bash
 uv tool install git+https://github.com/Sanctum-Origo-Systems/autoloop@<tag>
@@ -256,6 +256,8 @@ Make the CLI better. It should show more stuff.
 You don't need to list which files to modify. Triage identifies the relevant files automatically from the issue description and codebase. Including file paths is helpful if you know them, but not required.
 
 Issues can be any size. If an issue is too large, triage automatically decomposes it into ordered sub-issues with dependency tracking.
+
+To order issues yourself, add a `Depends on:` line to the issue body, e.g. `Depends on: #12, #15`. Implement skips the issue until every listed issue is closed. If a dependency's state can't be read, the issue counts as blocked.
 
 ### 5. Triage
 
