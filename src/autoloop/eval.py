@@ -982,6 +982,24 @@ def _compute_period_stats(snapshot: dict, prev: dict | None) -> dict:
     }
 
 
+def _stored_period_stats(snapshot: dict) -> dict:
+    """Return the period stats stored on the snapshot when it was taken, or {} if absent.
+
+    They were computed against the previous published snapshot, not lifetime (#472).
+    """
+    if "period_n" not in snapshot:
+        return {}
+    return {
+        k: snapshot.get(k)
+        for k in (
+            "period_first_attempt_rate",
+            "period_avg_cost_usd",
+            "period_human_edit_rate",
+            "period_n",
+        )
+    }
+
+
 def format_trend(snapshots: list[dict]) -> str:
     if not snapshots:
         return "No snapshots found."
@@ -1262,8 +1280,12 @@ def generate_eval_md(
             for i, s in enumerate(chart_snaps):
                 prev = chart_snaps[i - 1] if i > 0 else None
                 if _crosses_baseline_break(s, prev):
-                    prev = None
-                pstats = _compute_period_stats(s, prev)
+                    # Diffing across the break mixes run definitions, and lifetime stats are
+                    # not a weekly value; use the stats stored against the last published
+                    # snapshot, or skip the point (#472).
+                    pstats = _stored_period_stats(s)
+                else:
+                    pstats = _compute_period_stats(s, prev)
                 if not pstats:
                     continue
                 rate = pstats.get("period_first_attempt_rate")
@@ -1279,6 +1301,12 @@ def generate_eval_md(
                 )
 
             if chart_points:
+                chart_notes = list(annotations or [])
+                if chart_points[0]["date"] < BASELINE_BREAK_DATE <= chart_points[-1]["date"]:
+                    chart_notes.append(
+                        f"bars before {_md_label(BASELINE_BREAK_DATE)} count triage runs "
+                        "as implementations (#400)"
+                    )
                 year = chart_points[-1]["date"][:4]
                 dates = ", ".join(f'"{_md_label(p["date"])} (n={p["n"]})"' for p in chart_points)
                 success_vals = ", ".join(str(round(p["rate"] * 100)) for p in chart_points)
@@ -1290,9 +1318,9 @@ def generate_eval_md(
                 lines.append('    y-axis "Success %" 0 --> 100')
                 lines.append(f"    bar [{success_vals}]")
                 lines.append("```")
-                if annotations:
+                if chart_notes:
                     lines.append("")
-                    lines.append("> " + " · ".join(annotations))
+                    lines.append("> " + " · ".join(chart_notes))
                 lines.append("")
 
                 cost_vals = ", ".join(f"{p['cost']:.2f}" for p in chart_points)
@@ -1305,9 +1333,9 @@ def generate_eval_md(
                 lines.append(f'    y-axis "Cost ($)" 0 --> {y_max}')
                 lines.append(f"    bar [{cost_vals}]")
                 lines.append("```")
-                if annotations:
+                if chart_notes:
                     lines.append("")
-                    lines.append("> " + " · ".join(annotations))
+                    lines.append("> " + " · ".join(chart_notes))
                 lines.append("")
 
     if modules:

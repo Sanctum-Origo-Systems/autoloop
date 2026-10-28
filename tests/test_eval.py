@@ -20,6 +20,7 @@ from autoloop.eval import (
     _publish_via_pr,
     _restore_to_head,
     _sample_for_chart,
+    _stored_period_stats,
     bounded_rate,
     classify_module,
     compare_snapshots,
@@ -3761,6 +3762,107 @@ def test_generate_eval_md_no_baseline_break_after_cutover():
     b = _make_snapshot(date="2026-10-27", total=45)
     content = generate_eval_md(b, [a, b])
     assert "baseline break" not in content.lower()
+    assert "count triage runs" not in content
+
+
+def _baseline_break_chart_snaps(**after_extra):
+    """Pre-break snapshots on 10/19 and 10/25, post-break 10/28 (lifetime n=121)."""
+    w1 = {
+        **_make_snapshot(date="2026-10-19", rate=0.5, cost=0.40, total=300),
+        "attempt_distribution": {"1": 150, "2": 150, "3+": 0},
+    }
+    w2 = {
+        **_make_snapshot(date="2026-10-25", rate=0.5, cost=0.40, total=320),
+        "attempt_distribution": {"1": 160, "2": 160, "3+": 0},
+    }
+    after = {
+        **_make_snapshot(date="2026-10-28", rate=0.88, cost=1.94, total=121),
+        "attempt_distribution": {"1": 106, "2": 15, "3+": 0},
+        **after_extra,
+    }
+    return [w1, w2, after]
+
+
+def _chart_labels(content):
+    axis = [ln for ln in content.split("\n") if ln.strip().startswith("x-axis")][0]
+    return axis[axis.index("[") + 1 : axis.rindex("]")].split(", ")
+
+
+def test_chart_baseline_break_uses_stored_period_stats():
+    """A chart point across the baseline break plots stored period stats, not lifetime (#472)."""
+    snaps = _baseline_break_chart_snaps(
+        period_first_attempt_rate=1.0,
+        period_avg_cost_usd=1.57,
+        period_human_edit_rate=0.0,
+        period_n=9,
+    )
+    content = generate_eval_md(snaps[-1], snaps)
+    labels = _chart_labels(content)
+    assert labels[-1] == '"10/28 (n=9)"'
+    assert not any("n=121" in lbl for lbl in labels)
+    bars = [ln.strip() for ln in content.split("\n") if ln.strip().startswith("bar [")]
+    assert bars[0].endswith(", 100]")
+    assert bars[1].endswith(", 1.57]")
+    assert "1.94" not in bars[1]
+
+
+def test_chart_baseline_break_n_bounded_by_period_runs():
+    """No chart point's n exceeds the runs since its predecessor (#472)."""
+    snaps = _baseline_break_chart_snaps(
+        period_first_attempt_rate=1.0,
+        period_avg_cost_usd=1.57,
+        period_human_edit_rate=0.0,
+        period_n=9,
+    )
+    content = generate_eval_md(snaps[-1], snaps)
+    ns = [int(lbl.split("n=")[1].rstrip(')"')) for lbl in _chart_labels(content)]
+    # 10/19 and 10/25 share an ISO week, so 10/25 is the first point (no predecessor).
+    assert ns == [320, 9]
+
+
+def test_chart_baseline_break_skips_point_without_stored_period_stats():
+    """Without stored period stats, the break point is skipped rather than plotted as lifetime."""
+    snaps = _baseline_break_chart_snaps()
+    content = generate_eval_md(snaps[-1], snaps)
+    labels = _chart_labels(content)
+    assert all("10/28" not in lbl for lbl in labels)
+    assert not any("n=121" in lbl for lbl in labels)
+
+
+def test_chart_baseline_break_annotation():
+    """Charts spanning the baseline break say which bars count triage runs (#472)."""
+    snaps = _baseline_break_chart_snaps(
+        period_first_attempt_rate=1.0,
+        period_avg_cost_usd=1.57,
+        period_human_edit_rate=0.0,
+        period_n=9,
+    )
+    content = generate_eval_md(snaps[-1], snaps, annotations=["10/27: model change"])
+    note = "> 10/27: model change · bars before 10/26 count triage runs as implementations (#400)"
+    assert content.count(note) == 2
+
+
+def test_chart_no_baseline_break_annotation_before_cutover():
+    snaps = [_make_snapshot(date="2026-10-12"), _make_snapshot(date="2026-10-19")]
+    content = generate_eval_md(snaps[-1], snaps)
+    assert "count triage runs" not in content
+
+
+def test_stored_period_stats():
+    snap = {
+        **_make_snapshot(),
+        "period_first_attempt_rate": 0.9,
+        "period_avg_cost_usd": 1.2,
+        "period_human_edit_rate": 0.1,
+        "period_n": 10,
+    }
+    assert _stored_period_stats(snap) == {
+        "period_first_attempt_rate": 0.9,
+        "period_avg_cost_usd": 1.2,
+        "period_human_edit_rate": 0.1,
+        "period_n": 10,
+    }
+    assert _stored_period_stats(_make_snapshot()) == {}
 
 
 def test_material_change_on_implement_run_growth_without_prs():
