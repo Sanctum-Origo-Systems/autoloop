@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.19.0
+
+Implement now respects every issue on a `Depends on:` line. Before, only the first number was read, so an issue could be built before its other dependencies were done. Human-edit detection uses a 7-day window and counts code files only. Avg cost/run stays implementation-only now that rows also log review cost. Every run_history row records the model that ran it.
+
+### Implement
+- fix: parse every #N in `Depends on:` lists; a failed `gh` lookup now counts as blocked (#470) ($0.71)
+- feat: record the model on every run_history row (#462) ($1.53)
+
+### Eval Dashboard
+- fix: count human edits only within `eval.fixup_window_days` and in code files; a window change marks a baseline break (#455) ($2.07)
+- fix: keep avg cost/run implementation-only (`impl_cost_usd`) and report review cost separately (#465) ($0.99)
+- fix: render weekly EVAL.md charts horizontally so the labels don't overlap (#463) ($0.41)
+- fix: don't plot lifetime stats as a weekly point across the eval baseline break (#472) ($0.97)
+
+### Docs
+- docs: README install examples point at v0.19.0, and the README now documents the `Depends on:` format
+
+Total: 6 PRs, $6.68
+
 ## v0.18.0
 
 Eval metrics are now defined and bounded. EVAL.md has a Definitions section and a "data as of" stamp with a 48 h stale flag. Period rates are capped at 100%, so any row that would exceed it shows as invalid instead of printing a number like 333%. The new `eval.fixup_window_days` and `eval.fixup_ignore` settings are loaded and documented, but human-edit detection doesn't use them until #455 lands.
