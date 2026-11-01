@@ -10,6 +10,7 @@ from autoloop.config import RepoContext
 from autoloop.eval import (
     INVALID_RATE,
     METRIC_DEFINITIONS,
+    PENDING_DEFINITION,
     _choose_eval_branch,
     _compute_period_stats,
     _detect_module_prefixes,
@@ -3846,6 +3847,92 @@ def test_chart_no_baseline_break_annotation_before_cutover():
     snaps = [_make_snapshot(date="2026-10-12"), _make_snapshot(date="2026-10-19")]
     content = generate_eval_md(snaps[-1], snaps)
     assert "count triage runs" not in content
+
+
+# --- EVAL.md section order (#477) ---
+
+_ORDER_MODULES = {
+    "src/a/": {
+        "implementations": 8,
+        "first_attempt_rate": 0.95,
+        "avg_cost_usd": 1.0,
+        "human_edit_rate": 0.0,
+        "merged_clean_count": 5,
+    },
+}
+
+
+def _ordered_eval_md():
+    snaps = _baseline_break_chart_snaps(
+        period_first_attempt_rate=1.0,
+        period_avg_cost_usd=1.57,
+        period_human_edit_rate=0.0,
+        period_n=9,
+        modules=_ORDER_MODULES,
+    )
+    return generate_eval_md(
+        snaps[-1], snaps, promotion_level="repo", annotations=["10/27: model change"]
+    )
+
+
+def _section(content, heading):
+    body = content.split(f"\n{heading}\n", 1)[1]
+    return body.split("\n## ", 1)[0]
+
+
+def test_generate_eval_md_section_order():
+    content = _ordered_eval_md()
+    headings = [
+        "## Overall",
+        "## Charts",
+        "## Auto-Merge Gate (repo-level)",
+        "## Per-Module Breakdown",
+        "## Trend",
+        "## Definitions",
+    ]
+    positions = [content.index(f"\n{h}\n") for h in headings]
+    assert positions == sorted(positions)
+    assert content.index("```mermaid") < content.index("## Auto-Merge Gate")
+
+
+def test_generate_eval_md_charts_section_holds_charts_and_notes():
+    content = _ordered_eval_md()
+    charts = _section(content, "## Charts")
+    assert charts.count("```mermaid") == 3
+    assert "Weekly First-Attempt Success Rate" in charts
+    assert "Weekly Avg Cost/PR" in charts
+    assert "pie title Attempt Distribution by Module" in charts
+    note = "> 10/27: model change · bars before 10/26 count triage runs as implementations (#400)"
+    assert charts.count(note) == 2
+    assert content.count("```mermaid") == 3
+    trend = _section(content, "## Trend")
+    assert "```mermaid" not in trend
+    assert "> Baseline break at 2026-10-26" in trend
+    assert "count triage runs as implementations" not in trend
+
+
+def test_generate_eval_md_definitions_and_pending_at_bottom():
+    content = _ordered_eval_md()
+    definitions = _section(content, "## Definitions")
+    assert content.rstrip("\n").endswith(PENDING_DEFINITION)
+    assert definitions.rstrip("\n").endswith(PENDING_DEFINITION)
+    assert content.count(PENDING_DEFINITION) == 1
+
+
+def test_generate_eval_md_no_charts_heading_without_charts():
+    snap = _make_snapshot(modules={})
+    content = generate_eval_md(snap, [])
+    assert "## Charts" not in content
+    assert "```mermaid" not in content
+    assert content.index("## Overall") < content.index("## Definitions")
+
+
+def test_generate_eval_md_charts_heading_with_pie_only():
+    snap = _make_snapshot(modules=_ORDER_MODULES)
+    content = generate_eval_md(snap, [])
+    charts = _section(content, "## Charts")
+    assert "pie title" in charts
+    assert "xychart-beta" not in content
 
 
 def test_stored_period_stats():
