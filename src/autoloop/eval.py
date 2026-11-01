@@ -1170,7 +1170,94 @@ def generate_eval_md(
     hr_s = format_rate_with_n(hr, merged, population, min_n)
     lines.append(f"| Human edit rate | {hr_s} | pending: {pending_prs} |")
     lines.append("")
-    lines.extend(_definitions_lines())
+
+    modules = snapshot.get("modules", {})
+    recent = all_snapshots
+
+    # Charts go right after Overall so readers see them without scrolling (#477).
+    chart_lines: list[str] = []
+    if recent:
+        chart_snaps = _sample_for_chart(recent)
+        if chart_snaps:
+            chart_points: list[dict] = []
+            for i, s in enumerate(chart_snaps):
+                prev = chart_snaps[i - 1] if i > 0 else None
+                if _crosses_baseline_break(s, prev):
+                    # Diffing across the break mixes run definitions, and lifetime stats are
+                    # not a weekly value; use the stats stored against the last published
+                    # snapshot, or skip the point (#472).
+                    pstats = _stored_period_stats(s)
+                else:
+                    pstats = _compute_period_stats(s, prev)
+                if not pstats:
+                    continue
+                rate = pstats.get("period_first_attempt_rate")
+                if not is_valid_rate(rate):
+                    continue
+                chart_points.append(
+                    {
+                        "date": s["date"],
+                        "rate": rate,
+                        "cost": pstats.get("period_avg_cost_usd") or 0.0,
+                        "n": pstats.get("period_n", 0),
+                    }
+                )
+
+            if chart_points:
+                chart_notes = list(annotations or [])
+                if chart_points[0]["date"] < BASELINE_BREAK_DATE <= chart_points[-1]["date"]:
+                    chart_notes.append(
+                        f"bars before {_md_label(BASELINE_BREAK_DATE)} count triage runs "
+                        "as implementations (#400)"
+                    )
+                year = chart_points[-1]["date"][:4]
+                dates = ", ".join(f'"{_md_label(p["date"])} (n={p["n"]})"' for p in chart_points)
+                success_vals = ", ".join(str(round(p["rate"] * 100)) for p in chart_points)
+
+                chart_lines.append("```mermaid")
+                chart_lines.append("xychart-beta horizontal")
+                chart_lines.append(f'    title "Weekly First-Attempt Success Rate ({year})"')
+                chart_lines.append(f"    x-axis [{dates}]")
+                chart_lines.append('    y-axis "Success %" 0 --> 100')
+                chart_lines.append(f"    bar [{success_vals}]")
+                chart_lines.append("```")
+                if chart_notes:
+                    chart_lines.append("")
+                    chart_lines.append("> " + " · ".join(chart_notes))
+                chart_lines.append("")
+
+                cost_vals = ", ".join(f"{p['cost']:.2f}" for p in chart_points)
+                cost_nums = [p["cost"] for p in chart_points]
+                y_max = max(1, int(max(cost_nums, default=0)) + 1)
+                chart_lines.append("```mermaid")
+                chart_lines.append("xychart-beta horizontal")
+                chart_lines.append(f'    title "Weekly Avg Cost/PR ({year})"')
+                chart_lines.append(f"    x-axis [{dates}]")
+                chart_lines.append(f'    y-axis "Cost ($)" 0 --> {y_max}')
+                chart_lines.append(f"    bar [{cost_vals}]")
+                chart_lines.append("```")
+                if chart_notes:
+                    chart_lines.append("")
+                    chart_lines.append("> " + " · ".join(chart_notes))
+                chart_lines.append("")
+
+    if modules:
+        chart_lines.append("```mermaid")
+        chart_lines.append(
+            "%%{init: {'theme': 'base', 'themeVariables': {'pie1': '#4CAF50', 'pie2': '#2196F3', 'pie3': '#FF9800', 'pie4': '#E91E63', 'pie5': '#9C27B0', 'pie6': '#00BCD4', 'pieTitleTextColor': '#aaa', 'pieLegendTextColor': '#aaa', 'pieSectionTextColor': '#fff'}}}%%"
+        )
+        chart_lines.append("pie title Attempt Distribution by Module")
+        for mod, stats in sorted(modules.items()):
+            rate = round(stats.get("first_attempt_rate", 0) * 100)
+            prs = stats.get("implementations", 0)
+            chart_lines.append(f'    "{mod} ({rate}%, {prs} impl)" : {prs}')
+        chart_lines.append("```")
+        chart_lines.append("")
+
+    if chart_lines:
+        lines.append("## Charts")
+        lines.append("")
+        lines.extend(chart_lines)
 
     gate_kwargs = {
         "edit_rate_threshold": edit_rate_threshold,
@@ -1178,7 +1265,6 @@ def generate_eval_md(
         "volume_floor": volume_floor,
     }
 
-    modules = snapshot.get("modules", {})
     if modules:
         if promotion_level == "repo":
             repo_success_rate = snapshot.get("first_attempt_rate", 0)
@@ -1219,7 +1305,6 @@ def generate_eval_md(
             lines.append(f"| {mod} | {success_s} | {cost_s} | {prs} | {auto} |")
         lines.append("")
 
-    recent = all_snapshots
     if recent:
         lines.append("## Trend")
         lines.append("")
@@ -1273,83 +1358,7 @@ def generate_eval_md(
             )
         lines.append("")
 
-    if recent:
-        chart_snaps = _sample_for_chart(recent)
-        if chart_snaps:
-            chart_points: list[dict] = []
-            for i, s in enumerate(chart_snaps):
-                prev = chart_snaps[i - 1] if i > 0 else None
-                if _crosses_baseline_break(s, prev):
-                    # Diffing across the break mixes run definitions, and lifetime stats are
-                    # not a weekly value; use the stats stored against the last published
-                    # snapshot, or skip the point (#472).
-                    pstats = _stored_period_stats(s)
-                else:
-                    pstats = _compute_period_stats(s, prev)
-                if not pstats:
-                    continue
-                rate = pstats.get("period_first_attempt_rate")
-                if not is_valid_rate(rate):
-                    continue
-                chart_points.append(
-                    {
-                        "date": s["date"],
-                        "rate": rate,
-                        "cost": pstats.get("period_avg_cost_usd") or 0.0,
-                        "n": pstats.get("period_n", 0),
-                    }
-                )
-
-            if chart_points:
-                chart_notes = list(annotations or [])
-                if chart_points[0]["date"] < BASELINE_BREAK_DATE <= chart_points[-1]["date"]:
-                    chart_notes.append(
-                        f"bars before {_md_label(BASELINE_BREAK_DATE)} count triage runs "
-                        "as implementations (#400)"
-                    )
-                year = chart_points[-1]["date"][:4]
-                dates = ", ".join(f'"{_md_label(p["date"])} (n={p["n"]})"' for p in chart_points)
-                success_vals = ", ".join(str(round(p["rate"] * 100)) for p in chart_points)
-
-                lines.append("```mermaid")
-                lines.append("xychart-beta horizontal")
-                lines.append(f'    title "Weekly First-Attempt Success Rate ({year})"')
-                lines.append(f"    x-axis [{dates}]")
-                lines.append('    y-axis "Success %" 0 --> 100')
-                lines.append(f"    bar [{success_vals}]")
-                lines.append("```")
-                if chart_notes:
-                    lines.append("")
-                    lines.append("> " + " · ".join(chart_notes))
-                lines.append("")
-
-                cost_vals = ", ".join(f"{p['cost']:.2f}" for p in chart_points)
-                cost_nums = [p["cost"] for p in chart_points]
-                y_max = max(1, int(max(cost_nums, default=0)) + 1)
-                lines.append("```mermaid")
-                lines.append("xychart-beta horizontal")
-                lines.append(f'    title "Weekly Avg Cost/PR ({year})"')
-                lines.append(f"    x-axis [{dates}]")
-                lines.append(f'    y-axis "Cost ($)" 0 --> {y_max}')
-                lines.append(f"    bar [{cost_vals}]")
-                lines.append("```")
-                if chart_notes:
-                    lines.append("")
-                    lines.append("> " + " · ".join(chart_notes))
-                lines.append("")
-
-    if modules:
-        lines.append("```mermaid")
-        lines.append(
-            "%%{init: {'theme': 'base', 'themeVariables': {'pie1': '#4CAF50', 'pie2': '#2196F3', 'pie3': '#FF9800', 'pie4': '#E91E63', 'pie5': '#9C27B0', 'pie6': '#00BCD4', 'pieTitleTextColor': '#aaa', 'pieLegendTextColor': '#aaa', 'pieSectionTextColor': '#fff'}}}%%"
-        )
-        lines.append("pie title Attempt Distribution by Module")
-        for mod, stats in sorted(modules.items()):
-            rate = round(stats.get("first_attempt_rate", 0) * 100)
-            prs = stats.get("implementations", 0)
-            lines.append(f'    "{mod} ({rate}%, {prs} impl)" : {prs}')
-        lines.append("```")
-        lines.append("")
+    lines.extend(_definitions_lines())
 
     return "\n".join(lines)
 
