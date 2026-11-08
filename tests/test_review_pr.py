@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from autoloop.cli import main, review_pr
+from autoloop.cli import _run_jev_shadow, main, review_pr
 from autoloop.config import AutoLoopConfig, RepoContext
 
 
@@ -846,6 +846,7 @@ class TestReviewPrJevShadow:
     def test_shadow_mode_calls_should_auto_merge(self, tmp_path, monkeypatch):
         """When jev_mode is shadow, should_auto_merge is called and logged."""
         monkeypatch.chdir(tmp_path)
+        ctx = RepoContext.for_data_dir(tmp_path / "data", repo_dir=tmp_path)
         cfg = _cfg(jev_mode="shadow")
         pr_body = "Closes #55\n\n## Summary\nFix bug"
         pr_data = json.dumps(
@@ -870,14 +871,14 @@ class TestReviewPrJevShadow:
             ),
             patch("autoloop.jev.should_auto_merge", return_value=jev_result) as mock_jev,
         ):
-            result = review_pr(42, cfg)
+            result = review_pr(42, cfg, ctx=ctx)
 
         assert result["success"] is True
         mock_jev.assert_called_once()
         kwargs = mock_jev.call_args[1]
         assert kwargs["mode"] == "shadow"
 
-        log_file = tmp_path / "autoloop" / "jev_decisions.jsonl"
+        log_file = ctx.data_dir / "jev_decisions.jsonl"
         assert log_file.exists()
         record = json.loads(log_file.read_text().strip())
         assert record["point"] == "auto-merge"
@@ -908,6 +909,7 @@ class TestReviewPrJevShadow:
     def test_jev_failure_does_not_affect_review(self, tmp_path, monkeypatch):
         """A Jev exception should not break the review outcome."""
         monkeypatch.chdir(tmp_path)
+        ctx = RepoContext.for_data_dir(tmp_path / "data", repo_dir=tmp_path)
         cfg = _cfg(jev_mode="shadow")
         pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
         review_json = json.dumps({"approved": True, "summary": "ok"})
@@ -924,10 +926,10 @@ class TestReviewPrJevShadow:
                 side_effect=RuntimeError("Jev is down"),
             ),
         ):
-            result = review_pr(42, cfg)
+            result = review_pr(42, cfg, ctx=ctx)
 
         assert result["success"] is True
-        log_file = tmp_path / "autoloop" / "jev_decisions.jsonl"
+        log_file = ctx.data_dir / "jev_decisions.jsonl"
         assert log_file.exists()
         record = json.loads(log_file.read_text().strip())
         assert record["jev_call"] == {"error": "Jev is down"}
@@ -935,6 +937,7 @@ class TestReviewPrJevShadow:
     def test_shadow_record_has_no_linked_issue(self, tmp_path, monkeypatch):
         """When there is no linked issue, the record uses issue=0."""
         monkeypatch.chdir(tmp_path)
+        ctx = RepoContext.for_data_dir(tmp_path / "data", repo_dir=tmp_path)
         cfg = _cfg(jev_mode="shadow")
         pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": "No issue link"})
         review_json = json.dumps({"approved": True, "summary": "ok"})
@@ -949,9 +952,9 @@ class TestReviewPrJevShadow:
             ),
             patch("autoloop.jev.should_auto_merge", return_value=jev_result),
         ):
-            review_pr(42, cfg)
+            review_pr(42, cfg, ctx=ctx)
 
-        log_file = tmp_path / "autoloop" / "jev_decisions.jsonl"
+        log_file = ctx.data_dir / "jev_decisions.jsonl"
         record = json.loads(log_file.read_text().strip())
         assert record["issue"] == 0
         assert record["pr"] == 42
@@ -959,6 +962,7 @@ class TestReviewPrJevShadow:
     def test_shadow_fires_on_review_failure(self, tmp_path, monkeypatch):
         """Shadow should fire even when the semantic review fails."""
         monkeypatch.chdir(tmp_path)
+        ctx = RepoContext.for_data_dir(tmp_path / "data", repo_dir=tmp_path)
         cfg = _cfg(jev_mode="shadow")
         pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
         review_json = json.dumps({"approved": False, "issues": ["missing tests"], "summary": "no"})
@@ -973,13 +977,61 @@ class TestReviewPrJevShadow:
             ),
             patch("autoloop.jev.should_auto_merge", return_value=jev_result) as mock_jev,
         ):
-            result = review_pr(42, cfg)
+            result = review_pr(42, cfg, ctx=ctx)
 
         assert result["success"] is False
         mock_jev.assert_called_once()
-        log_file = tmp_path / "autoloop" / "jev_decisions.jsonl"
+        log_file = ctx.data_dir / "jev_decisions.jsonl"
         record = json.loads(log_file.read_text().strip())
         assert record["incumbent_call"]["approved"] is False
+
+
+class TestRunJevShadow:
+    """Regression (#480): _run_jev_shadow logs to the main checkout's ctx.data_dir."""
+
+    def _shadow(self, ctx, jev_result=None):
+        cfg = _cfg(jev_mode="shadow")
+        jev_result = jev_result or {"meets_acceptance_criteria": 0.9, "latency": 0.5, "cost": 0.1}
+        with patch("autoloop.jev.should_auto_merge", return_value=jev_result):
+            _run_jev_shadow(
+                cfg=cfg,
+                pr_number=42,
+                linked_issue=55,
+                pr_title="fix: thing (#55)",
+                issue_body="body",
+                diff="+line",
+                review_passed=True,
+                review_feedback="ok",
+                ctx=ctx,
+            )
+
+    @pytest.mark.parametrize("worktree", [True, False])
+    def test_logs_to_ctx_data_dir(self, tmp_path, monkeypatch, worktree):
+        """With or without a worktree cwd, the record lands in ctx.data_dir."""
+        checkout = tmp_path / "checkout"
+        checkout.mkdir()
+        ctx = RepoContext.for_data_dir(tmp_path / "data", repo_dir=checkout)
+        cwd = ctx.worktree_dir / "fix/42" if worktree else checkout
+        cwd.mkdir(parents=True, exist_ok=True)
+        monkeypatch.chdir(cwd)
+
+        self._shadow(ctx)
+
+        record = json.loads((ctx.data_dir / "jev_decisions.jsonl").read_text().strip())
+        assert record["point"] == "auto-merge"
+        assert record["issue"] == 55
+        assert record["pr"] == 42
+        assert not (cwd / "autoloop").exists()
+        assert not (checkout / "autoloop").exists()
+
+    def test_log_failure_is_swallowed(self, tmp_path, caplog):
+        """A log_decision failure is logged, not raised."""
+        ctx = RepoContext.for_data_dir(tmp_path / "data", repo_dir=tmp_path)
+        with patch("autoloop.jev_log.log_decision", side_effect=OSError("disk full")):
+            self._shadow(ctx)
+
+        assert "Failed to log Jev auto-merge decision" in caplog.text
+        assert not (ctx.data_dir / "jev_decisions.jsonl").exists()
 
 
 class TestReviewPrStaleBranchCleanup:
@@ -1106,13 +1158,16 @@ class TestReviewPrRepoDir:
         assert entry["pr_number"] == 42
         assert not (repo_dir / "autoloop" / "run_history.jsonl").exists()
 
-    def test_jev_decisions_written_to_repo_dir(self, tmp_path):
-        """jev_decisions.jsonl is written under repo_dir when jev_mode is on."""
+    def test_jev_decisions_written_to_ctx_data_dir_not_repo_dir(self, tmp_path):
+        """Regression (#480): jev_decisions.jsonl goes to ctx.data_dir, not the worktree."""
         cfg = _cfg(jev_mode="shadow")
         pr_data = json.dumps({"headRefName": "fix/42", "title": "Fix bug", "body": ""})
         review_json = json.dumps({"approved": True, "summary": "ok"})
         jev_result = {"meets_acceptance_criteria": 0.9, "latency": 0.5, "cost": 0.001}
         dispatch = _make_dispatcher(pr_data)
+        repo_dir = tmp_path / "worktree"
+        repo_dir.mkdir()
+        ctx = RepoContext.for_data_dir(tmp_path / "data", repo_dir=tmp_path / "checkout")
 
         with (
             patch("subprocess.run", side_effect=dispatch),
@@ -1122,10 +1177,12 @@ class TestReviewPrRepoDir:
             ),
             patch("autoloop.jev.should_auto_merge", return_value=jev_result),
         ):
-            review_pr(42, cfg, repo_dir=tmp_path)
+            review_pr(42, cfg, repo_dir=repo_dir, ctx=ctx)
 
-        jev_log = tmp_path / "autoloop" / "jev_decisions.jsonl"
-        assert jev_log.exists()
+        record = json.loads((ctx.data_dir / "jev_decisions.jsonl").read_text().strip())
+        assert record["point"] == "auto-merge"
+        assert record["pr"] == 42
+        assert not (repo_dir / "autoloop").exists()
 
     def test_checkout_failure_logs_to_ctx_data_dir(self, tmp_path):
         """On checkout failure, run_history.jsonl still goes to ctx.data_dir."""

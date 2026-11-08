@@ -4573,6 +4573,7 @@ def test_review_implementation_jev_off_no_jev_call(monkeypatch, tmp_path):
     """With jev_mode='off', no Jev calls are made and no log is written."""
     monkeypatch.setattr(implement_issue, "cfg", _review_cfg(jev_mode="off"))
     monkeypatch.chdir(tmp_path)
+    ctx = RepoContext.for_data_dir(tmp_path / "data", repo_dir=tmp_path)
     _stub_subprocess_for_review(monkeypatch)
 
     jev_called = []
@@ -4582,19 +4583,20 @@ def test_review_implementation_jev_off_no_jev_call(monkeypatch, tmp_path):
     )
 
     approved, feedback, _ = review_implementation(
-        {"number": 1, "title": "T", "body": "body"}, "branch"
+        {"number": 1, "title": "T", "body": "body"}, "branch", ctx=ctx
     )
 
     assert approved is True
     assert len(jev_called) == 0
-    log_file = tmp_path / "autoloop" / "jev_decisions.jsonl"
-    assert not log_file.exists()
+    assert not (ctx.data_dir / "jev_decisions.jsonl").exists()
+    assert not (tmp_path / "autoloop").exists()
 
 
 def test_review_implementation_jev_shadow_logs_decision(monkeypatch, tmp_path):
     """With jev_mode='shadow', Jev is called and the decision is logged."""
     monkeypatch.setattr(implement_issue, "cfg", _review_cfg(jev_mode="shadow"))
     monkeypatch.chdir(tmp_path)
+    ctx = RepoContext.for_data_dir(tmp_path / "data", repo_dir=tmp_path)
     _stub_subprocess_for_review(monkeypatch)
 
     jev_response = {
@@ -4606,12 +4608,12 @@ def test_review_implementation_jev_shadow_logs_decision(monkeypatch, tmp_path):
     monkeypatch.setattr("autoloop.jev.should_auto_merge", lambda *a, **kw: jev_response)
 
     approved, feedback, _ = review_implementation(
-        {"number": 5, "title": "Test", "body": "body"}, "branch"
+        {"number": 5, "title": "Test", "body": "body"}, "branch", ctx=ctx
     )
 
     assert approved is True
 
-    log_file = tmp_path / "autoloop" / "jev_decisions.jsonl"
+    log_file = ctx.data_dir / "jev_decisions.jsonl"
     assert log_file.exists()
     entry = json.loads(log_file.read_text().strip())
     assert entry["point"] == "auto-merge"
@@ -4662,14 +4664,15 @@ def test_review_implementation_jev_shadow_returns_incumbent(monkeypatch, tmp_pat
     }
     monkeypatch.setattr("autoloop.jev.should_auto_merge", lambda *a, **kw: jev_response)
 
+    ctx = RepoContext.for_data_dir(tmp_path / "data", repo_dir=tmp_path)
     approved, feedback, _ = review_implementation(
-        {"number": 7, "title": "Test", "body": "body"}, "branch"
+        {"number": 7, "title": "Test", "body": "body"}, "branch", ctx=ctx
     )
 
     assert approved is False
     assert "missing test" in feedback
 
-    log_file = tmp_path / "autoloop" / "jev_decisions.jsonl"
+    log_file = ctx.data_dir / "jev_decisions.jsonl"
     entry = json.loads(log_file.read_text().strip())
     assert entry["issue"] == 7
     assert entry["incumbent_call"]["approved"] is False
@@ -4686,14 +4689,15 @@ def test_review_implementation_jev_shadow_failure_continues(monkeypatch, tmp_pat
         raise TimeoutError("jev endpoint timed out")
 
     monkeypatch.setattr("autoloop.jev.should_auto_merge", exploding_jev)
+    ctx = RepoContext.for_data_dir(tmp_path / "data", repo_dir=tmp_path)
 
     approved, feedback, _ = review_implementation(
-        {"number": 9, "title": "Test", "body": "body"}, "branch"
+        {"number": 9, "title": "Test", "body": "body"}, "branch", ctx=ctx
     )
 
     assert approved is True
 
-    log_file = tmp_path / "autoloop" / "jev_decisions.jsonl"
+    log_file = ctx.data_dir / "jev_decisions.jsonl"
     entry = json.loads(log_file.read_text().strip())
     assert entry["point"] == "auto-merge"
     assert entry["issue"] == 9
@@ -4744,12 +4748,111 @@ def test_review_implementation_jev_shadow_passes_diff_and_issue(monkeypatch, tmp
 
     monkeypatch.setattr("autoloop.jev.should_auto_merge", capture_jev)
 
-    review_implementation({"number": 11, "title": "Add widget", "body": "Widget spec"}, "branch")
+    ctx = RepoContext.for_data_dir(tmp_path / "data", repo_dir=tmp_path)
+    review_implementation(
+        {"number": 11, "title": "Add widget", "body": "Widget spec"}, "branch", ctx=ctx
+    )
 
     assert "Add widget" in captured["issue_text"]
     assert "Widget spec" in captured["issue_text"]
     assert "+added line" in captured["diff"]
     assert captured["mode"] == "shadow"
+
+
+_JEV_RESPONSE = {
+    "meets_acceptance_criteria": 0.9,
+    "latency": 0.05,
+    "cost": 0.000014,
+    "would_fallback": False,
+}
+
+
+def test_review_implementation_jev_shadow_worktree_logs_to_main_ctx(monkeypatch, tmp_path):
+    """Regression (#480): with a worktree repo_dir, the decision goes to the main ctx."""
+    monkeypatch.setattr(implement_issue, "cfg", _review_cfg(jev_mode="shadow"))
+    ctx = RepoContext.for_data_dir(tmp_path / "data", repo_dir=tmp_path / "checkout")
+    wt_path = ctx.worktree_dir / "autoloop/5-add-widget"
+    wt_path.mkdir(parents=True)
+    monkeypatch.chdir(wt_path)
+    _stub_subprocess_for_review(monkeypatch)
+    monkeypatch.setattr("autoloop.jev.should_auto_merge", lambda *a, **kw: _JEV_RESPONSE)
+
+    approved, _, _ = review_implementation(
+        {"number": 5, "title": "Test", "body": "body"}, "branch", repo_dir=wt_path, ctx=ctx
+    )
+
+    assert approved is True
+    entry = json.loads((ctx.data_dir / "jev_decisions.jsonl").read_text().strip())
+    assert entry["point"] == "auto-merge"
+    assert entry["issue"] == 5
+    assert "pr" not in entry
+    assert not (wt_path / "autoloop").exists()
+    assert not (ctx.repo_dir / "autoloop").exists()
+
+
+def test_review_implementation_jev_shadow_main_checkout_logs_to_ctx(monkeypatch, tmp_path):
+    """Without worktree isolation (repo_dir is the main checkout), it still logs to ctx."""
+    monkeypatch.setattr(implement_issue, "cfg", _review_cfg(jev_mode="shadow"))
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    ctx = RepoContext.for_data_dir(tmp_path / "data", repo_dir=checkout)
+    _stub_subprocess_for_review(monkeypatch)
+    monkeypatch.setattr("autoloop.jev.should_auto_merge", lambda *a, **kw: _JEV_RESPONSE)
+
+    review_implementation(
+        {"number": 6, "title": "Test", "body": "body"},
+        "branch",
+        pr_number=99,
+        repo_dir=checkout,
+        ctx=ctx,
+    )
+
+    entry = json.loads((ctx.data_dir / "jev_decisions.jsonl").read_text().strip())
+    assert entry["issue"] == 6
+    assert entry["pr"] == 99
+    assert not (checkout / "autoloop").exists()
+
+
+def test_review_implementation_jev_log_failure_does_not_fail_review(monkeypatch, tmp_path, caplog):
+    """A log_decision failure is logged and swallowed; the review result stands."""
+    monkeypatch.setattr(implement_issue, "cfg", _review_cfg(jev_mode="shadow"))
+    ctx = RepoContext.for_data_dir(tmp_path / "data", repo_dir=tmp_path)
+    _stub_subprocess_for_review(monkeypatch)
+    monkeypatch.setattr("autoloop.jev.should_auto_merge", lambda *a, **kw: _JEV_RESPONSE)
+
+    def broken_log(record, ctx_arg):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("autoloop.jev_log.log_decision", broken_log)
+
+    approved, feedback, _ = review_implementation(
+        {"number": 8, "title": "Test", "body": "body"}, "branch", ctx=ctx
+    )
+
+    assert approved is True
+    assert feedback
+    assert "Failed to log Jev auto-merge decision" in caplog.text
+
+
+def test_implement_single_issue_worktree_passes_main_ctx_to_review(monkeypatch, tmp_path):
+    """Regression (#480): implement_single_issue hands review_implementation the main ctx."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(implement_isolation="worktree"))
+    ctx = RepoContext.for_data_dir(tmp_path / "data", repo_dir=tmp_path / "checkout")
+    wt_path = ctx.worktree_dir / "autoloop/42-add-feature"
+    _patch_single_issue_steps(monkeypatch, ctx, wt_path, {})
+    review_kwargs = []
+
+    def fake_review(*args, **kwargs):
+        review_kwargs.append(kwargs)
+        return True, "", _free_review()
+
+    monkeypatch.setattr(implement_issue, "review_implementation", fake_review)
+
+    assert implement_single_issue(_FAKE_ISSUE, ctx=ctx) is True
+
+    assert len(review_kwargs) == 1
+    assert review_kwargs[0]["ctx"] is ctx
+    assert review_kwargs[0]["repo_dir"] == wt_path
 
 
 # --- scan_test_integrity_violations tests ---
