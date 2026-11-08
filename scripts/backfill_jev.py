@@ -9,16 +9,19 @@ fetches the current issue body from GitHub (which matches what the incumbent
 saw), calls Jev triage(), and appends a new record tagged as "backfill".
 Safe to run multiple times — skips issues that already have a non-fallback entry.
 
-Auto-merge (--point auto-merge): discovers `autoloop/<issue>-…` PRs, skips
-those already recorded in the RepoContext data dir or with no autoloop review
-comment, and lists the rest. Only --dry-run is supported; it makes no Jev calls
-and writes nothing.
+Auto-merge (--point auto-merge): discovers closed or merged `autoloop/<issue>-…`
+PRs, skips those already recorded in the RepoContext data dir or with no autoloop
+review comment, calls Jev should_auto_merge() in shadow mode on the current issue
+text and the PR's first-commit diff, and appends one record per PR tagged as
+"backfill". Append only; safe to run multiple times. --dry-run lists the PRs and
+skip counts, makes no Jev calls, and writes nothing.
 """
 
 import argparse
 import json
 import subprocess
 import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -26,8 +29,11 @@ from autoloop.jev_log import (
     decisions_path,
     discover_autoloop_prs,
     load_decisions,
+    log_decision,
     plan_auto_merge_backfill,
 )
+
+BACKFILL_INPUTS = {"issue_text": "current", "diff": "first_commit"}
 
 
 def backfill_triage(dry_run: bool) -> None:
@@ -120,11 +126,40 @@ def backfill_triage(dry_run: bool) -> None:
     print("Done")
 
 
-def backfill_auto_merge(cfg, ctx, dry_run: bool) -> int:
-    if not dry_run:
-        print("Auto-merge backfill only supports --dry-run for now")
-        return 1
+def auto_merge_backfill_record(cfg, candidate: dict) -> dict:
+    """Call Jev should_auto_merge in shadow mode and build the tagged backfill record."""
+    from autoloop.jev import should_auto_merge
 
+    t0 = time.monotonic()
+    jev_result = should_auto_merge(
+        candidate["issue_text"],
+        candidate["diff"],
+        api_key_env=cfg.jev_api_key_env,
+        model=cfg.jev_model,
+        timeout=cfg.jev_timeout_seconds,
+        gate_low=cfg.jev_gate_low,
+        gate_high=cfg.jev_gate_high,
+        mode="shadow",
+    )
+    latency = time.monotonic() - t0
+    return {
+        "point": "auto-merge",
+        "issue": candidate["issue"],
+        "pr": candidate["pr"],
+        "jev_call": jev_result,
+        "incumbent_call": candidate["incumbent_call"],
+        "outcome": "incumbent",
+        "ttft": round(jev_result.get("latency", latency), 3),
+        "cost": jev_result.get("cost", 0.0),
+        "timestamp": candidate["created_at"],
+        "backfill": True,
+        "backfill_inputs": dict(BACKFILL_INPUTS),
+        "final_outcome": candidate["final_outcome"],
+        "backfilled_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def backfill_auto_merge(cfg, ctx, dry_run: bool) -> int:
     print(f"Decisions file: {decisions_path(ctx)}")
     records = load_decisions(ctx)
     try:
@@ -137,11 +172,22 @@ def backfill_auto_merge(cfg, ctx, dry_run: bool) -> int:
     print(f"PRs to backfill: {len(candidates)}")
     for c in candidates:
         approved = c["incumbent_call"]["approved"]
-        print(
+        label = (
             f"  PR #{c['pr']} (issue #{c['issue']}, {c['branch']}): "
-            f"incumbent approved={approved}, diff {len(c['diff'])} chars — "
-            "would call Jev should_auto_merge (dry-run)"
+            f"incumbent approved={approved}, diff {len(c['diff'])} chars"
         )
+        if dry_run:
+            print(f"{label} — would call Jev should_auto_merge (dry-run)")
+            continue
+        record = auto_merge_backfill_record(cfg, c)
+        if record["jev_call"].get("fallback"):
+            # Outage: leave the PR unrecorded so a later run can retry it.
+            print(f"{label} — Jev error: {record['jev_call'].get('reason', '')}")
+            skips["jev_error"] = skips.get("jev_error", 0) + 1
+            continue
+        log_decision(record, ctx)
+        mac = record["jev_call"].get("meets_acceptance_criteria")
+        print(f"{label} — jev meets_acceptance_criteria={mac}")
     print(f"Skipped: {sum(skips.values())}")
     for reason, count in sorted(skips.items()):
         print(f"  {reason}: {count}")

@@ -1,7 +1,12 @@
 import json
 import re
+from unittest.mock import patch
 
+import pytest
+
+from autoloop.config import AutoLoopConfig
 from autoloop.jev import GATE_HIGH, GATE_LOW
+from autoloop.jev_log import log_decision
 from autoloop.jev_report import (
     JevEntry,
     _rate_with_n,
@@ -10,6 +15,16 @@ from autoloop.jev_report import (
     compute_triage_stats,
     parse_jev_decisions,
     render_jev_md,
+)
+from tests.test_jev_log import (
+    FIRST_SHA,
+    HEAD_SHA,
+    _auto_merge_record,
+    _fake_pr_12,
+    _load_backfill_script,
+    _make_ctx,
+    _pr,
+    _skip_count,
 )
 
 
@@ -1191,3 +1206,190 @@ class TestWeeklyTrendsDisagreeCount:
         assert trends[0]["disagree_count"] == 1
         assert trends[0]["uncertain_count"] == 0
         assert trends[0]["n"] == 2
+
+
+# --- Auto-merge backfill: live shadow call and tagged append ---
+
+JEV_SHADOW_RESULT = {
+    "meets_acceptance_criteria": 0.91,
+    "latency": 0.42,
+    "cost": 0.0012,
+    "would_fallback": False,
+}
+
+
+def _backfill_cfg():
+    return AutoLoopConfig(repo="acme-corp/widget", diff_truncation=50, jev_model="acme/jev-test")
+
+
+def _run_backfill(fake, ctx, capsys, *, dry_run=False, jev_result=JEV_SHADOW_RESULT):
+    script = _load_backfill_script()
+    argv = ["--point", "auto-merge"] + (["--dry-run"] if dry_run else [])
+    with (
+        patch("autoloop.jev_log.subprocess.run", side_effect=fake),
+        patch("autoloop.jev.should_auto_merge", return_value=dict(jev_result)) as jev_mock,
+    ):
+        code = script.main(argv, cfg=_backfill_cfg(), ctx=ctx)
+    assert code == 0
+    return jev_mock, capsys.readouterr().out
+
+
+def _rows(log_file):
+    if not log_file.exists():
+        return []
+    return [json.loads(line) for line in log_file.read_text().splitlines() if line.strip()]
+
+
+class TestAutoMergeBackfill:
+    def test_appends_one_tagged_record(self, tmp_path, capsys):
+        fake = _fake_pr_12(prs=[_pr(12, "autoloop/12-foo", created_at="2026-10-03T09:30:00Z")])
+
+        _run_backfill(fake, _make_ctx(tmp_path), capsys)
+
+        (record,) = _rows(tmp_path / "jev_decisions.jsonl")
+        assert record["backfill"] is True
+        assert record["point"] == "auto-merge"
+        assert record["issue"] == 12
+        assert record["pr"] == 12
+        assert record["incumbent_call"]["approved"] is True
+        assert record["jev_call"] == JEV_SHADOW_RESULT
+        assert record["outcome"] == "incumbent"
+        assert record["ttft"] == 0.42
+        assert record["cost"] == 0.0012
+        assert record["timestamp"] == "2026-10-03T09:30:00Z"
+        assert record["backfill_inputs"] == {"issue_text": "current", "diff": "first_commit"}
+        assert record["backfilled_at"]
+        assert record["final_outcome"] == "merged"
+
+    def test_closed_pr_records_closed_unmerged(self, tmp_path, capsys):
+        fake = _fake_pr_12(prs=[_pr(12, "autoloop/12-foo", state="CLOSED")])
+
+        _run_backfill(fake, _make_ctx(tmp_path), capsys)
+
+        (record,) = _rows(tmp_path / "jev_decisions.jsonl")
+        assert record["final_outcome"] == "closed_unmerged"
+
+    def test_calls_jev_with_first_commit_diff_issue_text_model_and_shadow(self, tmp_path, capsys):
+        fake = _fake_pr_12()
+
+        jev_mock, _ = _run_backfill(fake, _make_ctx(tmp_path), capsys)
+
+        jev_mock.assert_called_once()
+        issue_text, diff = jev_mock.call_args.args
+        assert issue_text == "Title: Add foo\n\nBody: Do the foo."
+        assert diff == fake.diffs[FIRST_SHA]
+        assert diff != fake.diffs[HEAD_SHA]
+        assert jev_mock.call_args.kwargs["model"] == "acme/jev-test"
+        assert jev_mock.call_args.kwargs["mode"] == "shadow"
+
+    def test_dry_run_lists_candidates_and_skips_without_calls_or_writes(self, tmp_path, capsys):
+        ctx = _make_ctx(tmp_path)
+        log_file = tmp_path / "jev_decisions.jsonl"
+        log_file.write_text(json.dumps(_auto_merge_record(issue=30, pr=30)) + "\n")
+        before = log_file.read_bytes()
+        fake = _fake_pr_12(
+            prs=[
+                _pr(12, "autoloop/12-foo"),
+                _pr(20, "autoloop/20-bar"),
+                _pr(30, "autoloop/30-baz"),
+            ],
+            comments={12: [{"body": "**Review passed:** ok"}], 20: [{"body": "hi"}]},
+        )
+
+        jev_mock, out = _run_backfill(fake, ctx, capsys, dry_run=True)
+
+        jev_mock.assert_not_called()
+        assert log_file.read_bytes() == before
+        assert "PRs to backfill: 1" in out
+        assert "PR #12 (issue #12, autoloop/12-foo)" in out
+        assert "would call Jev should_auto_merge (dry-run)" in out
+        assert _skip_count(out, "no_incumbent") == 1
+        assert _skip_count(out, "already_recorded") == 1
+
+    @pytest.mark.parametrize("existing", [{"issue": 99, "pr": 12}, {"issue": 12}])
+    def test_skips_pr_already_recorded(self, tmp_path, capsys, existing):
+        ctx = _make_ctx(tmp_path)
+        log_decision(_auto_merge_record(**existing), ctx)
+        before = (tmp_path / "jev_decisions.jsonl").read_bytes()
+
+        jev_mock, out = _run_backfill(_fake_pr_12(), ctx, capsys)
+
+        jev_mock.assert_not_called()
+        assert _skip_count(out, "already_recorded") == 1
+        assert (tmp_path / "jev_decisions.jsonl").read_bytes() == before
+
+    def test_skips_pr_without_review_comment_as_no_incumbent(self, tmp_path, capsys):
+        fake = _fake_pr_12(comments={12: [{"body": "Looks interesting."}]})
+
+        jev_mock, out = _run_backfill(fake, _make_ctx(tmp_path), capsys)
+
+        jev_mock.assert_not_called()
+        assert _skip_count(out, "no_incumbent") == 1
+        assert not (tmp_path / "jev_decisions.jsonl").exists()
+
+    @pytest.mark.parametrize(
+        ("body", "approved"),
+        [
+            ("**Review passed:** mutation gate and semantic review both passed.", True),
+            ("**Semantic review failed:**\nThe change is incomplete.", False),
+            ("Review found issues:\n- missing tests", False),
+        ],
+    )
+    def test_incumbent_verdict_parsing(self, tmp_path, capsys, body, approved):
+        fake = _fake_pr_12(comments={12: [{"body": body}]})
+
+        _run_backfill(fake, _make_ctx(tmp_path), capsys)
+
+        (record,) = _rows(tmp_path / "jev_decisions.jsonl")
+        assert record["incumbent_call"]["approved"] is approved
+        assert record["incumbent_call"]["feedback"] == body
+
+    def test_second_run_appends_nothing_and_keeps_rows_byte_identical(self, tmp_path, capsys):
+        ctx = _make_ctx(tmp_path)
+        log_file = tmp_path / "jev_decisions.jsonl"
+        log_file.write_text(json.dumps(_triage_record(issue=5)) + "\n")
+        original = log_file.read_bytes()
+
+        _run_backfill(_fake_pr_12(), ctx, capsys)
+        after_first = log_file.read_bytes()
+        jev_mock, out = _run_backfill(_fake_pr_12(), ctx, capsys)
+
+        jev_mock.assert_not_called()
+        assert after_first.startswith(original)
+        assert len(_rows(log_file)) == 2
+        assert log_file.read_bytes() == after_first
+        assert _skip_count(out, "already_recorded") == 1
+
+    def test_jev_outage_writes_nothing_so_a_later_run_retries(self, tmp_path, capsys):
+        outage = {"fallback": True, "reason": "missing API key", "fallback_cause": "outage"}
+
+        _, out = _run_backfill(_fake_pr_12(), _make_ctx(tmp_path), capsys, jev_result=outage)
+
+        assert _skip_count(out, "jev_error") == 1
+        assert not (tmp_path / "jev_decisions.jsonl").exists()
+
+    def test_backfilled_records_parse_as_backfilled_not_live(self, tmp_path, capsys):
+        log_file = tmp_path / "jev_decisions.jsonl"
+        _write_jsonl(log_file, [_automerge_record(issue=7)])
+
+        _run_backfill(_fake_pr_12(), _make_ctx(tmp_path), capsys)
+        result = parse_jev_decisions(log_file)
+
+        assert [(e.issue, e.pr) for e in result.backfilled] == [(12, 12)]
+        assert result.backfilled[0].point == "auto-merge"
+        assert [e.issue for e in result.live] == [7]
+
+    def test_uses_repo_context_data_dir_not_repo_local(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        repo_local = tmp_path / "autoloop" / "jev_decisions.jsonl"
+        repo_local.parent.mkdir()
+        repo_local.write_text(json.dumps(_auto_merge_record(issue=12, pr=12)) + "\n")
+        before = repo_local.read_bytes()
+        data_dir = tmp_path / "data"
+
+        jev_mock, out = _run_backfill(_fake_pr_12(), _make_ctx(data_dir), capsys)
+
+        jev_mock.assert_called_once()
+        assert f"Decisions file: {data_dir / 'jev_decisions.jsonl'}" in out
+        assert len(_rows(data_dir / "jev_decisions.jsonl")) == 1
+        assert repo_local.read_bytes() == before

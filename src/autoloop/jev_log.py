@@ -22,6 +22,7 @@ DECISIONS_FILE = "jev_decisions.jsonl"
 AUTOLOOP_BRANCH_RE = re.compile(r"^autoloop/(\d+)-")
 REVIEW_PASSED_MARKER = "Review passed"
 REVIEW_FAILED_MARKERS = ("Semantic review failed", "Review found issues")
+FINAL_OUTCOMES = {"MERGED": "merged", "CLOSED": "closed_unmerged"}
 
 
 def decisions_path(ctx: RepoContext) -> Path:
@@ -79,7 +80,7 @@ def discover_autoloop_prs(cfg, limit: int = 1000) -> list[dict]:
             "--limit",
             str(limit),
             "--json",
-            "number,headRefName,baseRefName,title",
+            "number,headRefName,baseRefName,title,createdAt,state",
         ],
         capture_output=True,
         text=True,
@@ -98,6 +99,8 @@ def discover_autoloop_prs(cfg, limit: int = 1000) -> list[dict]:
                 "branch": item["headRefName"],
                 "base": item.get("baseRefName") or "main",
                 "title": item.get("title", ""),
+                "created_at": item.get("createdAt", ""),
+                "final_outcome": FINAL_OUTCOMES.get(item.get("state", "")),
             }
         )
     return prs
@@ -207,6 +210,9 @@ def plan_auto_merge_backfill(
     for pr in prs:
         if is_auto_merge_recorded(records, pr["pr"], pr["issue"]):
             skip("already_recorded")
+            continue
+        if pr["final_outcome"] is None:
+            skip("open")
             continue
         comments = fetch_pr_comments(cfg, pr["pr"])
         if comments is None:

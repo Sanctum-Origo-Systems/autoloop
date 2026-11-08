@@ -191,8 +191,22 @@ def _cfg():
     return AutoLoopConfig(repo="acme-corp/widget", diff_truncation=50)
 
 
-def _pr(number, branch, base="main", title="feat: thing"):
-    return {"number": number, "headRefName": branch, "baseRefName": base, "title": title}
+def _pr(
+    number,
+    branch,
+    base="main",
+    title="feat: thing",
+    created_at="2026-10-01T12:00:00Z",
+    state="MERGED",
+):
+    return {
+        "number": number,
+        "headRefName": branch,
+        "baseRefName": base,
+        "title": title,
+        "createdAt": created_at,
+        "state": state,
+    }
 
 
 class FakeGh:
@@ -465,13 +479,28 @@ def test_auto_merge_reads_repo_context_data_dir_not_repo_local(tmp_path, monkeyp
     assert _skip_count(out, "already_recorded") == 0
 
 
-def test_auto_merge_without_dry_run_refuses(tmp_path, capsys):
-    script = _load_backfill_script()
-    with patch("autoloop.jev_log.subprocess.run") as run_mock:
-        code = script.main(["--point", "auto-merge"], cfg=_cfg(), ctx=_make_ctx(tmp_path))
-    assert code == 1
-    run_mock.assert_not_called()
-    assert not (tmp_path / "jev_decisions.jsonl").exists()
+def test_discover_maps_state_to_final_outcome_and_created_at():
+    fake = FakeGh(
+        prs=[
+            _pr(1, "autoloop/1-a", state="MERGED", created_at="2026-09-01T00:00:00Z"),
+            _pr(2, "autoloop/2-b", state="CLOSED"),
+            _pr(3, "autoloop/3-c", state="OPEN"),
+        ]
+    )
+    with patch("autoloop.jev_log.subprocess.run", side_effect=fake):
+        prs = discover_autoloop_prs(_cfg())
+    assert [p["final_outcome"] for p in prs] == ["merged", "closed_unmerged", None]
+    assert prs[0]["created_at"] == "2026-09-01T00:00:00Z"
+    assert "createdAt,state" in fake.calls[0][-1]
+
+
+def test_plan_skips_open_pr():
+    fake = _fake_pr_12(prs=[_pr(12, "autoloop/12-foo", state="OPEN")])
+    with patch("autoloop.jev_log.subprocess.run", side_effect=fake):
+        candidates, skips = plan_auto_merge_backfill(_cfg(), discover_autoloop_prs(_cfg()), [])
+    assert candidates == []
+    assert skips == {"open": 1}
+    assert [c for c in fake.calls if c[:3] == ["gh", "pr", "view"]] == []
 
 
 def test_backfill_cli_without_point_runs_triage(tmp_path, monkeypatch, capsys):
