@@ -1,8 +1,11 @@
 import json
+import re
 
 from autoloop.jev import GATE_HIGH, GATE_LOW
 from autoloop.jev_report import (
     JevEntry,
+    _rate_with_n,
+    _without_footer,
     compute_automerge_stats,
     compute_triage_stats,
     parse_jev_decisions,
@@ -644,7 +647,7 @@ class TestRenderJevMd:
         assert "**Agreed:** 10 of 20" in md
         assert "**Disagreed:** 2 of 20" in md
         assert "**Uncertain (fell back):** 8 of 20" in md
-        assert "**When confident, agreed:** 10 of 12 (83.3%)" in md
+        assert "**When confident, agreed:** 10 of 12 — 83% (n=12 live)" in md
         assert "ready-vs-rejected: 2" in md
 
     def test_automerge_shows_n_with_rates(self):
@@ -657,7 +660,7 @@ class TestRenderJevMd:
             "agreement_with_outcome": 0.667,
         }
         md = render_jev_md(_empty_triage_stats(), stats, _basic_counts())
-        assert "(n=15)" in md
+        assert "(n=15 live)" in md
         assert "incumbent decision" in md
         assert "8/12" in md
 
@@ -842,7 +845,7 @@ class TestRenderJevMd:
             "weekly_trends": [],
         }
         md = render_jev_md(stats, _empty_automerge_stats(), _basic_counts())
-        assert "8 of 10 (too few to judge)" in md
+        assert "8 of 10 (too few to judge, n=10 live)" in md
 
     def test_min_n_guard_automerge_percent(self):
         stats = {
@@ -854,7 +857,7 @@ class TestRenderJevMd:
             "agreement_with_outcome": 0.75,
         }
         md = render_jev_md(_empty_triage_stats(), stats, _basic_counts())
-        assert "6/8 (too few to judge)" in md
+        assert "not enough live data yet; n=8 live (6/8 agreed, need 20 to judge)" in md
 
     def test_no_outcomes_yet_automerge(self):
         automerge = _empty_automerge_stats()
@@ -878,7 +881,7 @@ class TestRenderJevMd:
         }
         md = render_jev_md(_empty_triage_stats(), automerge, _basic_counts())
         assert "### Per-Zone Agreement" in md
-        assert f"| Act: merge ({GATE_HIGH}+) | 8 | 10 | 80% |" in md
+        assert f"| Act: merge ({GATE_HIGH}+) | 8 | 10 | 80% (n=10 live) |" in md
 
     def test_generated_at_date(self):
         md = render_jev_md(
@@ -922,6 +925,220 @@ class TestRenderJevMd:
                         int(cols[4]),
                     )
                     assert agreed + disagreed + uncertain == n
+
+
+def _full_triage_stats(n=25, agree=15, disagree=3, uncertain=7):
+    return {
+        "n": n,
+        "agree_count": agree,
+        "disagree_count": disagree,
+        "uncertain_count": uncertain,
+        "agreement_rate": agree / n,
+        "uncertainty_rate": uncertain / n,
+        "disagreement_breakdown": {"ready-vs-rejected": disagree},
+        "weekly_trends": [
+            {
+                "week": "2026-09-21",
+                "n": 10,
+                "agree_count": 6,
+                "disagree_count": 2,
+                "uncertain_count": 2,
+                "agreement_rate": 0.6,
+                "uncertainty_rate": 0.2,
+            },
+            {
+                "week": "2026-09-28",
+                "n": 15,
+                "agree_count": 9,
+                "disagree_count": 1,
+                "uncertain_count": 5,
+                "agreement_rate": 0.6,
+                "uncertainty_rate": 0.33,
+            },
+        ],
+    }
+
+
+def _full_automerge_stats(n_prob=30, n_out=25, agreed=20):
+    stats = _empty_automerge_stats()
+    stats["distribution"][f"Act: reject (below {GATE_LOW})"] = 5
+    stats["distribution"][f"Pipeline ({GATE_LOW}-{GATE_HIGH})"] = 10
+    stats["distribution"][f"Act: merge ({GATE_HIGH}+)"] = n_prob - 15
+    stats["mean"] = 0.6
+    stats["median"] = 0.6
+    stats["n_probabilities"] = n_prob
+    stats["n_with_outcome"] = n_out
+    stats["agreement_with_outcome"] = agreed / n_out if n_out else 0.0
+    stats["zone_agreement"] = {
+        f"Act: reject (below {GATE_LOW})": {"agreed": 4, "total": 5},
+        f"Pipeline ({GATE_LOW}-{GATE_HIGH})": {"agreed": 6, "total": 8},
+        f"Act: merge ({GATE_HIGH}+)": {"agreed": agreed - 10, "total": n_out - 13},
+    }
+    return stats
+
+
+class TestRenderJevMdLayout:
+    def test_first_mermaid_block_before_counts(self):
+        md = render_jev_md(_full_triage_stats(), _full_automerge_stats(), _basic_counts())
+        assert md.index("```mermaid") < md.index("## Counts")
+        assert md.index("## Charts") < md.index("```mermaid")
+
+    def test_section_order(self):
+        md = render_jev_md(
+            _full_triage_stats(),
+            _full_automerge_stats(),
+            _basic_counts(),
+            backfill_triage_stats=_full_triage_stats(),
+            backfill_automerge_stats=_full_automerge_stats(),
+            generated_at="2026-11-08 07:00 UTC",
+        )
+        order = [
+            "# JEV Report",
+            "**Verdict:**",
+            "## Charts",
+            "## Counts",
+            "## Triage Agreement",
+            "### Weekly Trends",
+            "## Auto-Merge Agreement",
+            "### Per-Zone Agreement",
+            "## Backfill",
+            "## Legend",
+            "*Generated at",
+        ]
+        positions = [md.index(heading) for heading in order]
+        assert positions == sorted(positions)
+
+    def test_charts_heading_omitted_when_nothing_to_chart(self):
+        md = render_jev_md(_empty_triage_stats(), _empty_automerge_stats(), _basic_counts())
+        assert "## Charts" not in md
+        assert "```mermaid" not in md
+
+    def test_triage_agreement_chart(self):
+        md = render_jev_md(_full_triage_stats(), _empty_automerge_stats(), _basic_counts())
+        assert 'title "Triage: Jev vs Incumbent (n=25 live)"' in md
+        assert "bar [15, 3, 7]" in md
+
+    def test_weekly_trends_chart_labels_carry_n(self):
+        md = render_jev_md(_full_triage_stats(), _empty_automerge_stats(), _basic_counts())
+        assert "Weekly Triage Agreement When Confident" in md
+        assert '"9/21 (n=8 live)"' in md
+        assert '"9/28 (n=10 live)"' in md
+        assert "bar [75, 90]" in md
+        assert "line [" not in md
+
+    def test_weekly_chart_skips_weeks_without_confident_calls(self):
+        triage = _full_triage_stats()
+        triage["weekly_trends"][0].update(agree_count=0, disagree_count=0, uncertain_count=10)
+        md = render_jev_md(triage, _empty_automerge_stats(), _basic_counts())
+        assert "9/21 (n=" not in md
+        assert '"9/28 (n=10 live)"' in md
+
+    def test_automerge_chart_title_carries_n(self):
+        md = render_jev_md(_empty_triage_stats(), _full_automerge_stats(), _basic_counts())
+        assert 'title "Auto-Merge Confidence by Action Zone (n=30 live)"' in md
+
+    def test_every_percentage_has_n_on_same_line(self):
+        md = render_jev_md(
+            _full_triage_stats(),
+            _full_automerge_stats(),
+            _basic_counts(),
+            backfill_triage_stats=_full_triage_stats(n=30, agree=20, disagree=2, uncertain=8),
+            backfill_automerge_stats=_full_automerge_stats(n_prob=40, n_out=30, agreed=24),
+        )
+        pct_lines = [line for line in md.split("\n") if re.search(r"\d%", line)]
+        assert pct_lines
+        for line in pct_lines:
+            assert "n=" in line, line
+
+    def test_live_and_backfill_automerge_rendered_separately(self):
+        md = render_jev_md(
+            _empty_triage_stats(),
+            _full_automerge_stats(n_prob=30, n_out=25, agreed=20),
+            _basic_counts(),
+            backfill_automerge_stats=_full_automerge_stats(n_prob=40, n_out=30, agreed=24),
+        )
+        live = md[md.index("## Auto-Merge Agreement") : md.index("## Backfill")]
+        backfill = md[md.index("## Backfill") : md.index("## Legend")]
+        assert "20/25 — 80% (n=25 live)" in live
+        assert "backfill" not in live
+        assert "24/30 — 80% (n=30 backfill)" in backfill
+        assert "n=30 backfill" in backfill
+        assert " live)" not in backfill
+
+    def test_not_enough_live_automerge_data_line(self):
+        md = render_jev_md(
+            _empty_triage_stats(),
+            _full_automerge_stats(n_prob=30, n_out=11, agreed=9),
+            _basic_counts(),
+        )
+        section = md[md.index("## Auto-Merge Agreement") :]
+        assert "not enough live data yet; n=11 live" in section
+        assert "too few to judge" in section
+        assert not re.search(r"\d%", section)
+
+    def test_not_enough_live_automerge_data_with_no_outcomes(self):
+        md = render_jev_md(_empty_triage_stats(), _empty_automerge_stats(), _basic_counts())
+        assert "not enough live data yet; n=0 live (no outcomes yet" in md
+
+    def test_not_enough_backfill_automerge_data_says_backfill(self):
+        md = render_jev_md(
+            _empty_triage_stats(),
+            _empty_automerge_stats(),
+            _basic_counts(),
+            backfill_automerge_stats=_full_automerge_stats(n_prob=30, n_out=5, agreed=4),
+        )
+        assert "not enough backfill data yet; n=5 backfill" in md
+
+    def test_backfill_charts_inside_backfill_section(self):
+        md = render_jev_md(
+            _empty_triage_stats(),
+            _empty_automerge_stats(),
+            _basic_counts(),
+            backfill_triage_stats=_full_triage_stats(),
+        )
+        assert "## Charts" not in md
+        assert md.index("## Backfill") < md.index(
+            'title "Triage: Jev vs Incumbent (n=25 backfill)"'
+        )
+
+    def test_verdict_carries_live_n(self):
+        md = render_jev_md(_full_triage_stats(), _empty_automerge_stats(), _basic_counts())
+        assert "**Verdict:** Jev agreed on 83% (n=18 live) of confident calls" in md
+
+
+class TestRateWithN:
+    def test_formats_rate_and_population(self):
+        assert _rate_with_n(0.82, 11, "live") == "82% (n=11 live)"
+        assert _rate_with_n(1.0, 3, "backfill") == "100% (n=3 backfill)"
+
+
+class TestWithoutFooter:
+    def test_strips_generated_at_footer(self):
+        a = render_jev_md(
+            _full_triage_stats(), _empty_automerge_stats(), _basic_counts(), generated_at="a"
+        )
+        b = render_jev_md(
+            _full_triage_stats(), _empty_automerge_stats(), _basic_counts(), generated_at="b"
+        )
+        assert a != b
+        assert _without_footer(a) == _without_footer(b)
+        assert "Generated at" not in _without_footer(a)
+
+    def test_no_footer_is_unchanged(self):
+        md = render_jev_md(_full_triage_stats(), _empty_automerge_stats(), _basic_counts())
+        assert _without_footer(md) == md.rstrip()
+
+    def test_body_change_is_detected(self):
+        a = render_jev_md(
+            _full_triage_stats(), _empty_automerge_stats(), _basic_counts(), generated_at="a"
+        )
+        b = render_jev_md(
+            _full_triage_stats(agree=14, uncertain=8),
+            _empty_automerge_stats(),
+            _basic_counts(),
+            generated_at="a",
+        )
+        assert _without_footer(a) != _without_footer(b)
 
 
 # --- compute tests: zone_agreement and disagree_count ---
