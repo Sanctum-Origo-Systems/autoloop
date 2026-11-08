@@ -11,6 +11,7 @@ from autoloop.config import RepoContext
 from autoloop.jev import GATE_LOW, GATE_HIGH
 
 MIN_N = 20
+FOOTER_PREFIX = "---\n\n*Generated at "
 
 
 @dataclass
@@ -257,17 +258,22 @@ def _md_label(date_str: str) -> str:
     return date_str
 
 
+def _rate_with_n(rate: float, n: int, population: str) -> str:
+    """Render a rate with its sample size, e.g. "82% (n=11 live)"."""
+    return f"{rate:.0%} (n={n} {population})"
+
+
 def _compute_verdict(triage_stats: dict, min_n: int = MIN_N) -> str:
     n = triage_stats.get("n", 0)
     agree = triage_stats.get("agree_count", 0)
     disagree = triage_stats.get("disagree_count", 0)
     confident = agree + disagree
     if n < min_n:
-        return f"**Verdict:** too few decisions to judge (n={n})"
+        return f"**Verdict:** too few decisions to judge (n={n} live)"
     if confident == 0:
-        return f"**Verdict:** no confident calls yet (n={n}, all uncertain)"
+        return f"**Verdict:** no confident calls yet (n={n} live, all uncertain)"
     rate = agree / confident
-    return f"**Verdict:** Jev agreed on {rate:.0%} of confident calls (n={confident})"
+    return f"**Verdict:** Jev agreed on {_rate_with_n(rate, confident, 'live')} of confident calls"
 
 
 def _render_legend(lines: list[str]) -> None:
@@ -280,7 +286,84 @@ def _render_legend(lines: list[str]) -> None:
         " confidence too close to call; Jev defers to the incumbent"
     )
     lines.append("- **Backfilled:** a decision reconstructed from historical data, not made live")
+    lines.append(
+        "- **n=… live / n=… backfill:** the sample behind a number; live and backfilled"
+        " decisions are never pooled"
+    )
     lines.append("")
+
+
+def _triage_chart_lines(triage_stats: dict, population: str = "live") -> list[str]:
+    n = triage_stats.get("n", 0)
+    if n == 0:
+        return []
+    counts = [
+        triage_stats.get("agree_count", 0),
+        triage_stats.get("disagree_count", 0),
+        triage_stats.get("uncertain_count", 0),
+    ]
+    return [
+        "```mermaid",
+        "xychart-beta",
+        f'    title "Triage: Jev vs Incumbent (n={n} {population})"',
+        '    x-axis ["Agreed", "Disagreed", "Uncertain (fell back)"]',
+        f'    y-axis "Decisions" 0 --> {max(counts) + 1}',
+        f"    bar [{', '.join(str(c) for c in counts)}]",
+        "```",
+        "",
+    ]
+
+
+def _automerge_chart_lines(automerge_stats: dict, population: str = "live") -> list[str]:
+    n_prob = automerge_stats.get("n_probabilities", 0)
+    dist = automerge_stats.get("distribution", {})
+    if n_prob == 0 or not dist:
+        return []
+    bucket_labels = ", ".join(f'"{k}"' for k in dist)
+    bucket_values = ", ".join(str(v) for v in dist.values())
+    max_val = max(dist.values(), default=1)
+    return [
+        "```mermaid",
+        "xychart-beta",
+        f'    title "Auto-Merge Confidence by Action Zone (n={n_prob} {population})"',
+        f"    x-axis [{bucket_labels}]",
+        f'    y-axis "Count" 0 --> {max_val + 1}',
+        f"    bar [{bucket_values}]",
+        "```",
+        "",
+    ]
+
+
+def _weekly_chart_lines(triage_stats: dict, population: str = "live") -> list[str]:
+    points = []
+    for w in triage_stats.get("weekly_trends", []):
+        agree = w.get("agree_count", 0)
+        confident = agree + w.get("disagree_count", 0)
+        if confident == 0:
+            continue
+        points.append((_md_label(w["week"]), confident, round(agree / confident * 100)))
+    if not points:
+        return []
+    labels = ", ".join(f'"{label} (n={n} {population})"' for label, n, _ in points)
+    values = ", ".join(str(v) for _, _, v in points)
+    return [
+        "```mermaid",
+        "xychart-beta",
+        '    title "Weekly Triage Agreement When Confident"',
+        f"    x-axis [{labels}]",
+        '    y-axis "% agreed" 0 --> 100',
+        f"    bar [{values}]",
+        "```",
+        "",
+    ]
+
+
+def _chart_lines(triage_stats: dict, automerge_stats: dict, population: str) -> list[str]:
+    return (
+        _triage_chart_lines(triage_stats, population)
+        + _automerge_chart_lines(automerge_stats, population)
+        + _weekly_chart_lines(triage_stats, population)
+    )
 
 
 def _render_triage_section(
@@ -288,6 +371,7 @@ def _render_triage_section(
     triage_stats: dict,
     heading: str = "## Triage Agreement",
     min_n: int = MIN_N,
+    population: str = "live",
 ) -> None:
     lines.append(heading)
     lines.append("")
@@ -302,9 +386,15 @@ def _render_triage_section(
     if confident > 0:
         rate = agree / confident
         if n >= min_n:
-            lines.append(f"- **When confident, agreed:** {agree} of {confident} ({rate:.1%})")
+            lines.append(
+                f"- **When confident, agreed:** {agree} of {confident}"
+                f" — {_rate_with_n(rate, confident, population)}"
+            )
         else:
-            lines.append(f"- **When confident, agreed:** {agree} of {confident} (too few to judge)")
+            lines.append(
+                f"- **When confident, agreed:** {agree} of {confident}"
+                f" (too few to judge, n={n} {population})"
+            )
     if triage_stats.get("disagreement_breakdown"):
         lines.append("- **Disagreement breakdown:**")
         for cat, count in sorted(triage_stats["disagreement_breakdown"].items()):
@@ -331,41 +421,32 @@ def _render_automerge_section(
     automerge_stats: dict,
     heading: str = "## Auto-Merge Agreement",
     min_n: int = MIN_N,
+    population: str = "live",
 ) -> None:
     lines.append(heading)
     lines.append("")
     n_prob = automerge_stats.get("n_probabilities", 0)
-    lines.append(f"- **Mean confidence:** {automerge_stats['mean']:.3f} (n={n_prob})")
+    mean = automerge_stats["mean"]
+    lines.append(f"- **Mean confidence:** {mean:.3f} (n={n_prob} {population})")
     md_conf = automerge_stats["median"]
-    lines.append(f"- **Median confidence:** {md_conf:.3f} (n={n_prob})")
+    lines.append(f"- **Median confidence:** {md_conf:.3f} (n={n_prob} {population})")
     awo = automerge_stats["agreement_with_outcome"]
     n_out = automerge_stats.get("n_with_outcome", 0)
-    if n_out == 0:
-        lines.append("- **Agreement with incumbent decision:** no outcomes yet")
-    elif n_prob < min_n:
+    agreed = round(awo * n_out)
+    if n_out < min_n:
+        # Agreement is judged on decisions with an incumbent outcome, so that is the n
+        # that has to clear min_n, not the (larger) count of confidence scores.
+        detail = "no outcomes yet" if n_out == 0 else f"{agreed}/{n_out} agreed"
         lines.append(
-            f"- **Agreement with incumbent decision:**"
-            f" {round(awo * n_out)}/{n_out} (too few to judge)"
+            f"- **Agreement with incumbent decision:** not enough {population} data yet;"
+            f" n={n_out} {population} ({detail}, need {min_n} to judge)"
         )
     else:
         lines.append(
-            f"- **Agreement with incumbent decision:** {awo:.1%} ({round(awo * n_out)}/{n_out})"
+            f"- **Agreement with incumbent decision:** {agreed}/{n_out}"
+            f" — {_rate_with_n(awo, n_out, population)}"
         )
     lines.append("")
-
-    dist = automerge_stats.get("distribution", {})
-    if dist:
-        bucket_labels = ", ".join(f'"{k}"' for k in dist)
-        bucket_values = ", ".join(str(v) for v in dist.values())
-        max_val = max(dist.values(), default=1)
-        lines.append("```mermaid")
-        lines.append("xychart-beta")
-        lines.append('    title "Auto-Merge Confidence by Action Zone"')
-        lines.append(f"    x-axis [{bucket_labels}]")
-        lines.append(f'    y-axis "Count" 0 --> {max_val + 1}')
-        lines.append(f"    bar [{bucket_values}]")
-        lines.append("```")
-        lines.append("")
 
     zone_agreement = automerge_stats.get("zone_agreement", {})
     if zone_agreement and any(v["total"] > 0 for v in zone_agreement.values()):
@@ -378,11 +459,10 @@ def _render_automerge_section(
             zt = data["total"]
             if zt == 0:
                 lines.append(f"| {zone} | — | 0 | no outcomes yet |")
-            elif n_prob < min_n:
+            elif n_out < min_n:
                 lines.append(f"| {zone} | {za} | {zt} | too few to judge |")
             else:
-                zr = za / zt
-                lines.append(f"| {zone} | {za} | {zt} | {zr:.0%} |")
+                lines.append(f"| {zone} | {za} | {zt} | {_rate_with_n(za / zt, zt, population)} |")
         lines.append("")
 
 
@@ -402,7 +482,12 @@ def render_jev_md(
     lines.append(_compute_verdict(triage_stats, min_n))
     lines.append("")
 
-    _render_legend(lines)
+    # Charts go right after the verdict so readers see them without scrolling (#482).
+    chart_lines = _chart_lines(triage_stats, automerge_stats, "live")
+    if chart_lines:
+        lines.append("## Charts")
+        lines.append("")
+        lines.extend(chart_lines)
 
     lines.append("## Counts")
     lines.append("")
@@ -426,19 +511,53 @@ def render_jev_md(
     if has_backfill:
         lines.append("## Backfill")
         lines.append("")
-        if backfill_triage_stats and backfill_triage_stats.get("n", 0) > 0:
+        bf_triage = backfill_triage_stats or {}
+        bf_automerge = backfill_automerge_stats or {}
+        lines.extend(_chart_lines(bf_triage, bf_automerge, "backfill"))
+        if bf_triage.get("n", 0) > 0:
             _render_triage_section(
-                lines, backfill_triage_stats, "### Backfill Triage Agreement", min_n=min_n
+                lines,
+                bf_triage,
+                "### Backfill Triage Agreement",
+                min_n=min_n,
+                population="backfill",
             )
-        if backfill_automerge_stats and backfill_automerge_stats.get("n_probabilities", 0) > 0:
+        if bf_automerge.get("n_probabilities", 0) > 0:
             _render_automerge_section(
-                lines, backfill_automerge_stats, "### Backfill Auto-Merge Agreement", min_n=min_n
+                lines,
+                bf_automerge,
+                "### Backfill Auto-Merge Agreement",
+                min_n=min_n,
+                population="backfill",
             )
+
+    _render_legend(lines)
 
     if generated_at:
-        lines.append(f"---\n\n*Generated at {generated_at}*")
+        lines.append(f"{FOOTER_PREFIX}{generated_at}*")
 
     return "\n".join(lines)
+
+
+def _without_footer(text: str) -> str:
+    """Return JEV.md content without the generated-at footer, which changes every run."""
+    return text.partition(FOOTER_PREFIX)[0].rstrip()
+
+
+def _published_jev_md(ctx: RepoContext) -> str | None:
+    """Return JEV.md as committed on main, or None if main has no JEV.md."""
+    try:
+        result = subprocess.run(
+            ["git", "show", "main:JEV.md"],
+            capture_output=True,
+            text=True,
+            cwd=str(ctx.repo_dir),
+        )
+    except FileNotFoundError:
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout
 
 
 def _publish_via_pr(ctx: RepoContext, jev_path: Path, date: str) -> str:
@@ -568,10 +687,10 @@ def main(*, ctx: RepoContext, publish: bool = False, pr: bool = False):
         generated_at=datetime.now().strftime("%Y-%m-%d %H:%M UTC"),
     )
     jev_path = ctx.repo_dir / "JEV.md"
-    jev_path.write_text(content)
-    print(f"JEV.md written to {jev_path}")
 
     if not publish:
+        jev_path.write_text(content)
+        print(f"JEV.md written to {jev_path}")
         return
 
     repo_dir = str(ctx.repo_dir)
@@ -589,6 +708,15 @@ def main(*, ctx: RepoContext, publish: bool = False, pr: bool = False):
     if branch_result.returncode != 0 or branch_result.stdout.strip() != "main":
         print("Error: --publish must be run from the main branch")
         return
+
+    published = _published_jev_md(ctx)
+    if published is not None and _without_footer(published) == _without_footer(content):
+        # Only the generated-at footer would change; don't open an identical PR (#482).
+        print("JEV.md unchanged from main, skipping publish")
+        return
+
+    jev_path.write_text(content)
+    print(f"JEV.md written to {jev_path}")
 
     date = datetime.now().strftime("%Y-%m-%d")
 

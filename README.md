@@ -590,6 +590,8 @@ Jev is an off-by-default probabilistic decision model that can shadow autoloop's
 
 `mode` can also be set via the `JEV_MODE` environment variable.
 
+`autoloop jev-report` writes `JEV.md`: the verdict and charts first, then the tables, with every rate next to its `n` and live and backfilled decisions reported separately. `jev-report --publish [--pr]` skips the commit (no branch, no PR) when the new `JEV.md` matches the copy on `main` apart from the generated-at line.
+
 ## Commands
 
 | Command | Description |

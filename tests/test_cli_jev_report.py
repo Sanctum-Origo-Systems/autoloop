@@ -199,6 +199,119 @@ def test_jev_report_publish_pr_creates_branch_and_pr(tmp_path, capsys):
     assert any("gh pr create" in s for s in cmd_strs)
 
 
+def _render_empty_jev_md(generated_at):
+    from autoloop.jev_report import (
+        compute_automerge_stats,
+        compute_triage_stats,
+        render_jev_md,
+    )
+
+    counts = {"total": 0, "live": 0, "backfilled": 0, "date_range": ""}
+    return render_jev_md(
+        compute_triage_stats([]),
+        compute_automerge_stats([]),
+        counts,
+        backfill_triage_stats=compute_triage_stats([]),
+        backfill_automerge_stats=compute_automerge_stats([]),
+        generated_at=generated_at,
+    )
+
+
+def _fake_subprocess_main_has(published, calls):
+    ok = _fake_subprocess_all_ok(calls)
+
+    def _fake(cmd, **kw):
+        if cmd[:2] == ["git", "show"]:
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout=published, stderr="")
+        return ok(cmd, **kw)
+
+    return _fake
+
+
+def test_jev_report_publish_pr_skips_when_unchanged_from_main(tmp_path, capsys):
+    from autoloop.jev_report import main as jev_report_main
+
+    ctx = _make_ctx(tmp_path)
+    published = _render_empty_jev_md("2026-11-07 07:00 UTC")
+    calls = []
+    with patch("autoloop.jev_report.subprocess.run", _fake_subprocess_main_has(published, calls)):
+        jev_report_main(ctx=ctx, publish=True, pr=True)
+
+    captured = capsys.readouterr()
+    assert "unchanged from main, skipping" in captured.out
+    cmd_strs = [" ".join(str(a) for a in c) for c in calls]
+    assert any("git show main:JEV.md" in s for s in cmd_strs)
+    assert not any("checkout -b" in s for s in cmd_strs)
+    assert not any("gh pr create" in s for s in cmd_strs)
+    assert not (tmp_path / "JEV.md").exists()
+
+
+def test_jev_report_publish_skips_direct_commit_when_unchanged(tmp_path, capsys):
+    from autoloop.jev_report import main as jev_report_main
+
+    ctx = _make_ctx(tmp_path)
+    published = _render_empty_jev_md("2026-11-07 07:00 UTC")
+    calls = []
+    with patch("autoloop.jev_report.subprocess.run", _fake_subprocess_main_has(published, calls)):
+        jev_report_main(ctx=ctx, publish=True, pr=False)
+
+    cmd_strs = [" ".join(str(a) for a in c) for c in calls]
+    assert not any("git commit" in s for s in cmd_strs)
+    assert not any("git push" in s for s in cmd_strs)
+
+
+def test_jev_report_publish_pr_proceeds_when_body_differs(tmp_path, capsys):
+    from autoloop.jev_report import main as jev_report_main
+
+    ctx = _make_ctx(tmp_path)
+    published = _render_empty_jev_md("2026-11-07 07:00 UTC").replace("n=0", "n=3")
+    calls = []
+    with patch("autoloop.jev_report.subprocess.run", _fake_subprocess_main_has(published, calls)):
+        jev_report_main(ctx=ctx, publish=True, pr=True)
+
+    captured = capsys.readouterr()
+    assert "PR created:" in captured.out
+    assert (tmp_path / "JEV.md").exists()
+
+
+def test_published_jev_md_none_when_missing_on_main(tmp_path):
+    from autoloop.jev_report import _published_jev_md
+
+    ctx = _make_ctx(tmp_path)
+
+    def fake_run(cmd, **kw):
+        return subprocess.CompletedProcess(cmd, 128, stdout="", stderr="fatal: path not found")
+
+    with patch("autoloop.jev_report.subprocess.run", fake_run):
+        assert _published_jev_md(ctx) is None
+
+
+def test_published_jev_md_none_without_git(tmp_path):
+    from autoloop.jev_report import _published_jev_md
+
+    ctx = _make_ctx(tmp_path)
+
+    def fake_run(cmd, **kw):
+        raise FileNotFoundError("git")
+
+    with patch("autoloop.jev_report.subprocess.run", fake_run):
+        assert _published_jev_md(ctx) is None
+
+
+def test_published_jev_md_returns_main_content(tmp_path):
+    from autoloop.jev_report import _published_jev_md
+
+    ctx = _make_ctx(tmp_path)
+
+    def fake_run(cmd, **kw):
+        assert cmd == ["git", "show", "main:JEV.md"]
+        return subprocess.CompletedProcess(cmd, 0, stdout="# JEV Report\n", stderr="")
+
+    with patch("autoloop.jev_report.subprocess.run", fake_run):
+        assert _published_jev_md(ctx) == "# JEV Report\n"
+
+
 def test_jev_report_publish_only_commits_directly(tmp_path, capsys):
     from autoloop.jev_report import main as jev_report_main
 
