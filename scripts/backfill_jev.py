@@ -1,25 +1,36 @@
-"""Backfill Jev shadow decisions for issues that got 403 during the API key outage.
+"""Backfill Jev shadow decisions.
 
 Usage:
     OPENROUTER_API_KEY=<key> uv run python scripts/backfill_jev.py [--dry-run]
+    uv run python scripts/backfill_jev.py --point auto-merge --dry-run
 
-Reads jev_decisions.jsonl for 403 entries with issue numbers, fetches the
-current issue body from GitHub (which matches what the incumbent saw), calls
-Jev triage(), and appends a new record tagged as "backfill".
-
+Triage (default): reads jev_decisions.jsonl for 403 entries with issue numbers,
+fetches the current issue body from GitHub (which matches what the incumbent
+saw), calls Jev triage(), and appends a new record tagged as "backfill".
 Safe to run multiple times — skips issues that already have a non-fallback entry.
+
+Auto-merge (--point auto-merge): discovers `autoloop/<issue>-…` PRs, skips
+those already recorded in the RepoContext data dir or with no autoloop review
+comment, and lists the rest. Only --dry-run is supported; it makes no Jev calls
+and writes nothing.
 """
 
+import argparse
 import json
 import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+from autoloop.jev_log import (
+    decisions_path,
+    discover_autoloop_prs,
+    load_decisions,
+    plan_auto_merge_backfill,
+)
 
-def main():
-    dry_run = "--dry-run" in sys.argv
 
+def backfill_triage(dry_run: bool) -> None:
     log_file = Path("autoloop/jev_decisions.jsonl")
     if not log_file.exists():
         print("No jev_decisions.jsonl found")
@@ -109,5 +120,50 @@ def main():
     print("Done")
 
 
+def backfill_auto_merge(cfg, ctx, dry_run: bool) -> int:
+    if not dry_run:
+        print("Auto-merge backfill only supports --dry-run for now")
+        return 1
+
+    print(f"Decisions file: {decisions_path(ctx)}")
+    records = load_decisions(ctx)
+    try:
+        prs = discover_autoloop_prs(cfg)
+    except RuntimeError as exc:
+        print(exc)
+        return 1
+
+    candidates, skips = plan_auto_merge_backfill(cfg, prs, records)
+    print(f"PRs to backfill: {len(candidates)}")
+    for c in candidates:
+        approved = c["incumbent_call"]["approved"]
+        print(
+            f"  PR #{c['pr']} (issue #{c['issue']}, {c['branch']}): "
+            f"incumbent approved={approved}, diff {len(c['diff'])} chars — "
+            "would call Jev should_auto_merge (dry-run)"
+        )
+    print(f"Skipped: {sum(skips.values())}")
+    for reason, count in sorted(skips.items()):
+        print(f"  {reason}: {count}")
+    return 0
+
+
+def main(argv=None, *, cfg=None, ctx=None) -> int:
+    parser = argparse.ArgumentParser(description="Backfill Jev shadow decisions")
+    parser.add_argument("--point", choices=("triage", "auto-merge"), default="triage")
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args(argv)
+
+    if args.point == "auto-merge":
+        from autoloop.config import RepoContext, load_config
+
+        cfg = cfg or load_config()
+        ctx = ctx or RepoContext(Path.cwd())
+        return backfill_auto_merge(cfg, ctx, args.dry_run)
+
+    backfill_triage(args.dry_run)
+    return 0
+
+
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
