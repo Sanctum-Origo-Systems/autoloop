@@ -272,6 +272,41 @@ class TestParseJevDecisions:
         result = parse_jev_decisions(f)
         assert len(result.live) == 2
 
+    def test_reads_auto_merge_row_logged_by_implement_review(self, tmp_path, monkeypatch):
+        """Regression (#480): a worktree implement review's row reaches the report's file."""
+        import autoloop.implement_issue as impl
+        from autoloop.config import AutoLoopConfig, RepoContext
+
+        monkeypatch.setattr(impl, "cfg", AutoLoopConfig(repo="acme-corp/widget", jev_mode="shadow"))
+        ctx = RepoContext.for_data_dir(tmp_path / "data", repo_dir=tmp_path / "checkout")
+        wt_path = ctx.worktree_dir / "autoloop/3-add-widget"
+        wt_path.mkdir(parents=True)
+        review = json.dumps({"result": '{"approved": true, "issues": [], "summary": "ok"}'})
+
+        def fake_run(cmd, **kwargs):
+            stdout = "src/foo.py\n" if cmd[0] == "git" else review
+            return type("R", (), {"returncode": 0, "stdout": stdout, "stderr": ""})()
+
+        monkeypatch.setattr(impl.subprocess, "run", fake_run)
+        jev = {"meets_acceptance_criteria": 0.9, "latency": 0.05, "cost": 0.0001}
+        monkeypatch.setattr("autoloop.jev.should_auto_merge", lambda *a, **kw: jev)
+
+        impl.review_implementation(
+            {"number": 3, "title": "Add widget", "body": "spec"},
+            "autoloop/3-add-widget",
+            repo_dir=wt_path,
+            ctx=ctx,
+        )
+
+        result = parse_jev_decisions(ctx.data_dir / "jev_decisions.jsonl")
+        assert result.backfilled == []
+        assert len(result.live) == 1
+        entry = result.live[0]
+        assert entry.point == "auto-merge"
+        assert entry.issue == 3
+        assert entry.jev_call == jev
+        assert entry.incumbent_call["approved"] is True
+
 
 # --- compute_triage_stats ---
 

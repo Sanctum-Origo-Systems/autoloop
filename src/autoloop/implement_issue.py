@@ -1069,7 +1069,11 @@ def parse_review_response(text: str) -> tuple[bool, str]:
 
 
 def review_implementation(
-    issue: dict, branch: str, pr_number: int | None = None, repo_dir: Path | None = None
+    issue: dict,
+    branch: str,
+    pr_number: int | None = None,
+    repo_dir: Path | None = None,
+    ctx: RepoContext | None = None,
 ) -> tuple[bool, str, ClaudeResult]:
     """Review the implementation for semantic quality via Claude.
 
@@ -1078,6 +1082,8 @@ def review_implementation(
 
     When pr_number is provided, uses `gh pr diff` for the canonical GitHub diff.
     Falls back to `git diff` for pre-PR reviews during implementation.
+    Jev decisions are logged to ctx.data_dir; ctx is the main checkout's context, so
+    pass it explicitly when repo_dir is a worktree.
     """
     if pr_number is not None:
         diff = subprocess.run(
@@ -1127,7 +1133,6 @@ def review_implementation(
         approved, feedback = parse_review_response(result.text)
 
     if cfg.jev_mode == "shadow":
-        from autoloop.config import RepoContext
         from autoloop.jev import should_auto_merge
         from autoloop.jev_log import log_decision
 
@@ -1163,9 +1168,9 @@ def review_implementation(
         if pr_number is not None:
             record["pr"] = pr_number
         try:
-            base = repo_dir or Path()
-            ctx = RepoContext.for_data_dir(base / "autoloop")
-            log_decision(record, ctx)
+            # Decisions belong to the main checkout's data dir, never one derived from repo_dir.
+            log_ctx = ctx if ctx is not None else RepoContext(Path.cwd())
+            log_decision(record, log_ctx)
         except Exception:
             logging.exception("Failed to log Jev auto-merge decision")
 
@@ -1756,7 +1761,7 @@ def implement_single_issue(
 
             print("  Verification passed. Reviewing implementation...")
             approved, feedback, review_result = review_implementation(
-                issue, branch, repo_dir=work_dir
+                issue, branch, repo_dir=work_dir, ctx=ctx
             )
             review_results.append(review_result)
             if not approved:

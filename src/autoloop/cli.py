@@ -390,13 +390,13 @@ def _run_jev_shadow(
     diff: str,
     review_passed: bool,
     review_feedback: str,
-    repo_dir: Path | None = None,
+    ctx: RepoContext,
 ) -> None:
-    """Fire the Jev auto-merge shadow call and log the result.
+    """Fire the Jev auto-merge shadow call and log the result to ctx.data_dir.
 
+    ctx is the main checkout's context, never one derived from a worktree.
     Failures are swallowed so they never affect the review outcome.
     """
-    from autoloop.config import RepoContext
     from autoloop.jev import should_auto_merge
     from autoloop.jev_log import log_decision
 
@@ -431,7 +431,6 @@ def _run_jev_shadow(
         "timestamp": datetime.now(UTC).isoformat(),
     }
     try:
-        ctx = RepoContext.for_data_dir((repo_dir or Path.cwd()) / "autoloop")
         log_decision(record, ctx)
     except Exception:
         logging.exception("Failed to log Jev auto-merge decision")
@@ -610,7 +609,7 @@ def review_pr(pr_number, cfg, repo_dir: Path | None = None, ctx: RepoContext | N
                 diff=diff,
                 review_passed=review_passed,
                 review_feedback=review_feedback,
-                repo_dir=repo_dir,
+                ctx=ctx,
             )
 
         cost_line = (
