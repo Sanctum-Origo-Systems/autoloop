@@ -189,15 +189,17 @@ def compute_triage_stats(entries: list[JevEntry]) -> dict:
     }
 
 
-def compute_automerge_stats(entries: list[JevEntry]) -> dict:
+def compute_automerge_stats(
+    entries: list[JevEntry],
+    gate_low: float = GATE_LOW,
+    gate_high: float = GATE_HIGH,
+) -> dict:
     merge_entries = [e for e in entries if e.point == "auto-merge"]
     probabilities = []
     for e in merge_entries:
         prob = e.jev_call.get("meets_acceptance_criteria")
         if prob is not None:
             probabilities.append(float(prob))
-    gate_low = GATE_LOW
-    gate_high = GATE_HIGH
     reject_label = f"Act: reject (below {gate_low})"
     fallback_label = f"Pipeline ({gate_low}-{gate_high})"
     merge_label = f"Act: merge ({gate_high}+)"
@@ -276,13 +278,15 @@ def _compute_verdict(triage_stats: dict, min_n: int = MIN_N) -> str:
     return f"**Verdict:** Jev agreed on {_rate_with_n(rate, confident, 'live')} of confident calls"
 
 
-def _render_legend(lines: list[str]) -> None:
+def _render_legend(
+    lines: list[str], gate_low: float = GATE_LOW, gate_high: float = GATE_HIGH
+) -> None:
     lines.append("## Legend")
     lines.append("")
     lines.append("- **Incumbent decision:** the human/pipeline decision that was actually used")
     lines.append("- **Fell back:** Jev returned an uncertain result and deferred to the incumbent")
     lines.append(
-        f"- **Pipeline ({GATE_LOW}–{GATE_HIGH}):**"
+        f"- **Pipeline ({gate_low}–{gate_high}):**"
         " confidence too close to call; Jev defers to the incumbent"
     )
     lines.append("- **Backfilled:** a decision reconstructed from historical data, not made live")
@@ -475,11 +479,15 @@ def render_jev_md(
     backfill_automerge_stats: dict | None = None,
     min_n: int = MIN_N,
     generated_at: str | None = None,
+    gate_low: float = GATE_LOW,
+    gate_high: float = GATE_HIGH,
 ) -> str:
     lines: list[str] = []
     lines.append("# JEV Report")
     lines.append("")
     lines.append(_compute_verdict(triage_stats, min_n))
+    lines.append("")
+    lines.append(f"**Band:** {gate_low}–{gate_high} (from config)")
     lines.append("")
 
     # Charts go right after the verdict so readers see them without scrolling (#482).
@@ -531,7 +539,7 @@ def render_jev_md(
                 population="backfill",
             )
 
-    _render_legend(lines)
+    _render_legend(lines, gate_low, gate_high)
 
     if generated_at:
         lines.append(f"{FOOTER_PREFIX}{generated_at}*")
@@ -654,15 +662,22 @@ def _publish_via_pr(ctx: RepoContext, jev_path: Path, date: str) -> str:
             pass
 
 
-def main(*, ctx: RepoContext, publish: bool = False, pr: bool = False):
+def main(
+    *,
+    ctx: RepoContext,
+    publish: bool = False,
+    pr: bool = False,
+    gate_low: float = GATE_LOW,
+    gate_high: float = GATE_HIGH,
+):
     decisions_path = ctx.data_dir / "jev_decisions.jsonl"
     parsed = parse_jev_decisions(decisions_path)
 
     triage_stats = compute_triage_stats(parsed.live)
-    automerge_stats = compute_automerge_stats(parsed.live)
+    automerge_stats = compute_automerge_stats(parsed.live, gate_low, gate_high)
 
     backfill_triage_stats = compute_triage_stats(parsed.backfilled)
-    backfill_automerge_stats = compute_automerge_stats(parsed.backfilled)
+    backfill_automerge_stats = compute_automerge_stats(parsed.backfilled, gate_low, gate_high)
 
     all_entries = parsed.backfilled + parsed.live
     timestamps = [e.timestamp for e in all_entries if e.timestamp]
@@ -685,6 +700,8 @@ def main(*, ctx: RepoContext, publish: bool = False, pr: bool = False):
         backfill_triage_stats=backfill_triage_stats,
         backfill_automerge_stats=backfill_automerge_stats,
         generated_at=datetime.now().strftime("%Y-%m-%d %H:%M UTC"),
+        gate_low=gate_low,
+        gate_high=gate_high,
     )
     jev_path = ctx.repo_dir / "JEV.md"
 

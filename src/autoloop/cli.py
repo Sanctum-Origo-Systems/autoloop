@@ -343,9 +343,17 @@ def main():
         )
 
     elif args.command == "jev-report":
+        from autoloop.config import load_config
         from autoloop.jev_report import main as jev_report_main
 
-        jev_report_main(ctx=ctx, publish=args.publish, pr=args.pr)
+        cfg = load_config()
+        jev_report_main(
+            ctx=ctx,
+            publish=args.publish,
+            pr=args.pr,
+            gate_low=cfg.jev_gate_low,
+            gate_high=cfg.jev_gate_high,
+        )
 
     elif args.command == "doctor":
         from autoloop.doctor import get_checks, run_checks

@@ -11,6 +11,8 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from autoloop.jev import GATE_HIGH, GATE_LOW
+
 
 def __getattr__(name: str):
     if name == "REPO_DIR":
@@ -111,8 +113,8 @@ class AutoLoopConfig:
     jev_api_key_env: str = "OPENROUTER_API_KEY"
     jev_model: str = "typesafe/jev-1.13"
     jev_timeout_seconds: int = 10
-    jev_gate_low: float = 0.15
-    jev_gate_high: float = 0.85
+    jev_gate_low: float = GATE_LOW
+    jev_gate_high: float = GATE_HIGH
     test_integrity_guard: bool = False
     test_integrity_patterns: list[str] = field(
         default_factory=lambda: ["pytest.mark.skip", "pytest.mark.xfail"]

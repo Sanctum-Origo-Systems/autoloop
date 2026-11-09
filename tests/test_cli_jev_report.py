@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from unittest.mock import patch
 
@@ -43,7 +44,7 @@ def test_jev_report_pr_flag_without_publish():
 def test_jev_report_dispatch_calls_main(tmp_path):
     called = {}
 
-    def fake_main(*, ctx, publish, pr):
+    def fake_main(*, ctx, publish, pr, gate_low, gate_high):
         called["ctx"] = ctx
         called["publish"] = publish
         called["pr"] = pr
@@ -66,7 +67,7 @@ def test_jev_report_dispatch_calls_main(tmp_path):
 def test_jev_report_dispatch_with_publish(tmp_path):
     called = {}
 
-    def fake_main(*, ctx, publish, pr):
+    def fake_main(*, ctx, publish, pr, gate_low, gate_high):
         called["publish"] = publish
         called["pr"] = pr
 
@@ -88,7 +89,7 @@ def test_jev_report_dispatch_with_publish(tmp_path):
 def test_jev_report_dispatch_with_publish_pr(tmp_path):
     called = {}
 
-    def fake_main(*, ctx, publish, pr):
+    def fake_main(*, ctx, publish, pr, gate_low, gate_high):
         called["publish"] = publish
         called["pr"] = pr
 
@@ -105,6 +106,55 @@ def test_jev_report_dispatch_with_publish_pr(tmp_path):
 
     assert called["publish"] is True
     assert called["pr"] is True
+
+
+def test_jev_report_dispatch_passes_configured_band(tmp_path):
+    from autoloop.config import AutoLoopConfig
+
+    called = {}
+
+    def fake_main(*, ctx, publish, pr, gate_low, gate_high):
+        called["gate_low"] = gate_low
+        called["gate_high"] = gate_high
+
+    cfg = AutoLoopConfig(jev_gate_low=0.2, jev_gate_high=0.8)
+    with (
+        patch("autoloop.jev_report.main", fake_main),
+        patch("autoloop.config.RepoContext") as mock_ctx_cls,
+        patch("autoloop.config.load_config", return_value=cfg),
+    ):
+        mock_ctx_cls.return_value = "fake_ctx"
+
+        from autoloop.cli import main
+
+        with patch("sys.argv", ["autoloop", "jev-report"]):
+            main()
+
+    assert called == {"gate_low": 0.2, "gate_high": 0.8}
+
+
+def test_jev_report_main_uses_configured_band(tmp_path):
+    from autoloop.jev_report import main as jev_report_main
+
+    ctx = _make_ctx(tmp_path)
+    (ctx.data_dir / "jev_decisions.jsonl").write_text(
+        json.dumps(
+            {
+                "timestamp": "2026-01-05T00:00:00",
+                "issue": 1,
+                "point": "auto-merge",
+                "jev_call": {"meets_acceptance_criteria": 0.7},
+                "incumbent_call": {"approved": True},
+            }
+        )
+        + "\n"
+    )
+    jev_report_main(ctx=ctx, publish=False, pr=False, gate_low=0.15, gate_high=0.85)
+    md = (tmp_path / "JEV.md").read_text()
+    assert "**Band:** 0.15–0.85 (from config)" in md
+    assert '"Pipeline (0.15-0.85)"' in md
+    assert "0.35" not in md
+    assert "0.65" not in md
 
 
 def _make_ctx(tmp_path):

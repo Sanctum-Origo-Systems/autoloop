@@ -679,6 +679,15 @@ def test_jev_full_block_from_toml(tmp_path, monkeypatch):
     assert config.jev_gate_high == 0.90
 
 
+def test_jev_band_defaults_match_jev_module_constants():
+    """Regression for #490: config and jev.triage/should_auto_merge defaults must agree."""
+    from autoloop.jev import GATE_HIGH, GATE_LOW
+
+    config = AutoLoopConfig()
+    assert config.jev_gate_low == GATE_LOW
+    assert config.jev_gate_high == GATE_HIGH
+
+
 def test_jev_endpoint_field_removed():
     """jev_endpoint was a dead config field (never read by jev.py); it must not exist."""
     config = AutoLoopConfig()
