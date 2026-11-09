@@ -13,6 +13,14 @@ from autoloop.jev import GATE_LOW, GATE_HIGH
 MIN_N = 20
 FOOTER_PREFIX = "---\n\n*Generated at "
 
+# Calibration (#495). Each bin includes its lower edge; the last bin also includes 1.0.
+CALIBRATION_BIN_EDGES = (0.0, 0.15, 0.35, 0.5, 0.65, 0.85, 1.0)
+CALIBRATION_AGREEMENT_THRESHOLD = 0.95
+CALIBRATION_MIN_CALLS = 30
+# Jev's call on a probability is positive at or above this; band edges can't cross it.
+CALIBRATION_CALL_THRESHOLD = 0.5
+NOT_ENOUGH_DATA = "not enough data"
+
 
 @dataclass
 class JevEntry:
@@ -253,6 +261,181 @@ def compute_automerge_stats(
     }
 
 
+@dataclass(frozen=True)
+class CalibrationPoint:
+    point: str
+    field: str
+    positive_label: str
+    always_positive: str
+    always_negative: str
+
+
+CALIBRATION_POINTS = {
+    "triage.well_formed": CalibrationPoint(
+        "triage", "well_formed", "not rejected", "always accept", "always reject"
+    ),
+    "triage.needs_decomposition": CalibrationPoint(
+        "triage",
+        "needs_decomposition",
+        "needs-decomposition",
+        "always decompose",
+        "never decompose",
+    ),
+    "auto-merge.meets_acceptance_criteria": CalibrationPoint(
+        "auto-merge", "meets_acceptance_criteria", "approved", "always approve", "always reject"
+    ),
+}
+
+
+def _is_live(entry: JevEntry) -> bool:
+    """True unless the row is tagged backfill, shadow, or any non-live source."""
+    if entry.is_backfill or entry.raw.get("shadow"):
+        return False
+    return entry.raw.get("source", "live") == "live"
+
+
+def _incumbent_positive(entry: JevEntry, spec: CalibrationPoint) -> bool | None:
+    """Whether the incumbent's verdict was the positive outcome, or None if it has none."""
+    if spec.point == "auto-merge":
+        approved = entry.incumbent_call.get("approved")
+        return None if approved is None else bool(approved)
+    verdict = entry.incumbent_call.get("verdict")
+    if not verdict:
+        return None
+    if spec.field == "needs_decomposition":
+        return verdict == "needs-decomposition"
+    return verdict != "rejected"
+
+
+def _calibration_points(entries: list[JevEntry], key: str) -> list[tuple[float, bool]]:
+    """(probability, incumbent positive) for live rows that have both."""
+    spec = CALIBRATION_POINTS[key]
+    points = []
+    for e in entries:
+        if e.point != spec.point or not _is_live(e):
+            continue
+        prob = e.jev_call.get(spec.field)
+        positive = _incumbent_positive(e, spec)
+        if prob is None or positive is None:
+            continue
+        points.append((float(prob), positive))
+    return points
+
+
+def _bin_label(low: float, high: float) -> str:
+    return f"{low:g}–{high:g}"
+
+
+def calibration_bins(entries: list[JevEntry], key: str) -> list[dict]:
+    """One row per calibration bin, in order, including empty bins (n=0, share None)."""
+    points = _calibration_points(entries, key)
+    edges = CALIBRATION_BIN_EDGES
+    bins = []
+    for i, (low, high) in enumerate(zip(edges, edges[1:])):
+        last = i == len(edges) - 2
+        in_bin = [pos for p, pos in points if low <= p and (p < high or last and p <= high)]
+        n = len(in_bin)
+        positive = sum(in_bin)
+        bins.append(
+            {
+                "label": _bin_label(low, high),
+                "n": n,
+                "positive": positive,
+                "share": positive / n if n else None,
+            }
+        )
+    return bins
+
+
+def _edge_result(points: list[tuple[float, bool]], candidates: list[float], side: str) -> dict:
+    """Widest qualifying edge on one side; candidates must be ordered widest first."""
+    enough_data = False
+    for edge in candidates:
+        if side == "low":
+            matched = [not pos for p, pos in points if p < edge]
+        else:
+            matched = [pos for p, pos in points if p >= edge]
+        n = len(matched)
+        if n < CALIBRATION_MIN_CALLS:
+            continue
+        enough_data = True
+        rate = sum(matched) / n
+        if rate >= CALIBRATION_AGREEMENT_THRESHOLD:
+            return {"edge": edge, "agreement": rate, "n": n, "reason": None}
+    reason = _no_edge_reason() if enough_data else NOT_ENOUGH_DATA
+    return {"edge": None, "agreement": None, "n": 0, "reason": reason}
+
+
+def _no_edge_reason() -> str:
+    return f"no edge reaches {CALIBRATION_AGREEMENT_THRESHOLD:.0%}"
+
+
+def suggest_band_edges(entries: list[JevEntry], key: str) -> dict:
+    """Suggest the widest low and high band edges from the calibration bin edges.
+
+    Below the low edge Jev calls the negative outcome; at or above the high edge it calls
+    the positive one. An edge qualifies when Jev's call matched the incumbent on at least
+    CALIBRATION_AGREEMENT_THRESHOLD of the CALIBRATION_MIN_CALLS or more calls it covers.
+    """
+    points = _calibration_points(entries, key)
+    inner = CALIBRATION_BIN_EDGES[1:-1]
+    lows = sorted((e for e in inner if e <= CALIBRATION_CALL_THRESHOLD), reverse=True)
+    highs = sorted(e for e in inner if e >= CALIBRATION_CALL_THRESHOLD)
+    return {
+        "low": _edge_result(points, lows, "low"),
+        "high": _edge_result(points, highs, "high"),
+    }
+
+
+def format_band_edges(edges: dict) -> str:
+    low, high = edges["low"], edges["high"]
+    if low["edge"] is None and high["edge"] is None:
+        if NOT_ENOUGH_DATA == low["reason"] == high["reason"]:
+            return NOT_ENOUGH_DATA
+        return _no_edge_reason()
+    parts = []
+    for side, result in (("low", low), ("high", high)):
+        if result["edge"] is None:
+            parts.append(f"{side}: {result['reason']}")
+        else:
+            parts.append(f"{side} {result['edge']:g} ({result['agreement']:.0%}, n={result['n']})")
+    return "; ".join(parts)
+
+
+def baseline_agreement(entries: list[JevEntry], key: str) -> dict:
+    """Agreement of always picking the incumbent's most common verdict (ties go positive)."""
+    spec = CALIBRATION_POINTS[key]
+    points = _calibration_points(entries, key)
+    n = len(points)
+    positive = sum(pos for _, pos in points)
+    if positive >= n - positive:
+        label, agreed = spec.always_positive, positive
+    else:
+        label, agreed = spec.always_negative, n - positive
+    return {"label": label, "agreement": agreed / n if n else 0.0, "n": n}
+
+
+def jev_agreement(entries: list[JevEntry], key: str) -> dict:
+    """Agreement of Jev's own call (positive at or above CALIBRATION_CALL_THRESHOLD)."""
+    points = _calibration_points(entries, key)
+    n = len(points)
+    agreed = sum((p >= CALIBRATION_CALL_THRESHOLD) == pos for p, pos in points)
+    return {"agreement": agreed / n if n else 0.0, "n": n}
+
+
+def compute_calibration(entries: list[JevEntry]) -> dict:
+    return {
+        key: {
+            "positive_label": spec.positive_label,
+            "bins": calibration_bins(entries, key),
+            "edges": suggest_band_edges(entries, key),
+            "baseline": baseline_agreement(entries, key),
+            "jev": jev_agreement(entries, key),
+        }
+        for key, spec in CALIBRATION_POINTS.items()
+    }
+
+
 def _md_label(date_str: str) -> str:
     parts = date_str.split("-")
     if len(parts) >= 3:
@@ -470,6 +653,41 @@ def _render_automerge_section(
         lines.append("")
 
 
+def _render_calibration_section(lines: list[str], calibration: dict) -> None:
+    lines.append("## Calibration")
+    lines.append("")
+    lines.append(
+        "Live rows only; shadow and backfilled rows are excluded. A suggested band edge"
+        f" needs Jev to match the incumbent on at least {CALIBRATION_AGREEMENT_THRESHOLD:.0%}"
+        f" of the calls beyond it, with at least n={CALIBRATION_MIN_CALLS} calls."
+    )
+    lines.append("")
+    for key, data in calibration.items():
+        lines.append(f"### {key}")
+        lines.append("")
+        lines.append(f"| Bin | n | % {data['positive_label']} |")
+        lines.append("|-----|---|---|")
+        for b in data["bins"]:
+            share = "—" if b["share"] is None else f"{b['share']:.0%}"
+            lines.append(f"| {b['label']} | n={b['n']} | {share} |")
+        lines.append("")
+        baseline = data["baseline"]
+        jev = data["jev"]
+        edges = data["edges"]
+        edge_text = format_band_edges(edges)
+        if edges["low"]["edge"] is None and edges["high"]["edge"] is None:
+            edge_text += f" (n={baseline['n']})"
+        lines.append(f"- **Suggested band edges:** {edge_text}")
+        if baseline["n"] == 0:
+            lines.append("- **Baseline:** no live calls yet (n=0)")
+        else:
+            lines.append(
+                f"- **Baseline:** {baseline['label']}: {baseline['agreement']:.0%},"
+                f" n={baseline['n']} vs Jev: {jev['agreement']:.0%}, n={jev['n']}"
+            )
+        lines.append("")
+
+
 def render_jev_md(
     triage_stats: dict,
     automerge_stats: dict,
@@ -477,6 +695,7 @@ def render_jev_md(
     *,
     backfill_triage_stats: dict | None = None,
     backfill_automerge_stats: dict | None = None,
+    calibration: dict | None = None,
     min_n: int = MIN_N,
     generated_at: str | None = None,
     gate_low: float = GATE_LOW,
@@ -509,6 +728,9 @@ def render_jev_md(
 
     _render_triage_section(lines, triage_stats, min_n=min_n)
     _render_automerge_section(lines, automerge_stats, min_n=min_n)
+
+    if calibration:
+        _render_calibration_section(lines, calibration)
 
     has_backfill = (
         backfill_triage_stats
@@ -662,17 +884,14 @@ def _publish_via_pr(ctx: RepoContext, jev_path: Path, date: str) -> str:
             pass
 
 
-def main(
+def build_report(
+    parsed: ParsedDecisions,
+    generated_at: str | None = None,
     *,
-    ctx: RepoContext,
-    publish: bool = False,
-    pr: bool = False,
     gate_low: float = GATE_LOW,
     gate_high: float = GATE_HIGH,
-):
-    decisions_path = ctx.data_dir / "jev_decisions.jsonl"
-    parsed = parse_jev_decisions(decisions_path)
-
+) -> str:
+    """Compute every stat from parsed decision rows and render JEV.md."""
     triage_stats = compute_triage_stats(parsed.live)
     automerge_stats = compute_automerge_stats(parsed.live, gate_low, gate_high)
 
@@ -693,13 +912,32 @@ def main(
         "date_range": date_range,
     }
 
-    content = render_jev_md(
+    return render_jev_md(
         triage_stats,
         automerge_stats,
         counts,
         backfill_triage_stats=backfill_triage_stats,
         backfill_automerge_stats=backfill_automerge_stats,
-        generated_at=datetime.now().strftime("%Y-%m-%d %H:%M UTC"),
+        calibration=compute_calibration(parsed.live),
+        generated_at=generated_at,
+        gate_low=gate_low,
+        gate_high=gate_high,
+    )
+
+
+def main(
+    *,
+    ctx: RepoContext,
+    publish: bool = False,
+    pr: bool = False,
+    gate_low: float = GATE_LOW,
+    gate_high: float = GATE_HIGH,
+):
+    decisions_path = ctx.data_dir / "jev_decisions.jsonl"
+    parsed = parse_jev_decisions(decisions_path)
+    content = build_report(
+        parsed,
+        datetime.now().strftime("%Y-%m-%d %H:%M UTC"),
         gate_low=gate_low,
         gate_high=gate_high,
     )

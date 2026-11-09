@@ -4,17 +4,27 @@ from unittest.mock import patch
 
 import pytest
 
-from autoloop.config import AutoLoopConfig
+import autoloop.jev_report as jev_report
+from autoloop.config import AutoLoopConfig, RepoContext
 from autoloop.jev import GATE_HIGH, GATE_LOW
 from autoloop.jev_log import log_decision
 from autoloop.jev_report import (
+    NOT_ENOUGH_DATA,
     JevEntry,
+    ParsedDecisions,
     _rate_with_n,
     _without_footer,
+    baseline_agreement,
+    build_report,
+    calibration_bins,
     compute_automerge_stats,
+    compute_calibration,
     compute_triage_stats,
+    format_band_edges,
+    jev_agreement,
     parse_jev_decisions,
     render_jev_md,
+    suggest_band_edges,
 )
 from tests.test_jev_log import (
     FIRST_SHA,
@@ -1431,3 +1441,320 @@ class TestAutoMergeBackfill:
         assert f"Decisions file: {data_dir / 'jev_decisions.jsonl'}" in out
         assert len(_rows(data_dir / "jev_decisions.jsonl")) == 1
         assert repo_local.read_bytes() == before
+
+
+# --- calibration (#495) ---
+
+WELL_FORMED = "triage.well_formed"
+NEEDS_DECOMP = "triage.needs_decomposition"
+MEETS_AC = "auto-merge.meets_acceptance_criteria"
+BIN_LABELS = ["0–0.15", "0.15–0.35", "0.35–0.5", "0.5–0.65", "0.65–0.85", "0.85–1"]
+
+
+def _merge_rows(pairs):
+    """Auto-merge entries from (probability, approved, count) triples."""
+    return [
+        _make_automerge_entry(prob=prob, approved=approved)
+        for prob, approved, count in pairs
+        for _ in range(count)
+    ]
+
+
+def _bin_summary(bins):
+    return [(b["label"], b["n"], b["share"]) for b in bins]
+
+
+def _render_calibration(entries):
+    return render_jev_md(
+        _empty_triage_stats(),
+        _empty_automerge_stats(),
+        _basic_counts(),
+        calibration=compute_calibration(entries),
+    )
+
+
+class TestCalibrationBins:
+    def test_boundary_values_land_in_documented_bin_and_empty_bin_kept(self):
+        entries = [
+            _make_triage_entry(well_formed=0.15, verdict="rejected"),
+            _make_triage_entry(well_formed=0.35, verdict="ready"),
+            _make_triage_entry(well_formed=0.4, verdict="rejected"),
+            _make_triage_entry(well_formed=0.5, verdict="ready"),
+            _make_triage_entry(well_formed=0.65, verdict="needs-decomposition"),
+            _make_triage_entry(well_formed=0.85, verdict="ready"),
+            _make_triage_entry(well_formed=0.9, verdict="rejected"),
+            _make_triage_entry(well_formed=1.0, verdict="ready"),
+        ]
+
+        bins = calibration_bins(entries, WELL_FORMED)
+
+        assert _bin_summary(bins) == [
+            ("0–0.15", 0, None),
+            ("0.15–0.35", 1, 0.0),
+            ("0.35–0.5", 2, 0.5),
+            ("0.5–0.65", 1, 1.0),
+            ("0.65–0.85", 1, 1.0),
+            ("0.85–1", 3, 2 / 3),
+        ]
+
+    def test_needs_decomposition_positive_is_needs_decomposition_verdict(self):
+        entries = [
+            _make_triage_entry(needs_decomp=0.9, verdict="needs-decomposition"),
+            _make_triage_entry(needs_decomp=0.95, verdict="ready"),
+            _make_triage_entry(needs_decomp=0.05, verdict="rejected"),
+        ]
+
+        bins = calibration_bins(entries, NEEDS_DECOMP)
+
+        assert (bins[0]["n"], bins[0]["share"]) == (1, 0.0)
+        assert (bins[-1]["n"], bins[-1]["share"]) == (2, 0.5)
+
+    def test_auto_merge_positive_is_approved(self):
+        entries = _merge_rows([(0.1, False, 3), (0.1, True, 1), (0.9, True, 2)])
+
+        bins = calibration_bins(entries, MEETS_AC)
+
+        assert (bins[0]["n"], bins[0]["share"]) == (4, 0.25)
+        assert (bins[-1]["n"], bins[-1]["share"]) == (2, 1.0)
+        assert sum(b["n"] for b in bins) == 6
+
+    def test_rows_without_probability_or_incumbent_are_skipped(self):
+        entries = [
+            _make_automerge_entry(fallback=True),
+            JevEntry("", 1, "auto-merge", {"meets_acceptance_criteria": 0.9}, {}),
+            _make_automerge_entry(prob=0.9),
+        ]
+
+        assert sum(b["n"] for b in calibration_bins(entries, MEETS_AC)) == 1
+
+    def test_non_live_rows_excluded_from_bin_counts(self, tmp_path):
+        shadow = _automerge_record(issue=3, prob=0.9)
+        shadow["shadow"] = True
+        other_source = _automerge_record(issue=4, prob=0.9)
+        other_source["source"] = "replay"
+        log_file = _write_jsonl(
+            tmp_path / "jev_decisions.jsonl",
+            [
+                _automerge_record(issue=1, prob=0.9),
+                _automerge_record(issue=2, prob=0.1, approved=False),
+                _automerge_record(issue=5, prob=0.9, backfill=True),
+                shadow,
+                other_source,
+            ],
+        )
+        parsed = parse_jev_decisions(log_file)
+
+        bins = calibration_bins(parsed.live + parsed.backfilled, MEETS_AC)
+
+        assert [b["n"] for b in bins] == [1, 0, 0, 0, 0, 1]
+        md = build_report(parsed)
+        section = md[md.index(f"### {MEETS_AC}") :]
+        assert "| 0.85–1 | n=1 | 100% |" in section
+
+
+class TestSuggestBandEdges:
+    def test_returns_widest_edges_meeting_threshold_and_minimum(self):
+        entries = _merge_rows(
+            [
+                (0.1, False, 20),
+                (0.2, False, 15),
+                (0.4, False, 5),
+                (0.4, True, 5),
+                (0.55, True, 3),
+                (0.55, False, 3),
+                (0.7, True, 9),
+                (0.7, False, 1),
+                (0.9, True, 25),
+            ]
+        )
+
+        edges = suggest_band_edges(entries, MEETS_AC)
+
+        # Low 0.5 covers 45 calls at 89%; 0.35 covers 35 at 100%; 0.15 is narrower.
+        assert edges["low"] == {"edge": 0.35, "agreement": 1.0, "n": 35, "reason": None}
+        # High 0.5 covers 41 calls at 90%; 0.65 covers 35 at 97%; 0.85 has only 25.
+        assert edges["high"]["edge"] == 0.65
+        assert edges["high"]["n"] == 35
+        assert edges["high"]["agreement"] == pytest.approx(34 / 35)
+        assert format_band_edges(edges) == "low 0.35 (100%, n=35); high 0.65 (97%, n=35)"
+
+    def test_not_enough_data_below_minimum_calls(self):
+        entries = _merge_rows([(0.1, False, 14), (0.9, True, 15)])
+
+        edges = suggest_band_edges(entries, MEETS_AC)
+
+        assert edges["low"]["reason"] == NOT_ENOUGH_DATA
+        assert edges["high"]["reason"] == NOT_ENOUGH_DATA
+        assert edges["low"]["edge"] is None and edges["high"]["edge"] is None
+        assert format_band_edges(edges) == "not enough data"
+
+    def test_no_edge_reaches_threshold(self):
+        entries = _merge_rows(
+            [(0.1, False, 20), (0.1, True, 20), (0.9, True, 20), (0.9, False, 20)]
+        )
+
+        edges = suggest_band_edges(entries, MEETS_AC)
+
+        assert edges["low"]["reason"] == "no edge reaches 95%"
+        assert edges["high"]["reason"] == "no edge reaches 95%"
+        assert format_band_edges(edges) == "no edge reaches 95%"
+
+    def test_one_side_found_other_side_reported(self):
+        entries = _merge_rows([(0.1, False, 30), (0.9, True, 5)])
+
+        edges = suggest_band_edges(entries, MEETS_AC)
+
+        assert edges["low"]["edge"] == 0.5
+        assert format_band_edges(edges) == "low 0.5 (100%, n=30); high: not enough data"
+
+
+class TestBaselineAgreement:
+    def _fixture(self):
+        return _merge_rows([(0.9, True, 51), (0.2, False, 3), (0.8, False, 2)])
+
+    def test_always_picks_most_common_incumbent_verdict(self):
+        baseline = baseline_agreement(self._fixture(), MEETS_AC)
+
+        assert baseline["label"] == "always approve"
+        assert baseline["n"] == 56
+        assert f"{baseline['agreement']:.0%}" == "91%"
+
+    def test_negative_majority(self):
+        entries = [_make_triage_entry(needs_decomp=0.1, verdict="ready")] * 3 + [
+            _make_triage_entry(needs_decomp=0.9, verdict="needs-decomposition")
+        ]
+
+        baseline = baseline_agreement(entries, NEEDS_DECOMP)
+
+        assert baseline == {"label": "never decompose", "agreement": 0.75, "n": 4}
+
+    def test_jev_agreement(self):
+        assert jev_agreement(self._fixture(), MEETS_AC) == {"agreement": 54 / 56, "n": 56}
+
+    def test_rendered_alongside_jev_agreement(self):
+        md = _render_calibration(self._fixture())
+
+        section = md[md.index(f"### {MEETS_AC}") :]
+        assert "- **Baseline:** always approve: 91%, n=56 vs Jev: 96%, n=56" in section
+
+    def test_no_live_calls(self):
+        md = _render_calibration([])
+
+        assert "- **Baseline:** no live calls yet (n=0)" in md
+
+
+class TestCalibrationSection:
+    def _parsed(self, tmp_path):
+        records = [
+            _triage_record(issue=1, well_formed=0.92, needs_decomp=0.1, verdict="ready"),
+            _triage_record(issue=2, well_formed=0.2, needs_decomp=0.3, verdict="rejected"),
+            _triage_record(
+                issue=3, well_formed=0.7, needs_decomp=0.8, verdict="needs-decomposition"
+            ),
+            _automerge_record(issue=4, prob=0.9, approved=True),
+            _automerge_record(issue=5, prob=0.1, approved=False),
+        ]
+        return parse_jev_decisions(_write_jsonl(tmp_path / "jev_decisions.jsonl", records))
+
+    def test_report_has_one_table_per_probability_with_six_bins_in_order(self, tmp_path):
+        md = build_report(self._parsed(tmp_path))
+
+        assert "## Calibration" in md
+        section = md[md.index("## Calibration") : md.index("## Legend")]
+        headings = [f"### {WELL_FORMED}", f"### {NEEDS_DECOMP}", f"### {MEETS_AC}"]
+        positions = [section.index(h) for h in headings]
+        assert positions == sorted(positions)
+        for start, end in zip(positions, positions[1:] + [len(section)]):
+            table = section[start:end]
+            rows = [line for line in table.split("\n") if line.startswith("| ")]
+            assert [row.split("|")[1].strip() for row in rows[1:]] == BIN_LABELS
+            assert table.count("**Suggested band edges:**") == 1
+            assert table.count("**Baseline:**") == 1
+
+    def test_empty_bins_show_n_zero(self, tmp_path):
+        md = build_report(self._parsed(tmp_path))
+
+        section = md[md.index(f"### {MEETS_AC}") :]
+        assert "| 0.35–0.5 | n=0 | — |" in section
+        assert "| 0–0.15 | n=1 | 0% |" in section
+        assert "- **Suggested band edges:** not enough data (n=2)" in section
+
+    def test_section_between_automerge_and_backfill(self, tmp_path):
+        md = render_jev_md(
+            _full_triage_stats(),
+            _full_automerge_stats(),
+            _basic_counts(),
+            backfill_triage_stats=_full_triage_stats(),
+            calibration=compute_calibration(self._parsed(tmp_path).live),
+        )
+
+        assert md.index("### Per-Zone Agreement") < md.index("## Calibration")
+        assert md.index("## Calibration") < md.index("## Backfill")
+
+    def test_every_percentage_has_n_on_same_line(self):
+        entries = _merge_rows(
+            [(0.1, False, 20), (0.1, True, 20), (0.9, True, 20), (0.9, False, 20)]
+        )
+        md = _render_calibration(entries)
+
+        section = md[md.index("## Calibration") : md.index("## Legend")]
+        pct_lines = [line for line in section.split("\n") if re.search(r"\d%", line)]
+        assert pct_lines
+        for line in pct_lines:
+            assert "n=" in line, line
+
+    def test_omitted_without_calibration_data(self):
+        md = render_jev_md(_empty_triage_stats(), _empty_automerge_stats(), _basic_counts())
+
+        assert "## Calibration" not in md
+
+    def test_main_writes_calibration_section(self, tmp_path):
+        ctx = RepoContext.for_data_dir(tmp_path, repo_dir=tmp_path)
+        _write_jsonl(tmp_path / "jev_decisions.jsonl", [_automerge_record(prob=0.9)])
+
+        jev_report.main(ctx=ctx)
+
+        assert "## Calibration" in (tmp_path / "JEV.md").read_text()
+
+    def test_build_report_empty(self):
+        md = build_report(ParsedDecisions(backfilled=[], live=[]))
+
+        assert "## Calibration" in md
+
+
+class TestCalibrationConstants:
+    def test_module_level_constants(self):
+        assert jev_report.CALIBRATION_BIN_EDGES == (0.0, 0.15, 0.35, 0.5, 0.65, 0.85, 1.0)
+        assert jev_report.CALIBRATION_AGREEMENT_THRESHOLD == 0.95
+        assert jev_report.CALIBRATION_MIN_CALLS == 30
+
+    def test_changing_bin_edges_changes_output(self, monkeypatch):
+        entries = _merge_rows([(0.3, True, 1)])
+        before = _render_calibration(entries)
+        monkeypatch.setattr(jev_report, "CALIBRATION_BIN_EDGES", (0.0, 0.5, 1.0))
+
+        after = _render_calibration(entries)
+
+        assert "| 0.15–0.35 | n=1 | 100% |" in before
+        assert "| 0–0.5 | n=1 | 100% |" in after
+        assert "0.15–0.35" not in after
+
+    def test_changing_threshold_changes_output(self, monkeypatch):
+        entries = _merge_rows([(0.1, False, 28), (0.1, True, 2), (0.9, True, 30)])
+        before = _render_calibration(entries)
+        monkeypatch.setattr(jev_report, "CALIBRATION_AGREEMENT_THRESHOLD", 0.9)
+
+        after = _render_calibration(entries)
+
+        assert "low: no edge reaches 95%" in before
+        assert "low 0.5 (93%, n=30)" in after
+
+    def test_changing_minimum_calls_changes_output(self, monkeypatch):
+        entries = _merge_rows([(0.1, False, 10), (0.9, True, 10)])
+        before = _render_calibration(entries)
+        monkeypatch.setattr(jev_report, "CALIBRATION_MIN_CALLS", 10)
+
+        after = _render_calibration(entries)
+
+        assert "**Suggested band edges:** not enough data" in before
+        assert "low 0.5 (100%, n=10); high 0.5 (100%, n=10)" in after
