@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.20.0
+
+Jev auto-merge shadow decisions are logged again. From 2026-10-03 on, decisions made in an implement worktree were written to a repo-local file and lost. They now go to the main data dir, and a new backfill mode rebuilds the missing records from GitHub. JEV.md puts its charts first and shows `n` on every rate. It uses the configured Jev band for its action zones, and a new Calibration section gives per-bin agreement, suggested band edges and an "always pick the usual verdict" baseline. EVAL.md also puts its charts first.
+
+### Jev
+- fix: log auto-merge shadow decisions to the main data dir, not the worktree (#480) ($1.67)
+- feat: `backfill_jev.py --point auto-merge --dry-run` lists PRs with no recorded decision and why others are skipped (#483) ($1.45)
+- feat: `backfill_jev.py --point auto-merge` calls Jev in shadow mode and appends tagged, idempotent backfill records (#484) ($1.29)
+
+### Jev Report
+- feat: JEV.md charts near the top, `n` on every rate, live and backfill kept apart, and no publish when nothing changed (#482) ($2.03)
+- fix: compute JEV.md action zones from the configured Jev band, with one set of band defaults (#490) ($1.20)
+- feat: Calibration section with per-bin agreement, suggested band edges and a baseline per decision point (#495) ($2.02)
+
+### Eval Dashboard
+- feat: show eval charts near the top of EVAL.md (#477) ($1.18)
+
+### Docs
+- docs: README install examples point at v0.20.0. The Jev section documents the log location, calibration, baseline and the auto-merge backfill, and `jev-report` is in the commands table
+
+Total: 7 PRs, $10.84
+
 ## v0.19.0
 
 Implement now respects every issue on a `Depends on:` line. Before, only the first number was read, so an issue could be built before its other dependencies were done. Human-edit detection uses a 7-day window and counts code files only. Avg cost/run stays implementation-only now that rows also log review cost. Every run_history row records the model that ran it.
