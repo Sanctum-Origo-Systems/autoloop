@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 from autoloop.claude_runner import ClaudeResult, run_claude
 from autoloop.create_issue import build_issue_body
 from autoloop.implement_issue import detect_issue_type
+from autoloop.review_queue import parse_dependency_numbers
 
 
 def build_triage_prompt(cfg: AutoLoopConfig) -> str:
@@ -185,6 +186,39 @@ def _extract_dependency_notes(body: str) -> str:
     if not match:
         return ""
     return match.group(1).strip()
+
+
+def _extract_parent_dependency_numbers(body: str) -> list[int]:
+    """Collect dependency numbers from bare ``Depends on:`` lines and a '## Dependencies' section.
+
+    Numbers are returned in order of appearance with duplicates removed.
+    """
+    numbers = parse_dependency_numbers(body)
+    for n in re.findall(r"#(\d+)", _extract_dependency_notes(body)):
+        if int(n) not in numbers:
+            numbers.append(int(n))
+    return numbers
+
+
+def _filter_open_issues(numbers: list[int], cfg: AutoLoopConfig) -> list[int]:
+    """Drop closed issues from *numbers*; keep any whose state can't be determined."""
+    open_numbers = []
+    for num in numbers:
+        proc = subprocess.run(
+            ["gh", "issue", "view", str(num), "--repo", cfg.repo, "--json", "state"],
+            capture_output=True,
+            text=True,
+        )
+        try:
+            state = json.loads(proc.stdout).get("state", "") if proc.returncode == 0 else ""
+        except (json.JSONDecodeError, AttributeError):
+            state = ""
+        if state == "CLOSED":
+            continue
+        if not state:
+            logging.warning("Could not check state of dependency #%s; carrying it over", num)
+        open_numbers.append(num)
+    return open_numbers
 
 
 def _extract_files_from_body(body: str) -> list[str]:
@@ -968,19 +1002,16 @@ def create_sub_issues(
 ) -> list[int]:
     """Create sub-issues from a decomposition and return their numbers."""
     parent_type = detect_issue_type(parent_summary)
-    parent_deps = _extract_dependency_notes(parent_summary)
+    parent_deps = _filter_open_issues(_extract_parent_dependency_numbers(parent_summary), cfg)
     parent_is_blocked = any(lbl.get("name") == "blocked" for lbl in (parent_labels or []))
     step_to_issue: dict[int, int] = {}
     created: list[int] = []
     for step in result.get("decomposition", []):
-        dep_refs = [
-            f"#{step_to_issue[d]}" for d in step.get("depends_on", []) if d in step_to_issue
-        ]
-        deps = "Depends on: " + ", ".join(dep_refs) if dep_refs else ""
-        if parent_deps and deps:
-            deps = parent_deps + "\n" + deps
-        elif parent_deps:
-            deps = parent_deps
+        dep_nums = list(parent_deps)
+        for d in step.get("depends_on", []):
+            if d in step_to_issue and step_to_issue[d] not in dep_nums:
+                dep_nums.append(step_to_issue[d])
+        deps = "Depends on: " + ", ".join(f"#{n}" for n in dep_nums) if dep_nums else ""
 
         fields = suggest_sub_issue_fields(
             parent_number, parent_summary, step, cfg, repo_dir=repo_dir
