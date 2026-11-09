@@ -11,7 +11,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from autoloop.jev import GATE_HIGH, GATE_LOW
+from autoloop.jev import DEFAULT_BANDS, GATE_HIGH, GATE_LOW, JEV_POINTS, band_for
 
 
 def __getattr__(name: str):
@@ -115,12 +115,53 @@ class AutoLoopConfig:
     jev_timeout_seconds: int = 10
     jev_gate_low: float = GATE_LOW
     jev_gate_high: float = GATE_HIGH
+    jev_bands: dict[str, dict[str, dict[str, float]]] = field(
+        default_factory=lambda: {
+            point: {prob: dict(edges) for prob, edges in probs.items()}
+            for point, probs in DEFAULT_BANDS.items()
+        }
+    )
     test_integrity_guard: bool = False
     test_integrity_patterns: list[str] = field(
         default_factory=lambda: ["pytest.mark.skip", "pytest.mark.xfail"]
     )
     implement_isolation: str = "off"
     project_dir: str = ""
+
+    def jev_band(self, point: str, prob: str) -> tuple[float, float]:
+        """Resolve the (low, high) Jev band for one probability, falling back to gate_low/high."""
+        return band_for(point, prob, self.jev_bands, self.jev_gate_low, self.jev_gate_high)
+
+
+def _parse_jev_bands(raw: object) -> dict[str, dict[str, dict[str, float]]]:
+    """Validate a [jev.bands] table. Unknown point, probability, or edge keys raise ValueError."""
+    if not isinstance(raw, dict):
+        raise ValueError("jev.bands must be a table")
+    bands: dict[str, dict[str, dict[str, float]]] = {}
+    for point, probs in raw.items():
+        if point not in JEV_POINTS:
+            raise ValueError(
+                f"Unknown point 'jev.bands.{point}'; expected one of: {', '.join(JEV_POINTS)}"
+            )
+        if not isinstance(probs, dict):
+            raise ValueError(f"jev.bands.{point} must be a table")
+        bands[point] = {}
+        for prob, edges in probs.items():
+            if prob not in JEV_POINTS[point]:
+                raise ValueError(
+                    f"Unknown probability 'jev.bands.{point}.{prob}'; "
+                    f"expected one of: {', '.join(JEV_POINTS[point])}"
+                )
+            if not isinstance(edges, dict):
+                raise ValueError(f"jev.bands.{point}.{prob} must be a table")
+            unknown = sorted(set(edges) - {"low", "high"})
+            if unknown:
+                raise ValueError(
+                    f"Unknown key(s) in jev.bands.{point}.{prob}: {', '.join(unknown)}; "
+                    "expected 'low' and/or 'high'"
+                )
+            bands[point][prob] = {edge: float(value) for edge, value in edges.items()}
+    return bands
 
 
 _ENV_MAP: dict[str, tuple[str, type]] = {
@@ -205,7 +246,7 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
         config.auto_merge_promotion_level = level
 
     jev = data.get("jev", {})
-    _jev_known_keys = {"mode", "api_key_env", "timeout_seconds", "gate_low", "gate_high"}
+    _jev_known_keys = {"mode", "api_key_env", "timeout_seconds", "gate_low", "gate_high", "bands"}
     _jev_unexpected = sorted(set(jev) - _jev_known_keys)
     if _jev_unexpected:
         print(
@@ -227,6 +268,11 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
         config.jev_gate_low = float(jev["gate_low"])
     if "gate_high" in jev:
         config.jev_gate_high = float(jev["gate_high"])
+    if "bands" in jev:
+        # A probability table in TOML replaces that probability's default override,
+        # so an empty table resets it to gate_low/gate_high.
+        for point, probs in _parse_jev_bands(jev["bands"]).items():
+            config.jev_bands.setdefault(point, {}).update(probs)
     if "protected_paths" in data:
         config.protected_paths = list(data["protected_paths"])
 

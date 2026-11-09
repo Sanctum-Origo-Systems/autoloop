@@ -9,6 +9,7 @@ import pytest
 from autoloop.jev import (
     BACKOFF_SCHEDULE,
     DEFAULT_API_KEY_ENV,
+    DEFAULT_BANDS,
     DEFAULT_MODEL,
     GATE_HIGH,
     GATE_LOW,
@@ -17,6 +18,7 @@ from autoloop.jev import (
     JevResult,
     _extract_cost,
     MAX_RETRIES,
+    band_for,
     evaluate,
     probability,
     should_auto_merge,
@@ -890,3 +892,109 @@ class TestShouldAutoMergeShadowMode:
 
         assert result["fallback"] is True
         assert result["fallback_cause"] == "outage"
+
+
+# --- per-point, per-probability bands (#493) ---
+
+
+class TestBandFor:
+    def test_default_bands_override_needs_decomposition_low(self):
+        assert band_for("triage", "needs_decomposition") == (0.35, GATE_HIGH)
+
+    def test_default_bands_leave_other_probabilities_shared(self):
+        assert band_for("triage", "well_formed") == (GATE_LOW, GATE_HIGH)
+        assert band_for("auto-merge", "meets_acceptance_criteria") == (GATE_LOW, GATE_HIGH)
+
+    def test_unset_edges_fall_back_to_gate(self):
+        bands = {"triage": {"well_formed": {"high": 0.9}}}
+        assert band_for("triage", "well_formed", bands, 0.2, 0.8) == (0.2, 0.9)
+        assert band_for("triage", "needs_decomposition", bands, 0.2, 0.8) == (0.2, 0.8)
+
+    def test_empty_bands_disable_default_override(self):
+        assert band_for("triage", "needs_decomposition", {}) == (GATE_LOW, GATE_HIGH)
+
+    def test_default_bands_constant(self):
+        assert DEFAULT_BANDS == {"triage": {"needs_decomposition": {"low": 0.35}}}
+
+
+class TestTriagePerProbabilityBands:
+    _OVERRIDE = {"triage": {"needs_decomposition": {"low": 0.35}}}
+    _NO_OVERRIDE = {"triage": {"needs_decomposition": {"low": 0.15}}}
+
+    @pytest.mark.parametrize("bands", [None, _OVERRIDE])
+    def test_needs_decomposition_030_confident_with_override(self, monkeypatch, bands):
+        _mock_evaluate(
+            monkeypatch,
+            {
+                "well_formed": {"type": "noul", "noul": 0.95},
+                "needs_decomposition": {"type": "noul", "noul": 0.30},
+            },
+        )
+
+        assert "fallback" not in triage("issue text", bands=bands)
+        assert triage("issue text", bands=bands, mode="shadow")["would_fallback"] is False
+
+    def test_needs_decomposition_030_uncertain_without_override(self, monkeypatch):
+        _mock_evaluate(
+            monkeypatch,
+            {
+                "well_formed": {"type": "noul", "noul": 0.95},
+                "needs_decomposition": {"type": "noul", "noul": 0.30},
+            },
+        )
+
+        result = triage("issue text", bands=self._NO_OVERRIDE)
+        assert result["fallback"] is True
+        assert "needs_decomposition" in result["reason"]
+        shadow = triage("issue text", bands=self._NO_OVERRIDE, mode="shadow")
+        assert shadow["would_fallback"] is True
+        assert "needs_decomposition" in shadow["fallback_reason"]
+
+    @pytest.mark.parametrize("bands", [None, _OVERRIDE, _NO_OVERRIDE])
+    def test_well_formed_uses_shared_band(self, monkeypatch, bands):
+        _mock_evaluate(
+            monkeypatch,
+            {
+                "well_formed": {"type": "noul", "noul": 0.30},
+                "needs_decomposition": {"type": "noul", "noul": 0.05},
+            },
+        )
+
+        result = triage("issue text", bands=bands)
+        assert result["fallback"] is True
+        assert "well_formed" in result["reason"]
+        shadow = triage("issue text", bands=bands, mode="shadow")
+        assert shadow["would_fallback"] is True
+        assert "well_formed" in shadow["fallback_reason"]
+
+
+class TestShouldAutoMergePerProbabilityBands:
+    def _mock(self, monkeypatch, p):
+        _mock_evaluate(monkeypatch, {"meets_acceptance_criteria": {"type": "noul", "noul": p}})
+
+    def test_uncertain_under_shared_band_becomes_confident(self, monkeypatch):
+        self._mock(monkeypatch, 0.80)
+        assert should_auto_merge("issue", "diff")["fallback"] is True
+
+        bands = {"auto-merge": {"meets_acceptance_criteria": {"high": 0.75}}}
+        result = should_auto_merge("issue", "diff", bands=bands)
+        assert "fallback" not in result
+        assert result["meets_acceptance_criteria"] == 0.80
+        shadow = should_auto_merge("issue", "diff", bands=bands, mode="shadow")
+        assert shadow["would_fallback"] is False
+
+    def test_confident_under_shared_band_becomes_uncertain(self, monkeypatch):
+        self._mock(monkeypatch, 0.90)
+        assert "fallback" not in should_auto_merge("issue", "diff")
+
+        bands = {"auto-merge": {"meets_acceptance_criteria": {"low": 0.20, "high": 0.95}}}
+        result = should_auto_merge("issue", "diff", bands=bands)
+        assert result["fallback"] is True
+        assert "meets_acceptance_criteria" in result["reason"]
+        shadow = should_auto_merge("issue", "diff", bands=bands, mode="shadow")
+        assert shadow["would_fallback"] is True
+
+    def test_triage_band_does_not_affect_auto_merge(self, monkeypatch):
+        self._mock(monkeypatch, 0.30)
+        bands = {"triage": {"needs_decomposition": {"low": 0.35}}}
+        assert should_auto_merge("issue", "diff", bands=bands)["fallback"] is True

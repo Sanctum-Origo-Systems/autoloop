@@ -590,6 +590,23 @@ Jev is an off-by-default probabilistic decision model that can shadow autoloop's
 
 `mode` can also be set via the `JEV_MODE` environment variable.
 
+**Per-probability bands** — `[jev.bands.<point>.<probability>]` overrides the band for one probability at one decision point. Both keys are optional: `low` and `high`. An edge you don't set falls back to `gate_low`/`gate_high`.
+
+| Point | Probabilities |
+|-------|---------------|
+| `triage` | `well_formed`, `needs_decomposition` |
+| `auto-merge` | `meets_acceptance_criteria` |
+
+The built-in default sets one override, `triage.needs_decomposition.low = 0.35`. Every other probability uses the shared `gate_low`/`gate_high` band. If you set a probability's table in TOML, it replaces that default. An empty `[jev.bands.triage.needs_decomposition]` table restores the shared band. If a point or probability name is not in the table above, loading the config fails with an error that names the key.
+
+```toml
+[jev.bands.triage.needs_decomposition]
+low = 0.35            # default; high falls back to gate_high
+
+[jev.bands.auto-merge.meets_acceptance_criteria]
+high = 0.90           # low falls back to gate_low
+```
+
 `autoloop jev-report` writes `JEV.md`: the verdict and charts first, then the tables, with every rate next to its `n` and live and backfilled decisions reported separately. `jev-report --publish [--pr]` skips the commit (no branch, no PR) when the new `JEV.md` matches the copy on `main` apart from the generated-at line.
 
 ## Commands
