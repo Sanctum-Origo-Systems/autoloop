@@ -13,8 +13,10 @@ JEV_ENDPOINT = "https://openrouter.ai/api/alpha/decisions"
 DEFAULT_API_KEY_ENV = "OPENROUTER_API_KEY"
 DEFAULT_MODEL = "typesafe/jev-1.13"
 
-GATE_LOW = 0.35
-GATE_HIGH = 0.65
+# Default uncertain-probability band. AutoLoopConfig.jev_gate_low/high default to these,
+# so the module defaults and the [jev] config defaults cannot drift apart (#490).
+GATE_LOW = 0.15
+GATE_HIGH = 0.85
 
 MAX_RETRIES = 3
 BACKOFF_SCHEDULE = (1, 2, 4)

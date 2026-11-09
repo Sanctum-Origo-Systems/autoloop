@@ -539,11 +539,11 @@ class TestComputeAutomergeStats:
 
     def test_distribution_gate_buckets(self):
         entries = [
+            _make_automerge_entry(prob=0.05),
             _make_automerge_entry(prob=0.1),
-            _make_automerge_entry(prob=0.3),
             _make_automerge_entry(prob=0.5),
-            _make_automerge_entry(prob=0.7),
             _make_automerge_entry(prob=0.9),
+            _make_automerge_entry(prob=0.95),
         ]
         result = compute_automerge_stats(entries)
         dist = result["distribution"]
@@ -618,6 +618,29 @@ class TestComputeAutomergeStats:
         assert result["agreement_with_outcome"] == 1.0
         assert result["n_probabilities"] == 1
         assert result["n_with_outcome"] == 1
+
+    def test_configured_band_puts_0_7_in_deferred_zone(self):
+        """Regression for #490: zones follow the configured band, not 0.35/0.65."""
+        entries = [_make_automerge_entry(prob=0.7, approved=True)]
+        result = compute_automerge_stats(entries, gate_low=0.15, gate_high=0.85)
+        assert list(result["distribution"]) == [
+            "Act: reject (below 0.15)",
+            "Pipeline (0.15-0.85)",
+            "Act: merge (0.85+)",
+        ]
+        assert result["distribution"]["Pipeline (0.15-0.85)"] == 1
+        assert result["distribution"]["Act: merge (0.85+)"] == 0
+        assert result["zone_agreement"]["Pipeline (0.15-0.85)"] == {"agreed": 1, "total": 1}
+        assert result["zone_agreement"]["Act: merge (0.85+)"] == {"agreed": 0, "total": 0}
+
+    def test_custom_band_moves_boundaries(self):
+        entries = [_make_automerge_entry(prob=p) for p in (0.1, 0.2, 0.79, 0.8)]
+        result = compute_automerge_stats(entries, gate_low=0.2, gate_high=0.8)
+        assert result["distribution"] == {
+            "Act: reject (below 0.2)": 1,
+            "Pipeline (0.2-0.8)": 2,
+            "Act: merge (0.8+)": 1,
+        }
 
 
 # --- render_jev_md ---
@@ -847,6 +870,21 @@ class TestRenderJevMd:
         assert "Fell back" in md
         assert f"Pipeline ({GATE_LOW}" in md
         assert "Backfilled" in md
+
+    def test_states_band_and_legend_uses_it(self):
+        md = render_jev_md(
+            _empty_triage_stats(),
+            _empty_automerge_stats(),
+            _basic_counts(),
+            gate_low=0.2,
+            gate_high=0.8,
+        )
+        assert "**Band:** 0.2–0.8 (from config)" in md
+        assert "**Pipeline (0.2–0.8):**" in md
+
+    def test_band_defaults_to_jev_constants(self):
+        md = render_jev_md(_empty_triage_stats(), _empty_automerge_stats(), _basic_counts())
+        assert f"**Band:** {GATE_LOW}–{GATE_HIGH} (from config)" in md
 
     def test_min_n_guard_triage_percent(self):
         stats = {
@@ -1162,9 +1200,9 @@ class TestWithoutFooter:
 class TestComputeAutomergeZoneAgreement:
     def test_zone_agreement_computed(self):
         entries = [
-            _make_automerge_entry(prob=0.8, approved=True),
-            _make_automerge_entry(prob=0.8, approved=False),
-            _make_automerge_entry(prob=0.2, approved=False),
+            _make_automerge_entry(prob=0.9, approved=True),
+            _make_automerge_entry(prob=0.9, approved=False),
+            _make_automerge_entry(prob=0.1, approved=False),
         ]
         result = compute_automerge_stats(entries)
         za = result["zone_agreement"]
