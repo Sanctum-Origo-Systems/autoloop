@@ -153,8 +153,10 @@ def test_jev_report_main_uses_configured_band(tmp_path):
     md = (tmp_path / "JEV.md").read_text()
     assert "**Band:** 0.15–0.85 (from config)" in md
     assert '"Pipeline (0.15-0.85)"' in md
-    assert "0.35" not in md
-    assert "0.65" not in md
+    # The Calibration section bins at fixed edges (0.35, 0.65 among them), so check
+    # only that the old hardcoded band doesn't leak in.
+    assert "0.35–0.65" not in md
+    assert "0.35-0.65" not in md
 
 
 def _make_ctx(tmp_path):
@@ -250,21 +252,9 @@ def test_jev_report_publish_pr_creates_branch_and_pr(tmp_path, capsys):
 
 
 def _render_empty_jev_md(generated_at):
-    from autoloop.jev_report import (
-        compute_automerge_stats,
-        compute_triage_stats,
-        render_jev_md,
-    )
+    from autoloop.jev_report import ParsedDecisions, build_report
 
-    counts = {"total": 0, "live": 0, "backfilled": 0, "date_range": ""}
-    return render_jev_md(
-        compute_triage_stats([]),
-        compute_automerge_stats([]),
-        counts,
-        backfill_triage_stats=compute_triage_stats([]),
-        backfill_automerge_stats=compute_automerge_stats([]),
-        generated_at=generated_at,
-    )
+    return build_report(ParsedDecisions(backfilled=[], live=[]), generated_at)
 
 
 def _fake_subprocess_main_has(published, calls):
