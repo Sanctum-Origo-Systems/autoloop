@@ -607,10 +607,13 @@ low = 0.35            # default; high falls back to gate_high
 high = 0.90           # low falls back to gate_low
 ```
 
-`autoloop jev-report` writes `JEV.md`: the verdict and charts first, then the tables, with every rate next to its `n` and live and backfilled decisions reported separately. Action zones use the configured `gate_low`/`gate_high` band, and the report states which band it used. `jev-report --publish [--pr]` skips the commit (no branch, no PR) when the new `JEV.md` matches the copy on `main` apart from the generated-at line.
+Each shadow record stores the band each probability was judged against, as `jev_call.band.<probability> = {low, high}`.
+
+`autoloop jev-report` writes `JEV.md`: the verdict and charts first, then the tables, with every rate next to its `n` and live and backfilled decisions reported separately. Each row is counted as confident or uncertain, and placed in an action zone, using the band stored with it. Older rows without a stored band keep their logged fallback flag, and their action zone comes from the configured `gate_low`/`gate_high` band. The report states which band it used. `jev-report --publish [--pr]` skips the commit (no branch, no PR) when the new `JEV.md` matches the copy on `main` apart from the generated-at line.
 
 **Calibration** — for each decision point and probability (`triage.well_formed`, `triage.needs_decomposition`, `auto-merge.meets_acceptance_criteria`), `JEV.md` shows live decisions in bins (0–0.15, 0.15–0.35, 0.35–0.5, 0.5–0.65, 0.65–0.85, 0.85–1) with `n` and the share where the incumbent's verdict was the positive outcome. Below each table:
 
+- **Band:** the probability's configured band. Shown only when the probabilities don't all use the same band.
 - **Suggested band edges:** the widest low and high edge where Jev matched the incumbent on at least 95% of calls with at least 30 calls behind it, or "not enough data" / "no edge reaches 95%". Use these to set `gate_low`/`gate_high`, or a per-probability band, from your own data instead of guessing.
 - **Baseline:** the agreement rate of always picking the incumbent's most common verdict (for example "always approve: 90%, n=61"), next to Jev's own. If Jev doesn't beat the baseline, it isn't adding information.
 

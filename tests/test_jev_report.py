@@ -1758,3 +1758,182 @@ class TestCalibrationConstants:
 
         assert "**Suggested band edges:** not enough data" in before
         assert "low 0.5 (100%, n=10); high 0.5 (100%, n=10)" in after
+
+
+# --- Applied band (#494) ---
+
+
+def _banded_triage_record(needs_decomp, nd_low, issue=1):
+    record = _triage_record(issue=issue, well_formed=0.92, needs_decomp=needs_decomp)
+    record["jev_call"]["band"] = {
+        "well_formed": {"low": 0.15, "high": 0.85},
+        "needs_decomposition": {"low": nd_low, "high": 0.85},
+    }
+    return record
+
+
+def _parse_rows(tmp_path, records):
+    return parse_jev_decisions(_write_jsonl(tmp_path / "jev_decisions.jsonl", records))
+
+
+class TestStoredBand:
+    def test_parse_moves_band_out_of_jev_call(self, tmp_path):
+        parsed = _parse_rows(tmp_path, [_banded_triage_record(0.3, 0.35)])
+
+        entry = parsed.live[0]
+        assert entry.jev_call == {"well_formed": 0.92, "needs_decomposition": 0.3}
+        assert entry.band["needs_decomposition"] == {"low": 0.35, "high": 0.85}
+        assert "band" in entry.raw["jev_call"]
+
+    def test_row_without_band_parses_with_empty_band(self, tmp_path):
+        parsed = _parse_rows(tmp_path, [_triage_record()])
+
+        assert parsed.live[0].band == {}
+
+    def test_stored_band_decides_confident_or_uncertain(self, tmp_path):
+        confident = _parse_rows(tmp_path, [_banded_triage_record(0.3, 0.35)]).live
+        uncertain = _parse_rows(tmp_path, [_banded_triage_record(0.3, 0.15)]).live
+
+        confident_stats = compute_triage_stats(confident)
+        uncertain_stats = compute_triage_stats(uncertain)
+
+        assert confident_stats["uncertain_count"] == 0
+        assert confident_stats["agree_count"] == 1
+        assert uncertain_stats["uncertain_count"] == 1
+        assert uncertain_stats["agree_count"] == 0
+
+    def test_stored_band_wins_over_current_config(self, tmp_path):
+        entries = _parse_rows(tmp_path, [_banded_triage_record(0.3, 0.35)]).live
+
+        # Current shared edges would call 0.3 uncertain; the row's stored band says confident.
+        stats = compute_triage_stats(entries, gate_low=0.15, gate_high=0.85)
+
+        assert stats["uncertain_count"] == 0
+
+    def test_stored_band_rebuckets_weekly_trends(self, tmp_path):
+        records = [
+            _banded_triage_record(0.3, 0.35, issue=1),
+            _banded_triage_record(0.3, 0.15, issue=2),
+        ]
+        entries = _parse_rows(tmp_path, records).live
+
+        week = compute_triage_stats(entries)["weekly_trends"][0]
+
+        assert week["uncertain_count"] == 1
+        assert week["agree_count"] == 1
+
+    def test_row_without_band_is_bucketed_with_shared_edges(self, tmp_path):
+        rows = [
+            _triage_record(issue=1, well_formed=0.92, needs_decomp=0.3),
+            _automerge_record(issue=2, prob=0.2),
+        ]
+        entries = _parse_rows(tmp_path, rows).live
+
+        triage = compute_triage_stats(entries, gate_low=0.25, gate_high=0.85)
+        narrow = compute_automerge_stats(entries, gate_low=0.25, gate_high=0.85)
+        default = compute_automerge_stats(entries)
+
+        assert triage["n"] == 1
+        assert triage["agree_count"] == 1
+        assert narrow["distribution"]["Act: reject (below 0.25)"] == 1
+        assert default["distribution"]["Pipeline (0.15-0.85)"] == 1
+
+    def test_band_missing_a_probability_falls_back_to_shared_edges(self, tmp_path):
+        record = _triage_record(well_formed=0.92, needs_decomp=0.3)
+        record["jev_call"]["band"] = {"well_formed": {"low": 0.15, "high": 0.85}}
+        entries = _parse_rows(tmp_path, [record]).live
+
+        assert compute_triage_stats(entries)["uncertain_count"] == 1
+        assert compute_triage_stats(entries, gate_low=0.35)["uncertain_count"] == 0
+
+    def test_auto_merge_zone_uses_stored_band(self, tmp_path):
+        record = _automerge_record(prob=0.82)
+        record["jev_call"]["band"] = {"meets_acceptance_criteria": {"low": 0.2, "high": 0.8}}
+        entries = _parse_rows(tmp_path, [record]).live
+
+        stats = compute_automerge_stats(entries)
+
+        assert stats["distribution"]["Act: merge (0.85+)"] == 1
+        assert stats["zone_agreement"]["Act: merge (0.85+)"] == {"agreed": 1, "total": 1}
+
+    def test_logged_record_round_trips_through_report(self, tmp_path):
+        ctx = _make_ctx(tmp_path)
+        record = _triage_record(well_formed=0.92, needs_decomp=0.3)
+        log_decision(record, ctx, AutoLoopConfig())
+
+        parsed = parse_jev_decisions(ctx.data_dir / "jev_decisions.jsonl")
+
+        assert parsed.live[0].band["needs_decomposition"] == {"low": 0.35, "high": 0.85}
+        assert compute_triage_stats(parsed.live)["uncertain_count"] == 0
+
+
+class TestBandDisplay:
+    DIFFERENT = {
+        WELL_FORMED: (0.15, 0.85),
+        NEEDS_DECOMP: (0.35, 0.85),
+        MEETS_AC: (0.15, 0.85),
+    }
+    SAME = {WELL_FORMED: (0.2, 0.8), NEEDS_DECOMP: (0.2, 0.8), MEETS_AC: (0.2, 0.8)}
+
+    def _render(self, bands):
+        return render_jev_md(
+            _empty_triage_stats(),
+            _empty_automerge_stats(),
+            _basic_counts(),
+            calibration=compute_calibration([]),
+            bands=bands,
+        )
+
+    def test_differing_bands_shown_per_probability(self):
+        md = self._render(self.DIFFERENT)
+
+        for key, (low, high) in self.DIFFERENT.items():
+            start = md.index(f"### {key}")
+            end = md.index("- **Baseline:**", start)
+            assert f"- **Band:** {low}–{high} (from config)" in md[start:end]
+
+    def test_identical_bands_add_no_band_text(self):
+        md = self._render(self.SAME)
+
+        assert md == self._render(None)
+        section = md[md.index("## Calibration") : md.index("## Legend")]
+        assert "**Band:**" not in section
+
+    def test_probability_bands_resolves_config_table(self):
+        bands = jev_report.probability_bands(
+            {"auto-merge": {"meets_acceptance_criteria": {"high": 0.9}}}, 0.2, 0.8
+        )
+
+        assert bands == {
+            WELL_FORMED: (0.2, 0.8),
+            NEEDS_DECOMP: (0.2, 0.8),
+            MEETS_AC: (0.2, 0.9),
+        }
+
+    def test_probability_bands_defaults_to_built_in_overrides(self):
+        bands = jev_report.probability_bands()
+
+        assert bands[NEEDS_DECOMP] == (0.35, 0.85)
+        assert bands[WELL_FORMED] == (0.15, 0.85)
+
+    def test_build_report_shows_default_differing_bands(self):
+        md = build_report(ParsedDecisions(backfilled=[], live=[]))
+
+        section = md[md.index(f"### {NEEDS_DECOMP}") :]
+        assert "- **Band:** 0.35–0.85 (from config)" in section
+
+    def test_build_report_hides_bands_when_config_makes_them_identical(self):
+        md = build_report(ParsedDecisions(backfilled=[], live=[]), bands={"triage": {}})
+
+        section = md[md.index("## Calibration") : md.index("## Legend")]
+        assert "**Band:**" not in section
+
+    def test_main_passes_bands_to_report(self, tmp_path):
+        ctx = RepoContext.for_data_dir(tmp_path, repo_dir=tmp_path)
+        _write_jsonl(tmp_path / "jev_decisions.jsonl", [_automerge_record(prob=0.9)])
+
+        jev_report.main(ctx=ctx, bands={"triage": {"well_formed": {"low": 0.3}}})
+
+        md = (tmp_path / "JEV.md").read_text()
+        section = md[md.index(f"### {WELL_FORMED}") :]
+        assert "- **Band:** 0.3–0.85 (from config)" in section

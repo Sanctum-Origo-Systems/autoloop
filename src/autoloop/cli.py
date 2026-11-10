@@ -353,6 +353,7 @@ def main():
             pr=args.pr,
             gate_low=cfg.jev_gate_low,
             gate_high=cfg.jev_gate_high,
+            bands=cfg.jev_bands,
         )
 
     elif args.command == "doctor":
@@ -440,7 +441,7 @@ def _run_jev_shadow(
         "timestamp": datetime.now(UTC).isoformat(),
     }
     try:
-        log_decision(record, ctx)
+        log_decision(record, ctx, cfg)
     except Exception:
         logging.exception("Failed to log Jev auto-merge decision")
 
