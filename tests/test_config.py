@@ -688,6 +688,101 @@ def test_jev_band_defaults_match_jev_module_constants():
     assert config.jev_gate_high == GATE_HIGH
 
 
+def _load_jev_toml(tmp_path, monkeypatch, body: str) -> AutoLoopConfig:
+    for var in ("AUTOLOOP_TRIAGE_MODEL", "AUTOLOOP_IMPL_MODEL", "AUTOLOOP_TIMEOUT", "JEV_MODE"):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('repo = "acme-corp/widget"\n\n' + body)
+    return load_config(toml_path)
+
+
+def test_jev_bands_defaults():
+    config = AutoLoopConfig()
+    assert config.jev_gate_low == 0.15
+    assert config.jev_gate_high == 0.85
+    assert config.jev_bands == {"triage": {"needs_decomposition": {"low": 0.35}}}
+    assert config.jev_band("triage", "needs_decomposition") == (0.35, 0.85)
+    assert config.jev_band("triage", "well_formed") == (0.15, 0.85)
+    assert config.jev_band("auto-merge", "meets_acceptance_criteria") == (0.15, 0.85)
+
+
+def test_jev_bands_default_is_a_copy():
+    """Mutating one config's bands must not leak into DEFAULT_BANDS or another config."""
+    from autoloop.jev import DEFAULT_BANDS
+
+    a = AutoLoopConfig()
+    a.jev_bands["triage"]["needs_decomposition"]["low"] = 0.5
+    assert DEFAULT_BANDS["triage"]["needs_decomposition"]["low"] == 0.35
+    assert AutoLoopConfig().jev_band("triage", "needs_decomposition") == (0.35, 0.85)
+
+
+def test_jev_bands_absent_block_keeps_defaults(tmp_path, monkeypatch):
+    config = _load_jev_toml(tmp_path, monkeypatch, '[jev]\nmode = "shadow"\n')
+    assert config.jev_band("triage", "needs_decomposition") == (0.35, 0.85)
+    assert config.jev_band("triage", "well_formed") == (0.15, 0.85)
+
+
+def test_jev_bands_low_override_from_toml(tmp_path, monkeypatch):
+    config = _load_jev_toml(
+        tmp_path, monkeypatch, "[jev.bands.triage.needs_decomposition]\nlow = 0.35\n"
+    )
+    assert config.jev_bands["triage"]["needs_decomposition"] == {"low": 0.35}
+    assert config.jev_band("triage", "needs_decomposition") == (0.35, config.jev_gate_high)
+
+
+def test_jev_bands_high_only_falls_back_to_gate_low(tmp_path, monkeypatch):
+    config = _load_jev_toml(
+        tmp_path,
+        monkeypatch,
+        "[jev]\ngate_low = 0.10\ngate_high = 0.90\n\n"
+        "[jev.bands.auto-merge.meets_acceptance_criteria]\nhigh = 0.75\n",
+    )
+    assert config.jev_band("auto-merge", "meets_acceptance_criteria") == (0.10, 0.75)
+    assert config.jev_band("triage", "well_formed") == (0.10, 0.90)
+
+
+def test_jev_bands_empty_table_falls_back_to_gate(tmp_path, monkeypatch):
+    config = _load_jev_toml(tmp_path, monkeypatch, "[jev.bands.triage.needs_decomposition]\n")
+    assert config.jev_band("triage", "needs_decomposition") == (
+        config.jev_gate_low,
+        config.jev_gate_high,
+    )
+
+
+def test_jev_bands_key_not_warned_as_unexpected(tmp_path, monkeypatch, capsys):
+    _load_jev_toml(tmp_path, monkeypatch, "[jev.bands.triage.well_formed]\nlow = 0.2\n")
+    assert "bands" not in capsys.readouterr().err
+
+
+def test_jev_bands_unknown_point_raises(tmp_path, monkeypatch):
+    with pytest.raises(ValueError, match="jev.bands.review"):
+        _load_jev_toml(tmp_path, monkeypatch, "[jev.bands.review.well_formed]\nlow = 0.2\n")
+
+
+def test_jev_bands_unknown_probability_raises(tmp_path, monkeypatch):
+    with pytest.raises(ValueError, match="jev.bands.triage.is_spam"):
+        _load_jev_toml(tmp_path, monkeypatch, "[jev.bands.triage.is_spam]\nlow = 0.2\n")
+
+
+def test_jev_bands_probability_from_other_point_raises(tmp_path, monkeypatch):
+    with pytest.raises(ValueError, match="jev.bands.auto-merge.well_formed"):
+        _load_jev_toml(tmp_path, monkeypatch, "[jev.bands.auto-merge.well_formed]\nlow = 0.2\n")
+
+
+def test_jev_bands_unknown_edge_raises(tmp_path, monkeypatch):
+    with pytest.raises(ValueError, match="lo"):
+        _load_jev_toml(tmp_path, monkeypatch, "[jev.bands.triage.well_formed]\nlo = 0.2\n")
+
+
+def test_parse_jev_bands_rejects_non_table():
+    from autoloop.config import _parse_jev_bands
+
+    with pytest.raises(ValueError, match="jev.bands.triage"):
+        _parse_jev_bands({"triage": 0.3})
+    with pytest.raises(ValueError, match="jev.bands.triage.well_formed"):
+        _parse_jev_bands({"triage": {"well_formed": 0.3}})
+
+
 def test_jev_endpoint_field_removed():
     """jev_endpoint was a dead config field (never read by jev.py); it must not exist."""
     config = AutoLoopConfig()

@@ -590,11 +590,28 @@ Jev is an off-by-default probabilistic decision model that can shadow autoloop's
 
 `mode` can also be set via the `JEV_MODE` environment variable.
 
+**Per-probability bands** — `[jev.bands.<point>.<probability>]` overrides the band for one probability at one decision point. Both keys are optional: `low` and `high`. An edge you don't set falls back to `gate_low`/`gate_high`.
+
+| Point | Probabilities |
+|-------|---------------|
+| `triage` | `well_formed`, `needs_decomposition` |
+| `auto-merge` | `meets_acceptance_criteria` |
+
+The built-in default sets one override, `triage.needs_decomposition.low = 0.35`. Every other probability uses the shared `gate_low`/`gate_high` band. If you set a probability's table in TOML, it replaces that default. An empty `[jev.bands.triage.needs_decomposition]` table restores the shared band. If a point or probability name is not in the table above, loading the config fails with an error that names the key.
+
+```toml
+[jev.bands.triage.needs_decomposition]
+low = 0.35            # default; high falls back to gate_high
+
+[jev.bands.auto-merge.meets_acceptance_criteria]
+high = 0.90           # low falls back to gate_low
+```
+
 `autoloop jev-report` writes `JEV.md`: the verdict and charts first, then the tables, with every rate next to its `n` and live and backfilled decisions reported separately. Action zones use the configured `gate_low`/`gate_high` band, and the report states which band it used. `jev-report --publish [--pr]` skips the commit (no branch, no PR) when the new `JEV.md` matches the copy on `main` apart from the generated-at line.
 
 **Calibration** — for each decision point and probability (`triage.well_formed`, `triage.needs_decomposition`, `auto-merge.meets_acceptance_criteria`), `JEV.md` shows live decisions in bins (0–0.15, 0.15–0.35, 0.35–0.5, 0.5–0.65, 0.65–0.85, 0.85–1) with `n` and the share where the incumbent's verdict was the positive outcome. Below each table:
 
-- **Suggested band edges:** the widest low and high edge where Jev matched the incumbent on at least 95% of calls with at least 30 calls behind it, or "not enough data" / "no edge reaches 95%". Use these to set `gate_low`/`gate_high` from your own data instead of guessing.
+- **Suggested band edges:** the widest low and high edge where Jev matched the incumbent on at least 95% of calls with at least 30 calls behind it, or "not enough data" / "no edge reaches 95%". Use these to set `gate_low`/`gate_high`, or a per-probability band, from your own data instead of guessing.
 - **Baseline:** the agreement rate of always picking the incumbent's most common verdict (for example "always approve: 90%, n=61"), next to Jev's own. If Jev doesn't beat the baseline, it isn't adding information.
 
 The bins, the 95% threshold and the 30-call minimum are constants in `jev_report.py`. The incumbent's verdict is the yardstick, not ground truth.

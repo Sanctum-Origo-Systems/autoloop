@@ -573,6 +573,7 @@ def jev_triage(issue: dict, cfg: AutoLoopConfig) -> dict:
         timeout=cfg.jev_timeout_seconds,
         gate_low=cfg.jev_gate_low,
         gate_high=cfg.jev_gate_high,
+        bands=cfg.jev_bands,
         mode=cfg.jev_mode,
     )
 

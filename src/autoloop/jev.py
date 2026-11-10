@@ -18,6 +18,19 @@ DEFAULT_MODEL = "typesafe/jev-1.13"
 GATE_LOW = 0.15
 GATE_HIGH = 0.85
 
+# Probabilities each decision point asks Jev for. [jev.bands.<point>.<probability>] keys
+# in autoloop.toml must come from this table.
+JEV_POINTS: dict[str, tuple[str, ...]] = {
+    "triage": ("well_formed", "needs_decomposition"),
+    "auto-merge": ("meets_acceptance_criteria",),
+}
+
+# Built-in per-point, per-probability band overrides. Any edge not set here falls back
+# to gate_low/gate_high. AutoLoopConfig.jev_bands defaults to a copy of this.
+DEFAULT_BANDS: dict[str, dict[str, dict[str, float]]] = {
+    "triage": {"needs_decomposition": {"low": 0.35}},
+}
+
 MAX_RETRIES = 3
 BACKOFF_SCHEDULE = (1, 2, 4)
 
@@ -144,6 +157,24 @@ def _in_middle_band(p: float, gate_low: float = GATE_LOW, gate_high: float = GAT
     return gate_low < p < gate_high
 
 
+def band_for(
+    point: str,
+    prob: str,
+    bands: dict | None = None,
+    gate_low: float = GATE_LOW,
+    gate_high: float = GATE_HIGH,
+) -> tuple[float, float]:
+    """Return the (low, high) uncertain band for one probability at one decision point.
+
+    bands=None uses DEFAULT_BANDS. Edges missing from the override fall back to
+    gate_low/gate_high.
+    """
+    if bands is None:
+        bands = DEFAULT_BANDS
+    edges = bands.get(point, {}).get(prob, {})
+    return edges.get("low", gate_low), edges.get("high", gate_high)
+
+
 def _fallback(reason: str, cause: str = "outage", **extra: object) -> dict:
     return {"fallback": True, "reason": reason, "fallback_cause": cause, **extra}
 
@@ -157,6 +188,7 @@ def triage(
     timeout: float = 10.0,
     gate_low: float = GATE_LOW,
     gate_high: float = GATE_HIGH,
+    bands: dict | None = None,
     mode: str = "gate",
 ) -> dict:
     questions = {
@@ -192,6 +224,8 @@ def triage(
 
     wf_p = probability(result, "well_formed")
     nd_p = probability(result, "needs_decomposition")
+    wf_low, wf_high = band_for("triage", "well_formed", bands, gate_low, gate_high)
+    nd_low, nd_high = band_for("triage", "needs_decomposition", bands, gate_low, gate_high)
     latency = result.latency_seconds
     cost = _extract_cost(result.raw)
 
@@ -202,8 +236,8 @@ def triage(
             "latency": round(latency, 3),
             "cost": cost,
         }
-        wf_band = wf_p is not None and _in_middle_band(wf_p, gate_low, gate_high)
-        nd_band = nd_p is not None and _in_middle_band(nd_p, gate_low, gate_high)
+        wf_band = wf_p is not None and _in_middle_band(wf_p, wf_low, wf_high)
+        nd_band = nd_p is not None and _in_middle_band(nd_p, nd_low, nd_high)
         if wf_band or nd_band:
             reasons = []
             if wf_band:
@@ -217,14 +251,14 @@ def triage(
             out["would_fallback"] = False
         return out
 
-    if wf_p is not None and _in_middle_band(wf_p, gate_low, gate_high):
+    if wf_p is not None and _in_middle_band(wf_p, wf_low, wf_high):
         return _fallback(
             f"well_formed probability {wf_p} in uncertain band",
             cause="uncertain",
             latency=round(latency, 3),
             cost=cost,
         )
-    if nd_p is not None and _in_middle_band(nd_p, gate_low, gate_high):
+    if nd_p is not None and _in_middle_band(nd_p, nd_low, nd_high):
         return _fallback(
             f"needs_decomposition probability {nd_p} in uncertain band",
             cause="uncertain",
@@ -250,6 +284,7 @@ def should_auto_merge(
     timeout: float = 10.0,
     gate_low: float = GATE_LOW,
     gate_high: float = GATE_HIGH,
+    bands: dict | None = None,
     mode: str = "gate",
 ) -> dict:
     questions = {
@@ -278,6 +313,9 @@ def should_auto_merge(
         return _fallback(str(exc), cause="outage")
 
     mac_p = probability(result, "meets_acceptance_criteria")
+    mac_low, mac_high = band_for(
+        "auto-merge", "meets_acceptance_criteria", bands, gate_low, gate_high
+    )
     latency = result.latency_seconds
     cost = _extract_cost(result.raw)
 
@@ -287,7 +325,7 @@ def should_auto_merge(
             "latency": round(latency, 3),
             "cost": cost,
         }
-        if mac_p is not None and _in_middle_band(mac_p, gate_low, gate_high):
+        if mac_p is not None and _in_middle_band(mac_p, mac_low, mac_high):
             out["would_fallback"] = True
             out["fallback_reason"] = (
                 f"meets_acceptance_criteria probability {mac_p} in uncertain band"
@@ -300,7 +338,7 @@ def should_auto_merge(
             out["readiness_score"] = readiness
         return out
 
-    if mac_p is not None and _in_middle_band(mac_p, gate_low, gate_high):
+    if mac_p is not None and _in_middle_band(mac_p, mac_low, mac_high):
         return _fallback(
             f"meets_acceptance_criteria probability {mac_p} in uncertain band",
             cause="uncertain",

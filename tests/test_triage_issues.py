@@ -72,6 +72,7 @@ def _cfg(**overrides):
         "jev_timeout_seconds": 10,
         "jev_gate_low": 0.15,
         "jev_gate_high": 0.85,
+        "jev_bands": {"triage": {"needs_decomposition": {"low": 0.35}}},
         "project_dir": "",
     }
     defaults.update(overrides)
@@ -3473,10 +3474,11 @@ def test_jev_triage_calls_jev_module(monkeypatch):
 
     captured = {}
 
-    def fake_triage(issue_text, *, api_key_env, model, timeout, gate_low, gate_high, mode):
+    def fake_triage(issue_text, *, api_key_env, model, timeout, gate_low, gate_high, bands, mode):
         captured["issue_text"] = issue_text
         captured["api_key_env"] = api_key_env
         captured["timeout"] = timeout
+        captured["bands"] = bands
         captured["mode"] = mode
         return {"well_formed": 0.9, "needs_decomposition": 0.1}
 
@@ -3488,6 +3490,7 @@ def test_jev_triage_calls_jev_module(monkeypatch):
     assert "Issue body" in captured["issue_text"]
     assert captured["api_key_env"] == "AI_GATEWAY_API_KEY"
     assert captured["mode"] == "shadow"
+    assert captured["bands"] == {"triage": {"needs_decomposition": {"low": 0.35}}}
     assert result["well_formed"] == 0.9
 
 
