@@ -5,7 +5,8 @@ import re
 import subprocess
 from pathlib import Path
 
-from autoloop.config import RepoContext
+from autoloop.config import AutoLoopConfig, RepoContext
+from autoloop.jev import JEV_POINTS, band_for
 
 REQUIRED_KEYS = (
     "point",
@@ -29,10 +30,26 @@ def decisions_path(ctx: RepoContext) -> Path:
     return ctx.data_dir / DECISIONS_FILE
 
 
-def log_decision(record: dict, ctx: RepoContext) -> None:
+def applied_bands(point: str, jev_call: dict, cfg: AutoLoopConfig) -> dict:
+    """{probability: {low, high}} for each of the point's probabilities present in jev_call."""
+    bands = {}
+    for prob in JEV_POINTS.get(point, ()):
+        if prob in jev_call:
+            low, high = band_for(point, prob, cfg.jev_bands, cfg.jev_gate_low, cfg.jev_gate_high)
+            bands[prob] = {"low": low, "high": high}
+    return bands
+
+
+def log_decision(record: dict, ctx: RepoContext, cfg: AutoLoopConfig | None = None) -> None:
+    """Append one decision record. With cfg, jev_call also gets the band each probability used."""
     missing = [k for k in REQUIRED_KEYS if k not in record]
     if missing:
         raise ValueError(f"Missing required keys: {', '.join(missing)}")
+    jev_call = record["jev_call"]
+    if cfg is not None and isinstance(jev_call, dict):
+        bands = applied_bands(record["point"], jev_call, cfg)
+        if bands:
+            record = {**record, "jev_call": {**jev_call, "band": bands}}
     log_file = decisions_path(ctx)
     log_file.parent.mkdir(parents=True, exist_ok=True)
     with open(log_file, "a") as f:

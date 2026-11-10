@@ -171,6 +171,93 @@ def test_log_decision_writes_to_data_dir_not_cwd(tmp_path):
     assert not (tmp_path / "autoloop" / "jev_decisions.jsonl").exists()
 
 
+# --- Applied band (#494) ---
+
+
+def _shadow_record(point, jev_call):
+    return {
+        "point": point,
+        "issue": 3,
+        "jev_call": jev_call,
+        "incumbent_call": {"verdict": "ready"},
+        "outcome": "incumbent",
+        "ttft": 0.1,
+        "cost": 0.0,
+        "timestamp": "2026-11-01T00:00:00Z",
+    }
+
+
+def _logged_band(tmp_path, point, jev_call, cfg):
+    log_decision(_shadow_record(point, jev_call), _make_ctx(tmp_path), cfg)
+    return json.loads((tmp_path / "jev_decisions.jsonl").read_text())["jev_call"]["band"]
+
+
+def test_log_decision_stores_default_band_per_probability(tmp_path):
+    jev_call = {"well_formed": 0.9, "needs_decomposition": 0.3, "would_fallback": False}
+
+    band = _logged_band(tmp_path, "triage", jev_call, AutoLoopConfig())
+
+    assert band["needs_decomposition"] == {"low": 0.35, "high": 0.85}
+    assert band["well_formed"] == {"low": 0.15, "high": 0.85}
+
+
+def test_log_decision_stores_band_for_auto_merge(tmp_path):
+    band = _logged_band(
+        tmp_path, "auto-merge", {"meets_acceptance_criteria": 0.9}, AutoLoopConfig()
+    )
+
+    assert band == {"meets_acceptance_criteria": {"low": 0.15, "high": 0.85}}
+
+
+def test_log_decision_band_reflects_custom_gate_edges(tmp_path):
+    cfg = AutoLoopConfig(jev_gate_low=0.2, jev_gate_high=0.8)
+    jev_call = {"well_formed": 0.9, "needs_decomposition": 0.3}
+
+    band = _logged_band(tmp_path, "triage", jev_call, cfg)
+
+    assert band["well_formed"] == {"low": 0.2, "high": 0.8}
+    # The default needs_decomposition override only sets low; high follows gate_high.
+    assert band["needs_decomposition"] == {"low": 0.35, "high": 0.8}
+
+
+def test_log_decision_band_reflects_per_probability_override(tmp_path):
+    cfg = AutoLoopConfig(jev_bands={"triage": {"well_formed": {"low": 0.25, "high": 0.9}}})
+    jev_call = {"well_formed": 0.9, "needs_decomposition": 0.3}
+
+    band = _logged_band(tmp_path, "triage", jev_call, cfg)
+
+    assert band["well_formed"] == {"low": 0.25, "high": 0.9}
+    assert band["needs_decomposition"] == {"low": 0.15, "high": 0.85}
+
+
+def test_log_decision_without_cfg_stores_no_band(tmp_path):
+    log_decision(_shadow_record("triage", {"well_formed": 0.9}), _make_ctx(tmp_path))
+
+    written = json.loads((tmp_path / "jev_decisions.jsonl").read_text())
+    assert "band" not in written["jev_call"]
+
+
+def test_log_decision_error_record_stores_no_band(tmp_path):
+    record = _shadow_record("triage", {"error": "boom"})
+    log_decision(record, _make_ctx(tmp_path), AutoLoopConfig())
+
+    written = json.loads((tmp_path / "jev_decisions.jsonl").read_text())
+    assert written["jev_call"] == {"error": "boom"}
+
+
+def test_log_decision_does_not_mutate_callers_jev_call(tmp_path):
+    jev_call = {"meets_acceptance_criteria": 0.9}
+    log_decision(_shadow_record("auto-merge", jev_call), _make_ctx(tmp_path), AutoLoopConfig())
+
+    assert jev_call == {"meets_acceptance_criteria": 0.9}
+
+
+def test_applied_bands_only_covers_probabilities_present():
+    bands = jev_log.applied_bands("triage", {"well_formed": 0.9}, AutoLoopConfig())
+
+    assert bands == {"well_formed": {"low": 0.15, "high": 0.85}}
+
+
 # --- Auto-merge backfill (read-only half) ---
 
 SCRIPT_PATH = Path(__file__).resolve().parent.parent / "scripts" / "backfill_jev.py"

@@ -44,7 +44,7 @@ def test_jev_report_pr_flag_without_publish():
 def test_jev_report_dispatch_calls_main(tmp_path):
     called = {}
 
-    def fake_main(*, ctx, publish, pr, gate_low, gate_high):
+    def fake_main(*, ctx, publish, pr, gate_low, gate_high, bands=None):
         called["ctx"] = ctx
         called["publish"] = publish
         called["pr"] = pr
@@ -67,7 +67,7 @@ def test_jev_report_dispatch_calls_main(tmp_path):
 def test_jev_report_dispatch_with_publish(tmp_path):
     called = {}
 
-    def fake_main(*, ctx, publish, pr, gate_low, gate_high):
+    def fake_main(*, ctx, publish, pr, gate_low, gate_high, bands=None):
         called["publish"] = publish
         called["pr"] = pr
 
@@ -89,7 +89,7 @@ def test_jev_report_dispatch_with_publish(tmp_path):
 def test_jev_report_dispatch_with_publish_pr(tmp_path):
     called = {}
 
-    def fake_main(*, ctx, publish, pr, gate_low, gate_high):
+    def fake_main(*, ctx, publish, pr, gate_low, gate_high, bands=None):
         called["publish"] = publish
         called["pr"] = pr
 
@@ -113,7 +113,7 @@ def test_jev_report_dispatch_passes_configured_band(tmp_path):
 
     called = {}
 
-    def fake_main(*, ctx, publish, pr, gate_low, gate_high):
+    def fake_main(*, ctx, publish, pr, gate_low, gate_high, bands=None):
         called["gate_low"] = gate_low
         called["gate_high"] = gate_high
 
@@ -131,6 +131,30 @@ def test_jev_report_dispatch_passes_configured_band(tmp_path):
             main()
 
     assert called == {"gate_low": 0.2, "gate_high": 0.8}
+
+
+def test_jev_report_dispatch_passes_configured_per_probability_bands(tmp_path):
+    from autoloop.config import AutoLoopConfig
+
+    called = {}
+
+    def fake_main(*, ctx, publish, pr, gate_low, gate_high, bands=None):
+        called["bands"] = bands
+
+    cfg = AutoLoopConfig(jev_bands={"triage": {"well_formed": {"low": 0.25}}})
+    with (
+        patch("autoloop.jev_report.main", fake_main),
+        patch("autoloop.config.RepoContext") as mock_ctx_cls,
+        patch("autoloop.config.load_config", return_value=cfg),
+    ):
+        mock_ctx_cls.return_value = "fake_ctx"
+
+        from autoloop.cli import main
+
+        with patch("sys.argv", ["autoloop", "jev-report"]):
+            main()
+
+    assert called == {"bands": {"triage": {"well_formed": {"low": 0.25}}}}
 
 
 def test_jev_report_main_uses_configured_band(tmp_path):

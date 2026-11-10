@@ -4618,7 +4618,10 @@ def test_review_implementation_jev_shadow_logs_decision(monkeypatch, tmp_path):
     entry = json.loads(log_file.read_text().strip())
     assert entry["point"] == "auto-merge"
     assert entry["issue"] == 5
-    assert entry["jev_call"] == jev_response
+    assert entry["jev_call"] == {
+        **jev_response,
+        "band": {"meets_acceptance_criteria": {"low": 0.15, "high": 0.85}},
+    }
     assert entry["incumbent_call"]["approved"] is True
     assert entry["outcome"] == "incumbent"
     assert entry["ttft"] == 0.05
@@ -4676,7 +4679,10 @@ def test_review_implementation_jev_shadow_returns_incumbent(monkeypatch, tmp_pat
     entry = json.loads(log_file.read_text().strip())
     assert entry["issue"] == 7
     assert entry["incumbent_call"]["approved"] is False
-    assert entry["jev_call"] == jev_response
+    assert entry["jev_call"] == {
+        **jev_response,
+        "band": {"meets_acceptance_criteria": {"low": 0.15, "high": 0.85}},
+    }
 
 
 def test_review_implementation_jev_shadow_failure_continues(monkeypatch, tmp_path):

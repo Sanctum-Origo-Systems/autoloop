@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from autoloop.config import RepoContext
-from autoloop.jev import GATE_LOW, GATE_HIGH
+from autoloop.jev import GATE_HIGH, GATE_LOW, JEV_POINTS, _in_middle_band, band_for
 
 MIN_N = 20
 FOOTER_PREFIX = "---\n\n*Generated at "
@@ -33,6 +33,8 @@ class JevEntry:
     is_backfill: bool = False
     triage_bias_warning: bool = False
     pr: int | None = None
+    # {probability: {low, high}} logged in jev_call["band"]; empty for rows logged before #494.
+    band: dict = field(default_factory=dict)
     raw: dict = field(default_factory=dict, repr=False)
 
 
@@ -78,7 +80,9 @@ def _infer_point(raw: dict) -> str:
 
 def _parse_entry(raw: dict) -> JevEntry:
     point = _infer_point(raw)
-    jev_call = raw.get("jev_call") or raw.get("jev") or {}
+    jev_call = dict(raw.get("jev_call") or raw.get("jev") or {})
+    # The band is logging metadata, not one of Jev's answers, so it gets its own field.
+    band = jev_call.pop("band", None) or {}
     incumbent_call = raw.get("incumbent_call") or raw.get("incumbent") or {}
     is_backfill = bool(
         raw.get("backfill") or raw.get("forensic_backfill") or raw.get("is_backfill")
@@ -93,12 +97,38 @@ def _parse_entry(raw: dict) -> JevEntry:
         is_backfill=is_backfill,
         triage_bias_warning=bool(raw.get("triage_bias_warning", False)),
         pr=raw.get("pr"),
+        band=band,
         raw=raw,
     )
 
 
-def _is_uncertain(jev_call: dict) -> bool:
-    return bool(jev_call.get("fallback") or jev_call.get("would_fallback"))
+def _row_band(
+    entry: JevEntry, prob: str, gate_low: float = GATE_LOW, gate_high: float = GATE_HIGH
+) -> tuple[float, float]:
+    """The (low, high) band stored on the row for prob, else the shared gate_low/gate_high."""
+    band = entry.band.get(prob) or {}
+    return band.get("low", gate_low), band.get("high", gate_high)
+
+
+def _is_uncertain(
+    entry: JevEntry, gate_low: float = GATE_LOW, gate_high: float = GATE_HIGH
+) -> bool:
+    """Re-bucket a row from its probabilities and its stored band (#494).
+
+    Rows logged without a band keep their logged would_fallback flag.
+    """
+    jev_call = entry.jev_call
+    if jev_call.get("fallback"):
+        return True
+    if not entry.band:
+        return bool(jev_call.get("would_fallback"))
+    for prob in JEV_POINTS.get(entry.point, ()):
+        p = jev_call.get(prob)
+        if p is None:
+            continue
+        if _in_middle_band(float(p), *_row_band(entry, prob, gate_low, gate_high)):
+            return True
+    return False
 
 
 def _infer_triage_verdict(jev_call: dict) -> str:
@@ -120,7 +150,9 @@ def _week_start(ts: str) -> str:
     return monday.isoformat()
 
 
-def _compute_weekly_trends(entries: list[JevEntry]) -> list[dict]:
+def _compute_weekly_trends(
+    entries: list[JevEntry], gate_low: float = GATE_LOW, gate_high: float = GATE_HIGH
+) -> list[dict]:
     weeks: dict[str, list[JevEntry]] = {}
     for e in entries:
         ws = _week_start(e.timestamp)
@@ -130,11 +162,11 @@ def _compute_weekly_trends(entries: list[JevEntry]) -> list[dict]:
     for week in sorted(weeks):
         week_entries = weeks[week]
         total = len(week_entries)
-        uncertain = sum(1 for e in week_entries if _is_uncertain(e.jev_call))
+        uncertain = sum(1 for e in week_entries if _is_uncertain(e, gate_low, gate_high))
         agreed = 0
         disagreed = 0
         for e in week_entries:
-            if _is_uncertain(e.jev_call):
+            if _is_uncertain(e, gate_low, gate_high):
                 continue
             jev_v = _infer_triage_verdict(e.jev_call)
             inc_v = e.incumbent_call.get("verdict", "")
@@ -156,7 +188,11 @@ def _compute_weekly_trends(entries: list[JevEntry]) -> list[dict]:
     return trends
 
 
-def compute_triage_stats(entries: list[JevEntry]) -> dict:
+def compute_triage_stats(
+    entries: list[JevEntry],
+    gate_low: float = GATE_LOW,
+    gate_high: float = GATE_HIGH,
+) -> dict:
     triage = [e for e in entries if e.point == "triage" and not e.triage_bias_warning]
     if not triage:
         return {
@@ -173,7 +209,7 @@ def compute_triage_stats(entries: list[JevEntry]) -> dict:
     disagreements: dict[str, int] = {}
     uncertain = 0
     for entry in triage:
-        if _is_uncertain(entry.jev_call):
+        if _is_uncertain(entry, gate_low, gate_high):
             uncertain += 1
             continue
         jev_verdict = _infer_triage_verdict(entry.jev_call)
@@ -193,7 +229,7 @@ def compute_triage_stats(entries: list[JevEntry]) -> dict:
         "agreement_rate": agreements / total if total else 0.0,
         "disagreement_breakdown": disagreements,
         "uncertainty_rate": uncertain / total if total else 0.0,
-        "weekly_trends": _compute_weekly_trends(triage),
+        "weekly_trends": _compute_weekly_trends(triage, gate_low, gate_high),
     }
 
 
@@ -203,26 +239,30 @@ def compute_automerge_stats(
     gate_high: float = GATE_HIGH,
 ) -> dict:
     merge_entries = [e for e in entries if e.point == "auto-merge"]
-    probabilities = []
-    for e in merge_entries:
-        prob = e.jev_call.get("meets_acceptance_criteria")
-        if prob is not None:
-            probabilities.append(float(prob))
     reject_label = f"Act: reject (below {gate_low})"
     fallback_label = f"Pipeline ({gate_low}-{gate_high})"
     merge_label = f"Act: merge ({gate_high}+)"
+
+    def zone_for(e: JevEntry, p: float) -> str:
+        # Bucket by the band the row was logged with, else the shared edges (#494).
+        low, high = _row_band(e, "meets_acceptance_criteria", gate_low, gate_high)
+        if p < low:
+            return reject_label
+        if p < high:
+            return fallback_label
+        return merge_label
+
+    probabilities = []
     buckets = {
         reject_label: 0,
         fallback_label: 0,
         merge_label: 0,
     }
-    for p in probabilities:
-        if p < gate_low:
-            buckets[reject_label] += 1
-        elif p < gate_high:
-            buckets[fallback_label] += 1
-        else:
-            buckets[merge_label] += 1
+    for e in merge_entries:
+        prob = e.jev_call.get("meets_acceptance_criteria")
+        if prob is not None:
+            probabilities.append(float(prob))
+            buckets[zone_for(e, float(prob))] += 1
     mean = statistics.mean(probabilities) if probabilities else 0.0
     median = statistics.median(probabilities) if probabilities else 0.0
     agreed = 0
@@ -237,12 +277,7 @@ def compute_automerge_stats(
             jev_approves = float(prob) >= 0.5
             if jev_approves == approved:
                 agreed += 1
-            if float(prob) < gate_low:
-                zone = reject_label
-            elif float(prob) < gate_high:
-                zone = fallback_label
-            else:
-                zone = merge_label
+            zone = zone_for(e, float(prob))
             zone_total[zone] += 1
             if jev_approves == approved:
                 zone_agreed[zone] += 1
@@ -653,7 +688,21 @@ def _render_automerge_section(
         lines.append("")
 
 
-def _render_calibration_section(lines: list[str], calibration: dict) -> None:
+def probability_bands(
+    bands: dict | None = None, gate_low: float = GATE_LOW, gate_high: float = GATE_HIGH
+) -> dict[str, tuple[float, float]]:
+    """(low, high) band per calibration key; bands=None uses the built-in DEFAULT_BANDS."""
+    return {
+        key: band_for(spec.point, spec.field, bands, gate_low, gate_high)
+        for key, spec in CALIBRATION_POINTS.items()
+    }
+
+
+def _render_calibration_section(
+    lines: list[str], calibration: dict, bands: dict[str, tuple[float, float]] | None = None
+) -> None:
+    # Per-probability bands are only shown when they differ (#494).
+    show_bands = bool(bands) and len(set(bands.values())) > 1
     lines.append("## Calibration")
     lines.append("")
     lines.append(
@@ -677,6 +726,9 @@ def _render_calibration_section(lines: list[str], calibration: dict) -> None:
         edge_text = format_band_edges(edges)
         if edges["low"]["edge"] is None and edges["high"]["edge"] is None:
             edge_text += f" (n={baseline['n']})"
+        if show_bands and key in bands:
+            low, high = bands[key]
+            lines.append(f"- **Band:** {low}–{high} (from config)")
         lines.append(f"- **Suggested band edges:** {edge_text}")
         if baseline["n"] == 0:
             lines.append("- **Baseline:** no live calls yet (n=0)")
@@ -700,6 +752,7 @@ def render_jev_md(
     generated_at: str | None = None,
     gate_low: float = GATE_LOW,
     gate_high: float = GATE_HIGH,
+    bands: dict[str, tuple[float, float]] | None = None,
 ) -> str:
     lines: list[str] = []
     lines.append("# JEV Report")
@@ -730,7 +783,7 @@ def render_jev_md(
     _render_automerge_section(lines, automerge_stats, min_n=min_n)
 
     if calibration:
-        _render_calibration_section(lines, calibration)
+        _render_calibration_section(lines, calibration, bands)
 
     has_backfill = (
         backfill_triage_stats
@@ -890,12 +943,16 @@ def build_report(
     *,
     gate_low: float = GATE_LOW,
     gate_high: float = GATE_HIGH,
+    bands: dict | None = None,
 ) -> str:
-    """Compute every stat from parsed decision rows and render JEV.md."""
-    triage_stats = compute_triage_stats(parsed.live)
+    """Compute every stat from parsed decision rows and render JEV.md.
+
+    bands is the [jev.bands] config table; None uses the built-in DEFAULT_BANDS.
+    """
+    triage_stats = compute_triage_stats(parsed.live, gate_low, gate_high)
     automerge_stats = compute_automerge_stats(parsed.live, gate_low, gate_high)
 
-    backfill_triage_stats = compute_triage_stats(parsed.backfilled)
+    backfill_triage_stats = compute_triage_stats(parsed.backfilled, gate_low, gate_high)
     backfill_automerge_stats = compute_automerge_stats(parsed.backfilled, gate_low, gate_high)
 
     all_entries = parsed.backfilled + parsed.live
@@ -922,6 +979,7 @@ def build_report(
         generated_at=generated_at,
         gate_low=gate_low,
         gate_high=gate_high,
+        bands=probability_bands(bands, gate_low, gate_high),
     )
 
 
@@ -932,6 +990,7 @@ def main(
     pr: bool = False,
     gate_low: float = GATE_LOW,
     gate_high: float = GATE_HIGH,
+    bands: dict | None = None,
 ):
     decisions_path = ctx.data_dir / "jev_decisions.jsonl"
     parsed = parse_jev_decisions(decisions_path)
@@ -940,6 +999,7 @@ def main(
         datetime.now().strftime("%Y-%m-%d %H:%M UTC"),
         gate_low=gate_low,
         gate_high=gate_high,
+        bands=bands,
     )
     jev_path = ctx.repo_dir / "JEV.md"
 

@@ -3625,7 +3625,13 @@ def test_triage_issue_jev_shadow_logs_decision(monkeypatch, tmp_path):
     assert entry["point"] == "triage"
     assert entry["issue"] == 5
     assert entry["incumbent_call"]["verdict"] == "ready"
-    assert entry["jev_call"] == jev_response
+    assert entry["jev_call"] == {
+        **jev_response,
+        "band": {
+            "well_formed": {"low": 0.15, "high": 0.85},
+            "needs_decomposition": {"low": 0.35, "high": 0.85},
+        },
+    }
     assert entry["outcome"] == "incumbent"
     assert entry["ttft"] == 0.05
     assert entry["cost"] == 0.000014

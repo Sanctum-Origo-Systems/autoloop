@@ -1171,7 +1171,7 @@ def review_implementation(
         try:
             # Decisions belong to the main checkout's data dir, never one derived from repo_dir.
             log_ctx = ctx if ctx is not None else RepoContext(Path.cwd())
-            log_decision(record, log_ctx)
+            log_decision(record, log_ctx, cfg)
         except Exception:
             logging.exception("Failed to log Jev auto-merge decision")
 
