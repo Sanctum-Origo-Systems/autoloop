@@ -12,6 +12,7 @@ from autoloop.triage_issues import (
     SUB_ISSUE_PROMPT,
     _extract_dependency_notes,
     _extract_files_from_body,
+    _extract_parent_dependency_numbers,
     _extract_keywords,
     _extract_parent_number,
     _merge_steps,
@@ -4032,6 +4033,171 @@ def test_create_sub_issues_no_parent_deps_no_change(monkeypatch):
 
     assert len(created) == 1
     assert "## Dependencies" not in bodies[0]
+
+
+# --- Parent dependency carry-over (bare lines, de-dup, closed filtering) ---
+
+
+def test_extract_parent_dependency_numbers_bare_line():
+    body = "## Summary\nDo stuff\n\nDepends on: #305\n\n## Context\nctx"
+    assert _extract_parent_dependency_numbers(body) == [305]
+
+
+def test_extract_parent_dependency_numbers_section_without_prefix():
+    body = "## Dependencies\n- #305\n- #306\n\n## Context\nctx"
+    assert _extract_parent_dependency_numbers(body) == [305, 306]
+
+
+def test_extract_parent_dependency_numbers_both_forms_deduplicated():
+    body = "## Summary\nDepends on: #305\n\n## Dependencies\nDepends on: #305, #306"
+    assert _extract_parent_dependency_numbers(body) == [305, 306]
+
+
+def test_extract_parent_dependency_numbers_none():
+    assert _extract_parent_dependency_numbers("## Summary\nNo deps") == []
+
+
+def _fake_gh(states: dict[int, str], bodies: list[str], first_issue: int = 99):
+    """Fake subprocess.run: `gh issue create` records bodies, `gh issue view` returns *states*."""
+    counter = {"n": first_issue - 1}
+
+    def fake_run(cmd, **_kwargs):
+        if cmd[:3] == ["gh", "issue", "view"]:
+            state = states.get(int(cmd[3]))
+            if state is None:
+                return SimpleNamespace(returncode=1, stdout="", stderr="not found")
+            return SimpleNamespace(returncode=0, stdout=json.dumps({"state": state}))
+        if cmd[:3] == ["gh", "issue", "create"]:
+            counter["n"] += 1
+            bodies.append(cmd[cmd.index("--body") + 1])
+            return SimpleNamespace(
+                returncode=0, stdout=f"https://github.com/acme/widgets/issues/{counter['n']}"
+            )
+        return SimpleNamespace(returncode=0, stdout="")
+
+    return fake_run
+
+
+def _two_step_decomposition() -> dict:
+    return {
+        "decomposition": [
+            {"order": 1, "title": "Step 1", "points": 2, "depends_on": [], "files": ["src/a.py"]},
+            {"order": 2, "title": "Step 2", "points": 2, "depends_on": [1], "files": ["src/b.py"]},
+        ],
+    }
+
+
+def _depends_on_lines(body: str) -> list[str]:
+    return [line for line in body.split("\n") if line.lower().startswith("depends on")]
+
+
+def test_filter_open_issues_drops_closed_keeps_open_and_unknown():
+    cfg = _cfg(repo="acme/widgets")
+    fake = _fake_gh({305: "OPEN", 306: "CLOSED"}, [])
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake):
+        from autoloop.triage_issues import _filter_open_issues
+
+        assert _filter_open_issues([305, 306, 307], cfg) == [305, 307]
+
+
+def test_create_sub_issues_carries_bare_depends_on_line(monkeypatch):
+    """A bare `Depends on:` line anywhere in the parent body reaches the sub-issue."""
+    cfg = _cfg(repo="acme/widgets")
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+    bodies: list[str] = []
+    result = {"decomposition": _two_step_decomposition()["decomposition"][:1]}
+    parent_body = "## Summary\nFix something\n\nDepends on: #305\n\n## Type\nfix"
+    with patch(
+        "autoloop.triage_issues.subprocess.run", side_effect=_fake_gh({305: "OPEN"}, bodies)
+    ):
+        from autoloop.triage_issues import create_sub_issues
+
+        create_sub_issues(10, result, cfg, parent_summary=parent_body)
+
+    assert _depends_on_lines(bodies[0]) == ["Depends on: #305"]
+
+
+def test_create_sub_issues_combines_parent_and_step_deps_in_one_line(monkeypatch):
+    cfg = _cfg(repo="acme/widgets")
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+    bodies: list[str] = []
+    parent_body = "## Summary\nFix\n\n## Dependencies\nDepends on: #305"
+    with patch(
+        "autoloop.triage_issues.subprocess.run", side_effect=_fake_gh({305: "OPEN"}, bodies)
+    ):
+        from autoloop.triage_issues import create_sub_issues
+
+        create_sub_issues(10, _two_step_decomposition(), cfg, parent_summary=parent_body)
+
+    assert _depends_on_lines(bodies[1]) == ["Depends on: #305, #99"]
+
+
+def test_create_sub_issues_deduplicates_parent_deps_in_both_forms(monkeypatch):
+    cfg = _cfg(repo="acme/widgets")
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+    bodies: list[str] = []
+    parent_body = "## Summary\nFix\n\nDepends on: #305\n\n## Dependencies\nDepends on: #305, #306"
+    states = {305: "OPEN", 306: "OPEN"}
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=_fake_gh(states, bodies)):
+        from autoloop.triage_issues import create_sub_issues
+
+        create_sub_issues(10, _two_step_decomposition(), cfg, parent_summary=parent_body)
+
+    assert _depends_on_lines(bodies[0]) == ["Depends on: #305, #306"]
+    assert _depends_on_lines(bodies[1]) == ["Depends on: #305, #306, #99"]
+
+
+def test_create_sub_issues_drops_closed_parent_deps(monkeypatch):
+    cfg = _cfg(repo="acme/widgets")
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+    bodies: list[str] = []
+    parent_body = "## Summary\nFix\n\nDepends on: #305, #306"
+    states = {305: "CLOSED", 306: "OPEN"}
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=_fake_gh(states, bodies)):
+        from autoloop.triage_issues import create_sub_issues
+
+        create_sub_issues(10, _two_step_decomposition(), cfg, parent_summary=parent_body)
+
+    assert _depends_on_lines(bodies[0]) == ["Depends on: #306"]
+    assert _depends_on_lines(bodies[1]) == ["Depends on: #306, #99"]
+
+
+def test_create_sub_issues_all_parent_deps_closed_omits_section(monkeypatch):
+    cfg = _cfg(repo="acme/widgets")
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+    bodies: list[str] = []
+    parent_body = "## Summary\nFix\n\nDepends on: #305"
+    with patch(
+        "autoloop.triage_issues.subprocess.run", side_effect=_fake_gh({305: "CLOSED"}, bodies)
+    ):
+        from autoloop.triage_issues import create_sub_issues
+
+        create_sub_issues(10, _two_step_decomposition(), cfg, parent_summary=parent_body)
+
+    assert "## Dependencies" not in bodies[0]
+    assert _depends_on_lines(bodies[1]) == ["Depends on: #99"]
+
+
+def test_create_sub_issues_regression_bare_dep_two_steps(monkeypatch):
+    """Regression (#499): a parent with a bare `Depends on:` line split into two steps."""
+    cfg = _cfg(repo="acme/widgets")
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+    bodies: list[str] = []
+    parent_body = (
+        "## Summary\nAdd a calibration section\n\n## Type\nfeature\n\n"
+        "## Files to Modify\n- src/report.py\n\nDepends on: #400\n\n## Context\nctx"
+    )
+    with patch(
+        "autoloop.triage_issues.subprocess.run",
+        side_effect=_fake_gh({400: "OPEN"}, bodies, first_issue=410),
+    ):
+        from autoloop.triage_issues import create_sub_issues
+
+        created = create_sub_issues(401, _two_step_decomposition(), cfg, parent_summary=parent_body)
+
+    assert created == [410, 411]
+    assert _depends_on_lines(bodies[0]) == ["Depends on: #400"]
+    assert _depends_on_lines(bodies[1]) == ["Depends on: #400, #410"]
 
 
 # --- Session detection in triage main ---
