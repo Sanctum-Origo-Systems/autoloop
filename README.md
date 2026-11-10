@@ -17,7 +17,7 @@ Config-driven AI pipeline that triages GitHub issues, implements them via Claude
 ## TLDR: First PR in 5 Minutes
 
 ```bash
-uv tool install git+https://github.com/Sanctum-Origo-Systems/autoloop@v0.19.0
+uv tool install git+https://github.com/Sanctum-Origo-Systems/autoloop@v0.20.0
 cd your-repo
 autoloop init --repo your-org/your-repo --verify-cmd "npm test"
 autoloop doctor                           # verify environment
@@ -72,7 +72,7 @@ Issue --> Triage --> Implement --> Review PR
 
 **[View live performance dashboard (EVAL.md)](EVAL.md)** — first-attempt success rate, cost trends, and per-module breakdown, with a Definitions section (numerator, denominator, run types and window for each metric), pending counts for open PRs, and a "data as of" stamp that flags history more than 48 h old. Updated daily.
 
-**[View the decision-model shadow report (JEV.md)](JEV.md)** — how often Jev agrees with triage and auto-merge decisions, and whether it's ready to act. Updated daily.
+**[View the decision-model shadow report (JEV.md)](JEV.md)** — how often Jev agrees with triage and auto-merge decisions, how well calibrated it is against a baseline, and whether it's ready to act. Updated daily.
 
 ---
 
@@ -97,7 +97,7 @@ Most users start local. Graduate to unattended when you trust it.
 
 ### As a CLI tool (recommended)
 
-Replace `<tag>` with the latest version from the [tags page](https://github.com/Sanctum-Origo-Systems/autoloop/tags) (e.g. `v0.19.0`). Pinning a tag is recommended; `@main` tracks unreleased changes:
+Replace `<tag>` with the latest version from the [tags page](https://github.com/Sanctum-Origo-Systems/autoloop/tags) (e.g. `v0.20.0`). Pinning a tag is recommended; `@main` tracks unreleased changes:
 
 ```bash
 uv tool install git+https://github.com/Sanctum-Origo-Systems/autoloop@<tag>
@@ -571,9 +571,9 @@ auto_merge_promotion_level = "repo"
 
 ## Experimental: Decision Model (Jev)
 
-**[View the shadow report (JEV.md)](JEV.md)** — agreement rates, confidence distribution by action zone, and whether Jev is ready to act.
+**[View the shadow report (JEV.md)](JEV.md)** — agreement rates, confidence distribution by action zone, calibration with suggested band edges and a baseline, and whether Jev is ready to act.
 
-Jev is an off-by-default probabilistic decision model that can shadow autoloop's triage and auto-merge decisions. In shadow mode it evaluates every decision point alongside the existing pipeline, logs its observations to `autoloop/jev_decisions.jsonl` (via the `jev_log` module), and changes nothing — no behavior is affected unless you explicitly opt in. If you don't use Jev, skip this section entirely.
+Jev is an off-by-default probabilistic decision model that can shadow autoloop's triage and auto-merge decisions. In shadow mode it evaluates every decision point alongside the existing pipeline, logs its observations to `~/.autoloop/<id>/jev_decisions.jsonl` (via the `jev_log` module, the same data dir as `run_history.jsonl`; auto-merge decisions made in a worktree are logged there too), and changes nothing — no behavior is affected unless you explicitly opt in. If you don't use Jev, skip this section entirely.
 
 **Prerequisites:** An [OpenRouter](https://openrouter.ai/) API key with access to the Decisions API. Set the key in the environment variable named by `api_key_env` (default: `OPENROUTER_API_KEY`).
 
@@ -607,7 +607,24 @@ low = 0.35            # default; high falls back to gate_high
 high = 0.90           # low falls back to gate_low
 ```
 
-`autoloop jev-report` writes `JEV.md`: the verdict and charts first, then the tables, with every rate next to its `n` and live and backfilled decisions reported separately. `jev-report --publish [--pr]` skips the commit (no branch, no PR) when the new `JEV.md` matches the copy on `main` apart from the generated-at line.
+`autoloop jev-report` writes `JEV.md`: the verdict and charts first, then the tables, with every rate next to its `n` and live and backfilled decisions reported separately. Action zones use the configured `gate_low`/`gate_high` band, and the report states which band it used. `jev-report --publish [--pr]` skips the commit (no branch, no PR) when the new `JEV.md` matches the copy on `main` apart from the generated-at line.
+
+**Calibration** — for each decision point and probability (`triage.well_formed`, `triage.needs_decomposition`, `auto-merge.meets_acceptance_criteria`), `JEV.md` shows live decisions in bins (0–0.15, 0.15–0.35, 0.35–0.5, 0.5–0.65, 0.65–0.85, 0.85–1) with `n` and the share where the incumbent's verdict was the positive outcome. Below each table:
+
+- **Suggested band edges:** the widest low and high edge where Jev matched the incumbent on at least 95% of calls with at least 30 calls behind it, or "not enough data" / "no edge reaches 95%". Use these to set `gate_low`/`gate_high`, or a per-probability band, from your own data instead of guessing.
+- **Baseline:** the agreement rate of always picking the incumbent's most common verdict (for example "always approve: 90%, n=61"), next to Jev's own. If Jev doesn't beat the baseline, it isn't adding information.
+
+The bins, the 95% threshold and the 30-call minimum are constants in `jev_report.py`. The incumbent's verdict is the yardstick, not ground truth.
+
+**Backfill** — `scripts/backfill_jev.py` fills gaps in the decision log from GitHub history. Records are append-only, tagged `backfill: true`, and reported separately from live decisions:
+
+```bash
+# Auto-merge: closed or merged autoloop/<issue>-… PRs with no recorded decision
+uv run python scripts/backfill_jev.py --point auto-merge --dry-run   # list PRs and skip counts, no Jev calls
+uv run python scripts/backfill_jev.py --point auto-merge             # call Jev in shadow mode, append records
+```
+
+The commands above backfill autoloop's own repo. For another repo, run the script with that repo's checkout as the working directory (config and data dir come from it, keyed by its git remote) and a Python that has autoloop installed, for example `~/.local/share/uv/tools/autoloop/bin/python /path/to/autoloop/scripts/backfill_jev.py --point auto-merge --dry-run`. Each auto-merge record keeps the incumbent's review verdict, whether the PR was merged or closed (`final_outcome`), and `timestamp` set to the PR's creation time. Jev sees the current issue text and the PR's first-commit diff (`backfill_inputs`), which is less than it would have seen live, so backfilled confidence runs lower: judge Jev on live rows. Reruns skip PRs that are already recorded, and a PR whose Jev call fails is left unrecorded so the next run retries it.
 
 ## Commands
 
@@ -624,6 +641,7 @@ high = 0.90           # low falls back to gate_low
 | `autoloop auto-close-parent` | Close parent when all sub-issues done |
 | `autoloop prune` | Remove worktrees and local `autoloop/*` branches whose PRs are merged or closed; keeps dirty worktrees, open PRs, and unmerged commits (listed for human review). `autoloop implement` runs prune at the start of each run, and autoloop removes a worktree right after it auto-merges that PR. `--dry-run` reports what would be removed without removing anything |
 | `autoloop eval` | Performance tracking: snapshots, trends, per-module breakdown (zero LLM cost) |
+| `autoloop jev-report` | Write `JEV.md` from the Jev shadow log: agreement, action zones, calibration, baseline (`--publish [--pr]` commits it or opens a PR) |
 | `autoloop version` | Print installed version |
 
 ## License
