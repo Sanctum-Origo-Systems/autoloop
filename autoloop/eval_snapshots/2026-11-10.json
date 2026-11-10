@@ -1,0 +1,53 @@
+{
+  "date": "2026-11-10",
+  "total_prs": 185,
+  "total_implementations": 185,
+  "implement_run_count": 222,
+  "resolved_run_count": 220,
+  "pending_run_count": 2,
+  "first_attempt_count": 165,
+  "first_attempt_rate": 0.75,
+  "avg_cost_usd": 1.85,
+  "avg_review_cost_usd": 0.23,
+  "review_cost_run_count": 15,
+  "avg_duration_seconds": 286,
+  "attempt_distribution": {
+    "1": 178,
+    "2": 31,
+    "3+": 13
+  },
+  "human_edit_rate": 0.16,
+  "human_edit_count": 29,
+  "merged_pr_count": 183,
+  "pending_pr_count": 2,
+  "closed_without_merge": 12,
+  "data_as_of": "2026-11-09T19:09:41.216782+00:00",
+  "history_rows": 430,
+  "modules": {
+    "other": {
+      "implementations": 12,
+      "implement_run_count": 11,
+      "resolved_run_count": 11,
+      "pending_count": 0,
+      "first_attempt_rate": 0.73,
+      "avg_cost_usd": 0.6,
+      "human_edit_rate": 0.36,
+      "merged_clean_count": 7
+    },
+    "src/autoloop/": {
+      "implementations": 185,
+      "implement_run_count": 174,
+      "resolved_run_count": 172,
+      "pending_count": 2,
+      "first_attempt_rate": 0.88,
+      "avg_cost_usd": 1.75,
+      "human_edit_rate": 0.15,
+      "merged_clean_count": 147
+    }
+  },
+  "fixup_window_days": 7,
+  "period_first_attempt_rate": 1.0,
+  "period_avg_cost_usd": 1.05,
+  "period_human_edit_rate": 0.0,
+  "period_n": 8
+}
