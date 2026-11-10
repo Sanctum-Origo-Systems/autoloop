@@ -23,8 +23,8 @@ from autoloop.jev_log import (
 )
 
 
-def _make_ctx(data_dir):
-    return RepoContext.for_data_dir(data_dir)
+def _make_ctx(data_dir, repo_dir=None):
+    return RepoContext.for_data_dir(data_dir, repo_dir)
 
 
 def test_log_decision_writes_record(tmp_path):
@@ -505,17 +505,15 @@ def test_plan_skips_open_pr():
 
 def test_backfill_cli_without_point_runs_triage(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
-    log_file = tmp_path / "autoloop" / "jev_decisions.jsonl"
-    log_file.parent.mkdir()
-    log_file.write_text(json.dumps({"issue": 5, "jev": {"reason": "HTTP 403"}}) + "\n")
+    ctx = _make_ctx(tmp_path / "data")
+    _write_triage_log(ctx, {"issue": 5, "jev": {"reason": "HTTP 403"}})
     script = _load_backfill_script()
-    issue = subprocess.CompletedProcess([], 0, stdout='{"title": "t", "body": "b"}', stderr="")
 
     with (
-        patch.object(script.subprocess, "run", return_value=issue) as run_mock,
+        patch.object(script.subprocess, "run", return_value=ISSUE_VIEW_OK) as run_mock,
         patch.object(script, "backfill_auto_merge") as auto_merge_mock,
     ):
-        code = script.main(["--dry-run"])
+        code = script.main(["--dry-run"], ctx=ctx)
 
     assert code == 0
     auto_merge_mock.assert_not_called()
@@ -523,3 +521,131 @@ def test_backfill_cli_without_point_runs_triage(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "Issues to backfill: 1" in out
     assert "#5: would call Jev triage (dry-run)" in out
+
+
+# --- Triage backfill ---
+
+ISSUE_VIEW_OK = subprocess.CompletedProcess([], 0, stdout='{"title": "t", "body": "b"}', stderr="")
+TRIAGE_403 = {"issue": 5, "incumbent": {"verdict": "ready"}, "jev": {"reason": "HTTP 403"}}
+UNCERTAIN_RESULT = {"well_formed": 0.5, "fallback": True, "reason": "uncertain band"}
+
+
+def _write_triage_log(ctx, *records):
+    log_file = decisions_path(ctx)
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    log_file.write_text("".join(json.dumps(r) + "\n" for r in records))
+    return log_file
+
+
+def _run_triage(ctx, dry_run=False, jev_result=UNCERTAIN_RESULT):
+    script = _load_backfill_script()
+    with (
+        patch.object(script.subprocess, "run", return_value=ISSUE_VIEW_OK) as run_mock,
+        patch("autoloop.jev.triage", return_value=dict(jev_result)) as jev_mock,
+    ):
+        script.backfill_triage(ctx, dry_run)
+    return run_mock, jev_mock
+
+
+def test_triage_backfill_reads_and_appends_data_dir_not_repo_local(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    ctx = _make_ctx(tmp_path / "data")
+    log_file = _write_triage_log(ctx, TRIAGE_403)
+
+    _, jev_mock = _run_triage(ctx)
+
+    jev_mock.assert_called_once_with("Title: t\n\nBody:\nb")
+    lines = log_file.read_text().splitlines()
+    assert len(lines) == 2
+    record = json.loads(lines[1])
+    assert record["issue"] == 5
+    assert record["backfill"] is True
+    assert record["incumbent"] == {"verdict": "ready"}
+    assert record["jev"] == UNCERTAIN_RESULT
+    assert f"Decisions file: {log_file}" in capsys.readouterr().out
+    assert not (tmp_path / "autoloop" / "jev_decisions.jsonl").exists()
+
+
+def test_triage_backfill_ignores_repo_local_log(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    repo_local = tmp_path / "autoloop" / "jev_decisions.jsonl"
+    repo_local.parent.mkdir()
+    repo_local.write_text(json.dumps(TRIAGE_403) + "\n")
+    before = repo_local.read_bytes()
+
+    run_mock, jev_mock = _run_triage(_make_ctx(tmp_path / "data"))
+
+    assert "No jev_decisions.jsonl found" in capsys.readouterr().out
+    run_mock.assert_not_called()
+    jev_mock.assert_not_called()
+    assert repo_local.read_bytes() == before
+
+
+def test_triage_backfill_issue_view_uses_current_repo(tmp_path):
+    ctx = _make_ctx(tmp_path / "data", repo_dir=tmp_path / "checkout")
+    _write_triage_log(ctx, TRIAGE_403)
+
+    run_mock, _ = _run_triage(ctx, dry_run=True)
+
+    run_mock.assert_called_once()
+    assert run_mock.call_args.args[0] == ["gh", "issue", "view", "5", "--json", "title,body"]
+    assert "--repo" not in run_mock.call_args.args[0]
+    assert run_mock.call_args.kwargs["cwd"] == (tmp_path / "checkout").resolve()
+
+
+def test_triage_backfill_second_run_adds_nothing(tmp_path, capsys):
+    ctx = _make_ctx(tmp_path / "data")
+    log_file = _write_triage_log(ctx, TRIAGE_403)
+
+    _run_triage(ctx)
+    after_first = log_file.read_bytes()
+    assert len(after_first.splitlines()) == 2
+    assert json.loads(after_first.splitlines()[1])["jev"]["fallback"] is True
+
+    run_mock, jev_mock = _run_triage(ctx)
+
+    assert log_file.read_bytes() == after_first
+    run_mock.assert_not_called()
+    jev_mock.assert_not_called()
+    assert "Nothing to backfill" in capsys.readouterr().out
+
+
+def test_triage_backfill_skips_existing_fallback_backfill_record(tmp_path):
+    ctx = _make_ctx(tmp_path / "data")
+    earlier = {"issue": 5, "jev": {"fallback": True, "reason": "uncertain"}, "backfill": True}
+    log_file = _write_triage_log(ctx, TRIAGE_403, earlier)
+    before = log_file.read_bytes()
+
+    run_mock, jev_mock = _run_triage(ctx)
+
+    assert log_file.read_bytes() == before
+    run_mock.assert_not_called()
+    jev_mock.assert_not_called()
+
+
+def test_triage_backfill_dry_run_writes_nothing(tmp_path, capsys):
+    ctx = _make_ctx(tmp_path / "data")
+    log_file = _write_triage_log(ctx, TRIAGE_403)
+    before = log_file.read_bytes()
+
+    _, jev_mock = _run_triage(ctx, dry_run=True)
+
+    assert log_file.read_bytes() == before
+    jev_mock.assert_not_called()
+    out = capsys.readouterr().out
+    assert "Issues to backfill: 1" in out
+    assert "#5: would call Jev triage (dry-run)" in out
+
+
+def test_is_triage_backfilled():
+    script = _load_backfill_script()
+    records = [
+        {"issue": 5, "jev": {"fallback": True}, "backfill": True},
+        {"issue": 6, "jev": {"reason": "HTTP 403"}},
+        _auto_merge_record(issue=7, pr=8, backfill=True),
+        {"point": "triage", "issue": 9, "jev_call": {}, "backfill": True},
+    ]
+    assert script.is_triage_backfilled(records, 5)
+    assert not script.is_triage_backfilled(records, 6)
+    assert not script.is_triage_backfilled(records, 7)
+    assert script.is_triage_backfilled(records, 9)
