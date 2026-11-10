@@ -1,25 +1,25 @@
 # EVAL Report
 
-Report date 2026-11-02: data as of 2026-11-01T22:40:42.010570+00:00, 419 history rows.
+Report date 2026-11-10: data as of 2026-11-09T19:09:41.216782+00:00, 430 history rows.
 
 ## Overall
 
 | Metric | Value | Pending |
 |--------|-------|---------|
-| Total PRs | 177 | — |
-| First-attempt success | 74% (n=214 implement runs) | pending: 0 |
-| Avg cost/run | $1.88 (n=214 implement runs) | included |
-| Avg review cost/run | $0.21 (n=7 implement runs) | included |
-| Human edit rate | 16% (n=177 merged PRs; edited by a human PR within 7 days) | pending: 0 |
+| Total PRs | 185 | — |
+| First-attempt success | 75% (n=220 implement runs) | pending: 2 |
+| Avg cost/run | $1.85 (n=222 implement runs) | included |
+| Avg review cost/run | $0.23 (n=15 implement runs) | included |
+| Human edit rate | 16% (n=183 merged PRs; edited by a human PR within 7 days) | pending: 2 |
 
 ## Charts
 
 ```mermaid
 xychart-beta horizontal
     title "Weekly First-Attempt Success Rate (2026)"
-    x-axis ["7/19 (n=2)", "7/26 (n=9)", "8/2 (n=19)", "8/9 (n=3)", "9/6 (n=15)", "9/13 (n=14)", "9/20 (n=70)", "9/27 (n=32)", "10/4 (n=70)", "10/11 (n=2)", "11/2 (n=1)"]
+    x-axis ["7/19 (n=2)", "7/26 (n=9)", "8/2 (n=19)", "8/9 (n=3)", "9/6 (n=15)", "9/13 (n=14)", "9/20 (n=70)", "9/27 (n=32)", "10/4 (n=70)", "10/11 (n=2)", "11/8 (n=1)", "11/10 (n=8)"]
     y-axis "Success %" 0 --> 100
-    bar [100, 78, 68, 100, 60, 86, 57, 78, 81, 50, 100]
+    bar [100, 78, 68, 100, 60, 86, 57, 78, 81, 50, 100, 100]
 ```
 
 > bars before 10/26 count triage runs as implementations (#400)
@@ -27,9 +27,9 @@ xychart-beta horizontal
 ```mermaid
 xychart-beta horizontal
     title "Weekly Avg Cost/PR (2026)"
-    x-axis ["7/19 (n=2)", "7/26 (n=9)", "8/2 (n=19)", "8/9 (n=3)", "9/6 (n=15)", "9/13 (n=14)", "9/20 (n=70)", "9/27 (n=32)", "10/4 (n=70)", "10/11 (n=2)", "11/2 (n=1)"]
+    x-axis ["7/19 (n=2)", "7/26 (n=9)", "8/2 (n=19)", "8/9 (n=3)", "9/6 (n=15)", "9/13 (n=14)", "9/20 (n=70)", "9/27 (n=32)", "10/4 (n=70)", "10/11 (n=2)", "11/8 (n=1)", "11/10 (n=8)"]
     y-axis "Cost ($)" 0 --> 3
-    bar [0.61, 0.55, 0.81, 0.28, 0.97, 1.04, 2.00, 1.04, 1.60, 0.26, 1.88]
+    bar [0.61, 0.55, 0.81, 0.28, 0.97, 1.04, 2.00, 1.04, 1.60, 0.26, 1.88, 1.05]
 ```
 
 > bars before 10/26 count triage runs as implementations (#400)
@@ -38,7 +38,7 @@ xychart-beta horizontal
 %%{init: {'theme': 'base', 'themeVariables': {'pie1': '#4CAF50', 'pie2': '#2196F3', 'pie3': '#FF9800', 'pie4': '#E91E63', 'pie5': '#9C27B0', 'pie6': '#00BCD4', 'pieTitleTextColor': '#aaa', 'pieLegendTextColor': '#aaa', 'pieSectionTextColor': '#fff'}}}%%
 pie title Attempt Distribution by Module
     "other (73%, 12 impl)" : 12
-    "src/autoloop/ (87%, 177 impl)" : 177
+    "src/autoloop/ (88%, 185 impl)" : 185
 ```
 
 ## Per-Module Breakdown
@@ -46,7 +46,7 @@ pie title Attempt Distribution by Module
 | Module | Success | Avg Cost | Impl | Auto-merge ready? |
 |--------|---------|----------|------|--------------------|
 | other | insufficient data (n=11 runs) | insufficient data (n=11 runs) | 12 | No |
-| src/autoloop/ | 87% (n=166 runs) | $1.78 (n=166 runs) | 177 | No |
+| src/autoloop/ | 88% (n=172 runs) | $1.75 (n=174 runs) | 185 | No |
 
 ## Trend
 
@@ -101,6 +101,14 @@ pie title Attempt Distribution by Module
 | 2026-10-31 | 0 | — | — | — |
 | 2026-11-01 | 0 | — | — | — |
 | 2026-11-02 | 1 | 100% | $1.88 | 0% |
+| 2026-11-03 | 0 | — | — | — |
+| 2026-11-04 | 0 | — | — | — |
+| 2026-11-05 | 0 | — | — | — |
+| 2026-11-06 | 0 | — | — | — |
+| 2026-11-07 | 0 | — | — | — |
+| 2026-11-08 | 0 | — | — | — |
+| 2026-11-09 | 4 | 100% | $1.34 | 0% |
+| 2026-11-10 | 4 | 100% | $0.76 | 0% |
 
 > Baseline break at 2026-10-26: earlier snapshots counted triage runs as implementations (#400), so their first-attempt and cost values are not comparable with later rows.
 
