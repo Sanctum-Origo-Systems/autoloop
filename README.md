@@ -622,12 +622,16 @@ The bins, the 95% threshold and the 30-call minimum are constants in `jev_report
 **Backfill** — `scripts/backfill_jev.py` fills gaps in the decision log from GitHub history. Records are append-only, tagged `backfill: true`, and reported separately from live decisions:
 
 ```bash
+# Triage (default): issues whose logged Jev triage call failed with HTTP 403/400
+uv run python scripts/backfill_jev.py --dry-run   # list issues, no Jev calls
+OPENROUTER_API_KEY=<key> uv run python scripts/backfill_jev.py
+
 # Auto-merge: closed or merged autoloop/<issue>-… PRs with no recorded decision
 uv run python scripts/backfill_jev.py --point auto-merge --dry-run   # list PRs and skip counts, no Jev calls
 uv run python scripts/backfill_jev.py --point auto-merge             # call Jev in shadow mode, append records
 ```
 
-The commands above backfill autoloop's own repo. For another repo, run the script with that repo's checkout as the working directory (config and data dir come from it, keyed by its git remote) and a Python that has autoloop installed, for example `~/.local/share/uv/tools/autoloop/bin/python /path/to/autoloop/scripts/backfill_jev.py --point auto-merge --dry-run`. Each auto-merge record keeps the incumbent's review verdict, whether the PR was merged or closed (`final_outcome`), and `timestamp` set to the PR's creation time. Jev sees the current issue text and the PR's first-commit diff (`backfill_inputs`), which is less than it would have seen live, so backfilled confidence runs lower: judge Jev on live rows. Reruns skip PRs that are already recorded, and a PR whose Jev call fails is left unrecorded so the next run retries it.
+The commands above backfill autoloop's own repo. For another repo, run the script with that repo's checkout as the working directory (config and data dir come from it, keyed by its git remote) and a Python that has autoloop installed, for example `~/.local/share/uv/tools/autoloop/bin/python /path/to/autoloop/scripts/backfill_jev.py --point auto-merge --dry-run`. Both modes read and append the same decision log in the data dir (`~/.autoloop/<id>/jev_decisions.jsonl`), never the old repo-local `autoloop/jev_decisions.jsonl`. Triage mode fetches each issue's current text from the working directory's repo and skips any issue that already has a triage record tagged `backfill: true`, even one that fell back, so reruns add nothing; `--dry-run` writes nothing. Each auto-merge record keeps the incumbent's review verdict, whether the PR was merged or closed (`final_outcome`), and `timestamp` set to the PR's creation time. Jev sees the current issue text and the PR's first-commit diff (`backfill_inputs`), which is less than it would have seen live, so backfilled confidence runs lower: judge Jev on live rows. Reruns skip PRs that are already recorded, and a PR whose Jev call fails is left unrecorded so the next run retries it.
 
 ## Commands
 

@@ -4,10 +4,13 @@ Usage:
     OPENROUTER_API_KEY=<key> uv run python scripts/backfill_jev.py [--dry-run]
     uv run python scripts/backfill_jev.py --point auto-merge --dry-run
 
-Triage (default): reads jev_decisions.jsonl for 403 entries with issue numbers,
-fetches the current issue body from GitHub (which matches what the incumbent
-saw), calls Jev triage(), and appends a new record tagged as "backfill".
-Safe to run multiple times — skips issues that already have a non-fallback entry.
+Triage (default): reads jev_decisions.jsonl in the RepoContext data dir
+(~/.autoloop/<id>/, the same file auto-merge mode and JEV.md use) for 403 entries
+with issue numbers, fetches the current issue body from the current repo (the
+working directory's checkout, which matches what the incumbent saw), calls Jev
+triage(), and appends a new record tagged as "backfill" to that file. Safe to run
+multiple times — skips issues that already have a non-fallback entry or any earlier
+backfill record, fallback or not. --dry-run lists the issues and writes nothing.
 
 Auto-merge (--point auto-merge): discovers closed or merged `autoloop/<issue>-…`
 PRs, skips those already recorded in the RepoContext data dir or with no autoloop
@@ -36,15 +39,24 @@ from autoloop.jev_log import (
 BACKFILL_INPUTS = {"issue_text": "current", "diff": "first_commit"}
 
 
-def backfill_triage(dry_run: bool) -> None:
-    log_file = Path("autoloop/jev_decisions.jsonl")
+def is_triage_backfilled(records: list[dict], issue_number: int) -> bool:
+    """True when the issue has a triage record tagged `backfill: true`, fallback or not."""
+    return any(
+        r.get("backfill")
+        and r.get("point", "triage") == "triage"
+        and r.get("issue") == issue_number
+        for r in records
+    )
+
+
+def backfill_triage(ctx, dry_run: bool) -> None:
+    log_file = decisions_path(ctx)
+    print(f"Decisions file: {log_file}")
     if not log_file.exists():
         print("No jev_decisions.jsonl found")
         return
 
-    entries = [
-        json.loads(line) for line in log_file.read_text().strip().splitlines() if line.strip()
-    ]
+    entries = load_decisions(ctx)
 
     # Find issues with 403 failures
     failed_issues = set()
@@ -54,16 +66,18 @@ def backfill_triage(dry_run: bool) -> None:
         issue = e.get("issue")
         if not issue:
             continue
-        jev = e.get("jev", {})
-        reason = jev.get("reason", "") if jev else ""
+        jev = e.get("jev") or {}
+        reason = jev.get("reason", "")
         if "403" in reason or "400" in reason:
             failed_issues.add(issue)
             incumbent_verdicts[issue] = e.get("incumbent")
         elif not jev.get("fallback", True):
             succeeded_issues.add(issue)
 
-    # Skip issues that already have real Jev data
-    backfill_issues = sorted(failed_issues - succeeded_issues)
+    # Skip issues that already have real Jev data or an earlier backfill
+    backfill_issues = sorted(
+        i for i in failed_issues - succeeded_issues if not is_triage_backfilled(entries, i)
+    )
     print(f"Issues to backfill: {len(backfill_issues)}")
     if not backfill_issues:
         print("Nothing to backfill")
@@ -77,13 +91,12 @@ def backfill_triage(dry_run: bool) -> None:
                 "issue",
                 "view",
                 str(issue_num),
-                "--repo",
-                "Sanctum-Origo-Systems/autoloop",
                 "--json",
                 "title,body",
             ],
             capture_output=True,
             text=True,
+            cwd=ctx.repo_dir,
         )
         if result.returncode != 0:
             print(f"  #{issue_num}: failed to fetch issue — skipping")
@@ -115,6 +128,7 @@ def backfill_triage(dry_run: bool) -> None:
             "backfill": True,
         }
 
+        log_file.parent.mkdir(parents=True, exist_ok=True)
         with open(log_file, "a") as f:
             f.write(json.dumps(record) + "\n")
 
@@ -200,14 +214,14 @@ def main(argv=None, *, cfg=None, ctx=None) -> int:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
-    if args.point == "auto-merge":
-        from autoloop.config import RepoContext, load_config
+    from autoloop.config import RepoContext, load_config
 
+    ctx = ctx or RepoContext(Path.cwd())
+    if args.point == "auto-merge":
         cfg = cfg or load_config()
-        ctx = ctx or RepoContext(Path.cwd())
         return backfill_auto_merge(cfg, ctx, args.dry_run)
 
-    backfill_triage(args.dry_run)
+    backfill_triage(ctx, args.dry_run)
     return 0
 
 
