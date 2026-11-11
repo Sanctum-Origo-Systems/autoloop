@@ -1937,3 +1937,93 @@ class TestBandDisplay:
         md = (tmp_path / "JEV.md").read_text()
         section = md[md.index(f"### {WELL_FORMED}") :]
         assert "- **Band:** 0.3–0.85 (from config)" in section
+
+
+class TestPerProbabilityZones:
+    """Zones, labels, legend and the Band line follow each probability's own band (#505)."""
+
+    MERGE_HIGH = {"triage": {}, "auto-merge": {"meets_acceptance_criteria": {"high": 0.8}}}
+    DECOMP_LOW = {"triage": {"needs_decomposition": {"low": 0.35}}}
+
+    def _rows(self, tmp_path):
+        # The triage row stores a band for well_formed only, so needs_decomposition (0.3)
+        # is bucketed with the configured band. The auto-merge rows store no band.
+        triage = _triage_record(issue=1, well_formed=0.92, needs_decomp=0.3)
+        triage["jev_call"]["band"] = {"well_formed": {"low": 0.15, "high": 0.85}}
+        return _parse_rows(
+            tmp_path,
+            [triage, _automerge_record(issue=2, prob=0.82), _automerge_record(issue=3, prob=0.1)],
+        )
+
+    def test_override_changes_only_its_own_zone_counts(self, tmp_path):
+        live = self._rows(tmp_path).live
+        merge = jev_report.probability_bands(self.MERGE_HIGH)
+        decomp = jev_report.probability_bands(self.DECOMP_LOW)
+
+        assert compute_automerge_stats(live)["distribution"] == {
+            "Act: reject (below 0.15)": 1,
+            "Pipeline (0.15-0.85)": 1,
+            "Act: merge (0.85+)": 0,
+        }
+        assert compute_automerge_stats(live, bands=merge)["distribution"] == {
+            "Act: reject (below 0.15)": 1,
+            "Pipeline (0.15-0.8)": 0,
+            "Act: merge (0.8+)": 1,
+        }
+        assert compute_automerge_stats(live, bands=decomp) == compute_automerge_stats(live)
+        assert compute_triage_stats(live)["uncertain_count"] == 1
+        assert compute_triage_stats(live, bands=merge)["uncertain_count"] == 1
+        assert compute_triage_stats(live, bands=decomp)["uncertain_count"] == 0
+
+    def test_build_report_buckets_with_configured_bands(self, tmp_path):
+        parsed = self._rows(tmp_path)
+
+        merge_md = build_report(parsed, bands=self.MERGE_HIGH)
+        decomp_md = build_report(parsed, bands=self.DECOMP_LOW)
+
+        assert '"Act: merge (0.8+)"' in merge_md
+        assert "- **Uncertain (fell back):** 1 of 1" in merge_md
+        assert '"Act: merge (0.85+)"' in decomp_md
+        assert "- **Uncertain (fell back):** 0 of 1" in decomp_md
+
+    def test_legend_lists_band_per_probability(self):
+        md = build_report(ParsedDecisions(backfilled=[], live=[]), bands=self.MERGE_HIGH)
+
+        legend = md[md.index("## Legend") :]
+        assert "- **Pipeline:** confidence too close to call" in legend
+        assert f"  - {WELL_FORMED}: 0.15–0.85" in legend
+        assert f"  - {NEEDS_DECOMP}: 0.15–0.85" in legend
+        assert f"  - {MEETS_AC}: 0.15–0.8" in legend
+        assert "**Pipeline (" not in legend
+
+    def test_band_line_lists_override(self):
+        md = build_report(ParsedDecisions(backfilled=[], live=[]))
+
+        assert f"**Band:** 0.15–0.85 (from config); {NEEDS_DECOMP}: 0.35–0.85\n" in md
+
+    def test_band_line_lists_every_override(self):
+        bands = {"triage": self.DECOMP_LOW["triage"], "auto-merge": self.MERGE_HIGH["auto-merge"]}
+
+        md = build_report(ParsedDecisions(backfilled=[], live=[]), bands=bands)
+
+        assert (
+            f"**Band:** 0.15–0.85 (from config); {NEEDS_DECOMP}: 0.35–0.85; {MEETS_AC}: 0.15–0.8\n"
+        ) in md
+
+    def test_no_overrides_report_is_unchanged(self, tmp_path):
+        parsed = self._rows(tmp_path)
+
+        md = build_report(parsed, bands={"triage": {}})
+
+        # The report as built before #505: shared-band stats and no per-probability bands.
+        legacy = render_jev_md(
+            compute_triage_stats(parsed.live),
+            compute_automerge_stats(parsed.live),
+            {"total": 3, "live": 3, "backfilled": 0, "date_range": "2026-09-28 to 2026-09-28"},
+            backfill_triage_stats=compute_triage_stats([]),
+            backfill_automerge_stats=compute_automerge_stats([]),
+            calibration=compute_calibration(parsed.live),
+        )
+        assert md == legacy
+        assert "**Band:** 0.15–0.85 (from config)\n" in md
+        assert "- **Pipeline (0.15–0.85):** confidence too close to call" in md

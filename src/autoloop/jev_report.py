@@ -102,16 +102,38 @@ def _parse_entry(raw: dict) -> JevEntry:
     )
 
 
-def _row_band(
-    entry: JevEntry, prob: str, gate_low: float = GATE_LOW, gate_high: float = GATE_HIGH
+def _config_band(
+    point: str,
+    prob: str,
+    gate_low: float = GATE_LOW,
+    gate_high: float = GATE_HIGH,
+    bands: dict[str, tuple[float, float]] | None = None,
 ) -> tuple[float, float]:
-    """The (low, high) band stored on the row for prob, else the shared gate_low/gate_high."""
+    """The configured (low, high) band for point.prob, else the shared gate_low/gate_high.
+
+    bands maps "point.probability" to (low, high), as returned by probability_bands().
+    """
+    return (bands or {}).get(f"{point}.{prob}", (gate_low, gate_high))
+
+
+def _row_band(
+    entry: JevEntry,
+    prob: str,
+    gate_low: float = GATE_LOW,
+    gate_high: float = GATE_HIGH,
+    bands: dict[str, tuple[float, float]] | None = None,
+) -> tuple[float, float]:
+    """The (low, high) band stored on the row for prob, else the configured band (#505)."""
+    low, high = _config_band(entry.point, prob, gate_low, gate_high, bands)
     band = entry.band.get(prob) or {}
-    return band.get("low", gate_low), band.get("high", gate_high)
+    return band.get("low", low), band.get("high", high)
 
 
 def _is_uncertain(
-    entry: JevEntry, gate_low: float = GATE_LOW, gate_high: float = GATE_HIGH
+    entry: JevEntry,
+    gate_low: float = GATE_LOW,
+    gate_high: float = GATE_HIGH,
+    bands: dict[str, tuple[float, float]] | None = None,
 ) -> bool:
     """Re-bucket a row from its probabilities and its stored band (#494).
 
@@ -126,7 +148,7 @@ def _is_uncertain(
         p = jev_call.get(prob)
         if p is None:
             continue
-        if _in_middle_band(float(p), *_row_band(entry, prob, gate_low, gate_high)):
+        if _in_middle_band(float(p), *_row_band(entry, prob, gate_low, gate_high, bands)):
             return True
     return False
 
@@ -151,7 +173,10 @@ def _week_start(ts: str) -> str:
 
 
 def _compute_weekly_trends(
-    entries: list[JevEntry], gate_low: float = GATE_LOW, gate_high: float = GATE_HIGH
+    entries: list[JevEntry],
+    gate_low: float = GATE_LOW,
+    gate_high: float = GATE_HIGH,
+    bands: dict[str, tuple[float, float]] | None = None,
 ) -> list[dict]:
     weeks: dict[str, list[JevEntry]] = {}
     for e in entries:
@@ -162,11 +187,11 @@ def _compute_weekly_trends(
     for week in sorted(weeks):
         week_entries = weeks[week]
         total = len(week_entries)
-        uncertain = sum(1 for e in week_entries if _is_uncertain(e, gate_low, gate_high))
+        uncertain = sum(1 for e in week_entries if _is_uncertain(e, gate_low, gate_high, bands))
         agreed = 0
         disagreed = 0
         for e in week_entries:
-            if _is_uncertain(e, gate_low, gate_high):
+            if _is_uncertain(e, gate_low, gate_high, bands):
                 continue
             jev_v = _infer_triage_verdict(e.jev_call)
             inc_v = e.incumbent_call.get("verdict", "")
@@ -192,6 +217,7 @@ def compute_triage_stats(
     entries: list[JevEntry],
     gate_low: float = GATE_LOW,
     gate_high: float = GATE_HIGH,
+    bands: dict[str, tuple[float, float]] | None = None,
 ) -> dict:
     triage = [e for e in entries if e.point == "triage" and not e.triage_bias_warning]
     if not triage:
@@ -209,7 +235,7 @@ def compute_triage_stats(
     disagreements: dict[str, int] = {}
     uncertain = 0
     for entry in triage:
-        if _is_uncertain(entry, gate_low, gate_high):
+        if _is_uncertain(entry, gate_low, gate_high, bands):
             uncertain += 1
             continue
         jev_verdict = _infer_triage_verdict(entry.jev_call)
@@ -229,7 +255,7 @@ def compute_triage_stats(
         "agreement_rate": agreements / total if total else 0.0,
         "disagreement_breakdown": disagreements,
         "uncertainty_rate": uncertain / total if total else 0.0,
-        "weekly_trends": _compute_weekly_trends(triage, gate_low, gate_high),
+        "weekly_trends": _compute_weekly_trends(triage, gate_low, gate_high, bands),
     }
 
 
@@ -237,15 +263,20 @@ def compute_automerge_stats(
     entries: list[JevEntry],
     gate_low: float = GATE_LOW,
     gate_high: float = GATE_HIGH,
+    bands: dict[str, tuple[float, float]] | None = None,
 ) -> dict:
     merge_entries = [e for e in entries if e.point == "auto-merge"]
-    reject_label = f"Act: reject (below {gate_low})"
-    fallback_label = f"Pipeline ({gate_low}-{gate_high})"
-    merge_label = f"Act: merge ({gate_high}+)"
+    # Zone labels name the configured band for this probability (#505).
+    cfg_low, cfg_high = _config_band(
+        "auto-merge", "meets_acceptance_criteria", gate_low, gate_high, bands
+    )
+    reject_label = f"Act: reject (below {cfg_low})"
+    fallback_label = f"Pipeline ({cfg_low}-{cfg_high})"
+    merge_label = f"Act: merge ({cfg_high}+)"
 
     def zone_for(e: JevEntry, p: float) -> str:
-        # Bucket by the band the row was logged with, else the shared edges (#494).
-        low, high = _row_band(e, "meets_acceptance_criteria", gate_low, gate_high)
+        # Bucket by the band the row was logged with, else the configured band (#494, #505).
+        low, high = _row_band(e, "meets_acceptance_criteria", gate_low, gate_high, bands)
         if p < low:
             return reject_label
         if p < high:
@@ -496,17 +527,50 @@ def _compute_verdict(triage_stats: dict, min_n: int = MIN_N) -> str:
     return f"**Verdict:** Jev agreed on {_rate_with_n(rate, confident, 'live')} of confident calls"
 
 
+def _band_overrides(
+    gate_low: float = GATE_LOW,
+    gate_high: float = GATE_HIGH,
+    bands: dict[str, tuple[float, float]] | None = None,
+) -> dict[str, tuple[float, float]]:
+    """The per-probability bands that differ from the shared gate_low/gate_high.
+
+    Like the calibration section (#494), identical bands count as no overrides.
+    """
+    if not bands or len(set(bands.values())) <= 1:
+        return {}
+    return {key: band for key, band in bands.items() if band != (gate_low, gate_high)}
+
+
+def _band_line(
+    gate_low: float = GATE_LOW,
+    gate_high: float = GATE_HIGH,
+    bands: dict[str, tuple[float, float]] | None = None,
+) -> str:
+    """The header Band line: the shared band, then each per-probability override (#505)."""
+    parts = [f"{gate_low}–{gate_high} (from config)"]
+    for key, (low, high) in _band_overrides(gate_low, gate_high, bands).items():
+        parts.append(f"{key}: {low}–{high}")
+    return f"**Band:** {'; '.join(parts)}"
+
+
 def _render_legend(
-    lines: list[str], gate_low: float = GATE_LOW, gate_high: float = GATE_HIGH
+    lines: list[str],
+    gate_low: float = GATE_LOW,
+    gate_high: float = GATE_HIGH,
+    bands: dict[str, tuple[float, float]] | None = None,
 ) -> None:
     lines.append("## Legend")
     lines.append("")
     lines.append("- **Incumbent decision:** the human/pipeline decision that was actually used")
     lines.append("- **Fell back:** Jev returned an uncertain result and deferred to the incumbent")
-    lines.append(
-        f"- **Pipeline ({gate_low}–{gate_high}):**"
-        " confidence too close to call; Jev defers to the incumbent"
-    )
+    pipeline_text = "confidence too close to call; Jev defers to the incumbent"
+    if _band_overrides(gate_low, gate_high, bands):
+        # Probabilities have different bands, so list the edges used for each (#505).
+        lines.append(f"- **Pipeline:** {pipeline_text}")
+        for key, (low, high) in bands.items():
+            lines.append(f"  - {key}: {low}–{high}")
+    else:
+        lines.append(f"- **Pipeline ({gate_low}–{gate_high}):** {pipeline_text}")
     lines.append("- **Backfilled:** a decision reconstructed from historical data, not made live")
     lines.append(
         "- **n=… live / n=… backfill:** the sample behind a number; live and backfilled"
@@ -759,7 +823,7 @@ def render_jev_md(
     lines.append("")
     lines.append(_compute_verdict(triage_stats, min_n))
     lines.append("")
-    lines.append(f"**Band:** {gate_low}–{gate_high} (from config)")
+    lines.append(_band_line(gate_low, gate_high, bands))
     lines.append("")
 
     # Charts go right after the verdict so readers see them without scrolling (#482).
@@ -814,7 +878,7 @@ def render_jev_md(
                 population="backfill",
             )
 
-    _render_legend(lines, gate_low, gate_high)
+    _render_legend(lines, gate_low, gate_high, bands)
 
     if generated_at:
         lines.append(f"{FOOTER_PREFIX}{generated_at}*")
@@ -949,11 +1013,14 @@ def build_report(
 
     bands is the [jev.bands] config table; None uses the built-in DEFAULT_BANDS.
     """
-    triage_stats = compute_triage_stats(parsed.live, gate_low, gate_high)
-    automerge_stats = compute_automerge_stats(parsed.live, gate_low, gate_high)
+    resolved = probability_bands(bands, gate_low, gate_high)
+    triage_stats = compute_triage_stats(parsed.live, gate_low, gate_high, resolved)
+    automerge_stats = compute_automerge_stats(parsed.live, gate_low, gate_high, resolved)
 
-    backfill_triage_stats = compute_triage_stats(parsed.backfilled, gate_low, gate_high)
-    backfill_automerge_stats = compute_automerge_stats(parsed.backfilled, gate_low, gate_high)
+    backfill_triage_stats = compute_triage_stats(parsed.backfilled, gate_low, gate_high, resolved)
+    backfill_automerge_stats = compute_automerge_stats(
+        parsed.backfilled, gate_low, gate_high, resolved
+    )
 
     all_entries = parsed.backfilled + parsed.live
     timestamps = [e.timestamp for e in all_entries if e.timestamp]
@@ -979,7 +1046,7 @@ def build_report(
         generated_at=generated_at,
         gate_low=gate_low,
         gate_high=gate_high,
-        bands=probability_bands(bands, gate_low, gate_high),
+        bands=resolved,
     )
 
 
