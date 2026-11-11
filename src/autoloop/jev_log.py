@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from autoloop.config import AutoLoopConfig, RepoContext
@@ -20,6 +21,8 @@ REQUIRED_KEYS = (
 )
 
 DECISIONS_FILE = "jev_decisions.jsonl"
+RUN_HISTORY_FILE = "run_history.jsonl"
+HUMAN_EDIT_WINDOW_DAYS = 7
 AUTOLOOP_BRANCH_RE = re.compile(r"^autoloop/(\d+)-")
 REVIEW_PASSED_MARKER = "Review passed"
 REVIEW_FAILED_MARKERS = ("Semantic review failed", "Review found issues")
@@ -56,9 +59,8 @@ def log_decision(record: dict, ctx: RepoContext, cfg: AutoLoopConfig | None = No
         f.write(json.dumps(record) + "\n")
 
 
-def load_decisions(ctx: RepoContext) -> list[dict]:
-    """Read every decision record from the data dir, skipping blank or malformed lines."""
-    log_file = decisions_path(ctx)
+def _read_jsonl(log_file: Path) -> list[dict]:
+    """Every JSON object in log_file, skipping blank or malformed lines; [] if it's missing."""
     if not log_file.exists():
         return []
     records = []
@@ -72,6 +74,49 @@ def load_decisions(ctx: RepoContext) -> list[dict]:
         if isinstance(record, dict):
             records.append(record)
     return records
+
+
+def load_decisions(ctx: RepoContext) -> list[dict]:
+    """Read every decision record from the data dir, skipping blank or malformed lines."""
+    return _read_jsonl(decisions_path(ctx))
+
+
+def load_run_history(ctx: RepoContext) -> list[dict]:
+    """Read run_history.jsonl from the data dir, skipping blank or malformed lines."""
+    return _read_jsonl(ctx.data_dir / RUN_HISTORY_FILE)
+
+
+def _parse_utc(value) -> datetime | None:
+    try:
+        ts = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    return ts if ts.tzinfo else ts.replace(tzinfo=UTC)
+
+
+def human_edited_within(
+    runs: list[dict], window_days: int = HUMAN_EDIT_WINDOW_DAYS
+) -> dict[int, bool]:
+    """{pr: edited by a human within window_days of merging} from run_history rows.
+
+    A row carries the signal when it has `pr_number`, `merged_at` and `human_edits` (a list
+    of ISO timestamps, empty when nobody edited the PR). Edits after the window don't count.
+    Rows without the signal, or with an unparseable timestamp, are left out as unknown.
+    """
+    window = timedelta(days=window_days)
+    edited: dict[int, bool] = {}
+    for row in runs:
+        pr = row.get("pr_number")
+        edits = row.get("human_edits")
+        merged_at = _parse_utc(row.get("merged_at"))
+        if pr is None or merged_at is None or not isinstance(edits, list):
+            continue
+        stamps = [_parse_utc(e) for e in edits]
+        if None in stamps:
+            continue
+        within = any(merged_at <= ts <= merged_at + window for ts in stamps)
+        edited[pr] = edited.get(pr, False) or within
+    return edited
 
 
 def parse_autoloop_branch(branch: str) -> int | None:
