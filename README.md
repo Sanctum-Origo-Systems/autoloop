@@ -619,6 +619,13 @@ Each shadow record stores the band each probability was judged against, as `jev_
 
 The bins, the 95% threshold and the 30-call minimum are constants in `jev_report.py`. The incumbent's verdict is the yardstick, not ground truth.
 
+Because the incumbent's verdict isn't ground truth, `auto-merge.meets_acceptance_criteria` is also checked against two more yardsticks. Each one that has data adds a column to the table (share and `n` per bin), and each gets its own **Baseline (…)** line next to Jev's agreement with it:
+
+- **final outcome:** the share of PRs that merged rather than closed unmerged, read from the row's `final_outcome` (`merged` / `closed_unmerged`). The baseline is "always merge" or "always close".
+- **7-day human edit:** the share of PRs with no human edit within 7 days of merging, read from `run_history.jsonl` rows that carry `pr_number`, `merged_at` and `human_edits` (a list of edit timestamps, empty when nobody edited the PR). Edits after the 7 days don't count. The baseline is "always unedited" or "always edited".
+
+Only live rows count. Rows with a missing or unknown outcome are left out of that yardstick's `n` rather than counted as negative. A yardstick with no data shows a "no data" note with the reason (for example "no run history") instead of a column.
+
 **Backfill** — `scripts/backfill_jev.py` fills gaps in the decision log from GitHub history. Records are append-only, tagged `backfill: true`, and reported separately from live decisions:
 
 ```bash
