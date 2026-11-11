@@ -7,7 +7,7 @@ import pytest
 import autoloop.jev_report as jev_report
 from autoloop.config import AutoLoopConfig, RepoContext
 from autoloop.jev import GATE_HIGH, GATE_LOW
-from autoloop.jev_log import log_decision
+from autoloop.jev_log import human_edited_within, load_run_history, log_decision
 from autoloop.jev_report import (
     NOT_ENOUGH_DATA,
     JevEntry,
@@ -20,7 +20,9 @@ from autoloop.jev_report import (
     compute_automerge_stats,
     compute_calibration,
     compute_triage_stats,
+    final_outcome_calibration,
     format_band_edges,
+    human_edit_calibration,
     jev_agreement,
     parse_jev_decisions,
     render_jev_md,
@@ -2027,3 +2029,327 @@ class TestPerProbabilityZones:
         assert md == legacy
         assert "**Band:** 0.15–0.85 (from config)\n" in md
         assert "- **Pipeline (0.15–0.85):** confidence too close to call" in md
+
+
+# --- Auto-merge yardsticks: final outcome and 7-day human edit (#496) ---
+
+_MISSING = object()
+MERGED_AT = "2026-10-01T12:00:00+00:00"
+FINAL_NO_DATA = (
+    "- **Baseline (final outcome):** no data"
+    " (no live rows with a merged or closed-unmerged final_outcome)"
+)
+EDIT_NO_RUNS = "- **Baseline (7-day human edit):** no data (no run history)"
+
+
+def _outcome_entry(prob, final_outcome=_MISSING, pr=11, **raw_extra):
+    """A live auto-merge entry; raw carries final_outcome unless it's left _MISSING."""
+    raw = dict(raw_extra)
+    if final_outcome is not _MISSING:
+        raw["final_outcome"] = final_outcome
+    return JevEntry(
+        timestamp="2026-09-28T09:00:00+00:00",
+        issue=10,
+        point="auto-merge",
+        jev_call={"meets_acceptance_criteria": prob},
+        incumbent_call={"approved": True, "feedback": "test"},
+        is_backfill=bool(raw.get("backfill")),
+        pr=pr,
+        raw=raw,
+    )
+
+
+def _outcome_rows(triples):
+    """Live auto-merge entries from (probability, final_outcome, count) triples."""
+    return [_outcome_entry(prob, outcome) for prob, outcome, count in triples for _ in range(count)]
+
+
+def _run(pr, edits, merged_at=MERGED_AT):
+    return {"type": "implement", "pr_number": pr, "merged_at": merged_at, "human_edits": edits}
+
+
+def _meets_ac_lines(md):
+    return md[md.index(f"### {MEETS_AC}") : md.index("## Legend")].split("\n")
+
+
+def _render_yardsticks(entries, runs=None):
+    return render_jev_md(
+        _empty_triage_stats(),
+        _empty_automerge_stats(),
+        _basic_counts(),
+        calibration=compute_calibration(entries, runs),
+    )
+
+
+class TestFinalOutcomeCalibration:
+    def test_bins_n_and_merged_share(self):
+        entries = _outcome_rows(
+            [
+                (0.1, "closed_unmerged", 1),
+                (0.1, "merged", 1),
+                (0.2, "closed_unmerged", 1),
+                (0.4, "merged", 1),
+                (0.55, "merged", 1),
+                (0.7, "closed_unmerged", 1),
+                (0.9, "merged", 2),
+            ]
+        )
+
+        result = final_outcome_calibration(entries)
+
+        assert _bin_summary(result["bins"]) == [
+            ("0–0.15", 2, 0.5),
+            ("0.15–0.35", 1, 0.0),
+            ("0.35–0.5", 1, 1.0),
+            ("0.5–0.65", 1, 1.0),
+            ("0.65–0.85", 1, 0.0),
+            ("0.85–1", 2, 1.0),
+        ]
+        assert result["n"] == 8
+        assert result["no_data"] is None
+
+    def test_unknown_missing_and_non_live_rows_excluded(self):
+        entries = [
+            _outcome_entry(0.9, "merged"),
+            _outcome_entry(0.1, "closed_unmerged"),
+            _outcome_entry(0.9),
+            _outcome_entry(0.9, None),
+            _outcome_entry(0.9, "open"),
+            _outcome_entry(0.9, ["merged"]),
+            _outcome_entry(0.9, "merged", backfill=True),
+            _outcome_entry(0.9, "merged", shadow=True),
+            _outcome_entry(0.9, "merged", source="replay"),
+        ]
+
+        result = final_outcome_calibration(entries)
+
+        assert [b["n"] for b in result["bins"]] == [1, 0, 0, 0, 0, 1]
+        assert result["n"] == 2
+        assert result["baseline"]["n"] == 2
+
+    def test_backfill_records_from_file_excluded(self, tmp_path):
+        backfilled = _automerge_record(issue=1, prob=0.9, backfill=True)
+        backfilled["final_outcome"] = "merged"
+        live = _automerge_record(issue=2, prob=0.1, approved=False)
+        live["final_outcome"] = "closed_unmerged"
+        parsed = parse_jev_decisions(
+            _write_jsonl(tmp_path / "jev_decisions.jsonl", [backfilled, live])
+        )
+
+        result = final_outcome_calibration(parsed.live + parsed.backfilled)
+
+        assert [b["n"] for b in result["bins"]] == [1, 0, 0, 0, 0, 0]
+
+    def test_baseline_rendered_next_to_jev_agreement(self):
+        entries = _outcome_rows(
+            [(0.9, "merged", 3), (0.2, "closed_unmerged", 2), (0.3, "merged", 1)]
+        )
+
+        result = final_outcome_calibration(entries)
+
+        assert result["baseline"] == {"label": "always merge", "agreement": 4 / 6, "n": 6}
+        assert result["jev"] == {"agreement": 5 / 6, "n": 6}
+        lines = _meets_ac_lines(_render_yardsticks(entries))
+        assert "- **Baseline (final outcome):** always merge: 67%, n=6 vs Jev: 83%, n=6" in lines
+
+    def test_closed_majority_baseline(self):
+        entries = _outcome_rows([(0.2, "closed_unmerged", 3), (0.9, "merged", 1)])
+
+        result = final_outcome_calibration(entries)
+
+        assert result["baseline"] == {"label": "always close", "agreement": 0.75, "n": 4}
+
+
+class TestHumanEditedWithin:
+    def test_classifies_edited_within_window_unedited_and_late_edits(self):
+        runs = [
+            _run(1, ["2026-10-03T12:00:00+00:00"]),
+            _run(2, []),
+            _run(3, ["2026-10-08T12:00:01+00:00"]),
+            _run(4, ["2026-10-08T12:00:00+00:00"]),
+        ]
+
+        assert human_edited_within(runs) == {1: True, 2: False, 3: False, 4: True}
+
+    def test_edit_before_merge_not_counted(self):
+        assert human_edited_within([_run(1, ["2026-09-30T12:00:00+00:00"])]) == {1: False}
+
+    def test_naive_timestamps_read_as_utc(self):
+        runs = [_run(1, ["2026-10-02T00:00:00"], merged_at="2026-10-01T12:00:00")]
+
+        assert human_edited_within(runs) == {1: True}
+
+    def test_rows_without_signal_or_with_bad_timestamps_skipped(self):
+        runs = [
+            {"type": "implement", "issue": 5, "pr_number": 1, "success": True},
+            {"type": "implement", "pr_number": 2, "merged_at": MERGED_AT},
+            _run(3, [], merged_at=None),
+            _run(4, ["not a date"]),
+            _run(5, "2026-10-02T00:00:00+00:00"),
+            {"merged_at": MERGED_AT, "human_edits": []},
+        ]
+
+        assert human_edited_within(runs) == {}
+
+    def test_any_row_marking_edited_wins(self):
+        runs = [_run(1, []), _run(1, ["2026-10-02T12:00:00+00:00"]), _run(1, [])]
+
+        assert human_edited_within(runs) == {1: True}
+
+    def test_window_days_parameter(self):
+        runs = [_run(1, ["2026-10-04T12:00:00+00:00"])]
+
+        assert human_edited_within(runs, window_days=2) == {1: False}
+
+    def test_load_run_history_skips_malformed_lines(self, tmp_path):
+        ctx = RepoContext.for_data_dir(tmp_path, repo_dir=tmp_path)
+        (tmp_path / "run_history.jsonl").write_text(
+            json.dumps(_run(1, [])) + "\n\nnot json\n[1, 2]\n" + json.dumps(_run(2, [])) + "\n"
+        )
+
+        assert [r["pr_number"] for r in load_run_history(ctx)] == [1, 2]
+
+    def test_load_run_history_missing_file(self, tmp_path):
+        assert load_run_history(RepoContext.for_data_dir(tmp_path, repo_dir=tmp_path)) == []
+
+
+class TestHumanEditCalibration:
+    def test_bins_share_of_prs_without_human_edit(self):
+        entries = [
+            _outcome_entry(0.9, pr=1),
+            _outcome_entry(0.9, pr=2),
+            _outcome_entry(0.1, pr=3),
+            _outcome_entry(0.9, pr=4),
+            _outcome_entry(0.9, pr=None),
+            _outcome_entry(0.9, pr=5, backfill=True),
+        ]
+        edited = {1: False, 2: True, 3: True, 5: False}
+
+        result = human_edit_calibration(entries, edited)
+
+        assert [b["n"] for b in result["bins"]] == [1, 0, 0, 0, 0, 2]
+        assert result["bins"][0]["share"] == 0.0
+        assert result["bins"][-1]["share"] == 0.5
+        assert result["baseline"] == {"label": "always edited", "agreement": 2 / 3, "n": 3}
+        assert result["jev"] == {"agreement": 2 / 3, "n": 3}
+
+    def test_rendered_from_run_history(self):
+        entries = [_outcome_entry(0.9, pr=1), _outcome_entry(0.9, pr=2)]
+        runs = [_run(1, []), _run(2, ["2026-10-02T12:00:00+00:00"])]
+
+        lines = _meets_ac_lines(_render_yardsticks(entries, runs))
+
+        assert (
+            "- **Baseline (7-day human edit):** always unedited: 50%, n=2 vs Jev: 50%, n=2"
+        ) in lines
+        assert "| 0.85–1 | n=2 | 100% | 50% (n=2) |" in lines
+
+
+class TestYardstickNoData:
+    def test_no_records_renders_both_no_data_notes(self):
+        md = build_report(ParsedDecisions(backfilled=[], live=[]))
+
+        lines = _meets_ac_lines(md)
+        assert FINAL_NO_DATA in lines
+        assert EDIT_NO_RUNS in lines
+
+    def test_records_without_final_outcome(self, tmp_path):
+        parsed = parse_jev_decisions(
+            _write_jsonl(tmp_path / "jev_decisions.jsonl", [_automerge_record(prob=0.9)])
+        )
+
+        lines = _meets_ac_lines(build_report(parsed))
+
+        assert FINAL_NO_DATA in lines
+        assert "| 0.85–1 | n=1 | 100% |" in lines
+
+    @pytest.mark.parametrize("runs", [None, []])
+    def test_missing_or_empty_run_history(self, runs):
+        lines = _meets_ac_lines(_render_yardsticks([_outcome_entry(0.9, "merged")], runs))
+
+        assert EDIT_NO_RUNS in lines
+        assert "- **Baseline (final outcome):** always merge: 100%, n=1 vs Jev: 100%, n=1" in lines
+
+    def test_run_history_without_edit_signal(self):
+        runs = [{"type": "implement", "issue": 10, "pr_number": 11, "success": True}]
+
+        lines = _meets_ac_lines(_render_yardsticks([_outcome_entry(0.9)], runs))
+
+        assert (
+            "- **Baseline (7-day human edit):** no data"
+            " (run history has no 7-day human-edit signal)"
+        ) in lines
+
+    def test_signal_for_other_prs_only(self):
+        lines = _meets_ac_lines(_render_yardsticks([_outcome_entry(0.9, pr=11)], [_run(99, [])]))
+
+        assert (
+            "- **Baseline (7-day human edit):** no data"
+            " (no live rows match a PR with the human-edit signal)"
+        ) in lines
+
+    def test_main_without_run_history_file(self, tmp_path):
+        ctx = RepoContext.for_data_dir(tmp_path, repo_dir=tmp_path)
+        _write_jsonl(tmp_path / "jev_decisions.jsonl", [_automerge_record(prob=0.9)])
+
+        jev_report.main(ctx=ctx)
+
+        lines = (tmp_path / "JEV.md").read_text().split("\n")
+        assert FINAL_NO_DATA in lines
+        assert EDIT_NO_RUNS in lines
+
+    def test_main_reads_run_history_from_data_dir(self, tmp_path):
+        ctx = RepoContext.for_data_dir(tmp_path, repo_dir=tmp_path)
+        _write_jsonl(tmp_path / "jev_decisions.jsonl", [_automerge_record(pr=11, prob=0.9)])
+        _write_jsonl(tmp_path / "run_history.jsonl", [_run(11, [])])
+
+        jev_report.main(ctx=ctx)
+
+        md = (tmp_path / "JEV.md").read_text()
+        assert "- **Baseline (7-day human edit):** always unedited: 100%, n=1" in md
+
+
+class TestYardstickLabels:
+    def _lines(self):
+        entries = [
+            _outcome_entry(0.9, "merged", pr=1),
+            _outcome_entry(0.9, "merged", pr=2),
+            _outcome_entry(0.1, "closed_unmerged", pr=3),
+        ]
+        runs = [_run(1, []), _run(2, ["2026-10-02T12:00:00+00:00"])]
+        return _meets_ac_lines(_render_yardsticks(entries, runs))
+
+    def test_states_incumbent_not_ground_truth_and_names_each_yardstick(self):
+        assert (
+            "- **Yardsticks:** **incumbent verdict** (approved),"
+            " **final outcome** (merged), **7-day human edit** (no human edit)."
+            " The incumbent's verdict is not ground truth."
+        ) in self._lines()
+
+    def test_table_has_a_labelled_column_per_yardstick_with_n_on_every_cell(self):
+        lines = self._lines()
+
+        assert (
+            "| Bin | n | % approved (incumbent verdict) | % merged (final outcome)"
+            " | % no human edit (7-day human edit) |"
+        ) in lines
+        assert "| 0.85–1 | n=2 | 100% | 100% (n=2) | 50% (n=2) |" in lines
+        assert "| 0.35–0.5 | n=0 | — | — (n=0) | — (n=0) |" in lines
+        rows = [line for line in lines if line.startswith("| 0")]
+        assert len(rows) == 6
+        for row in rows:
+            assert row.count("n=") == 3, row
+
+    def test_no_data_yardstick_gets_no_column(self):
+        lines = _meets_ac_lines(_render_yardsticks([_outcome_entry(0.9)]))
+
+        assert "| Bin | n | % approved (incumbent verdict) |" in lines
+        assert "| 0.85–1 | n=1 | 100% |" in lines
+
+    def test_triage_tables_unchanged(self):
+        md = _render_yardsticks([])
+
+        section = md[md.index(f"### {WELL_FORMED}") : md.index(f"### {MEETS_AC}")]
+        assert "| Bin | n | % not rejected |" in section
+        assert "Yardsticks" not in section
+        assert "(final outcome)" not in section

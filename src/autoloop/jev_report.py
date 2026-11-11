@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import statistics
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from autoloop.config import RepoContext
 from autoloop.jev import GATE_HIGH, GATE_LOW, JEV_POINTS, _in_middle_band, band_for
+from autoloop.jev_log import HUMAN_EDIT_WINDOW_DAYS, human_edited_within, load_run_history
 
 MIN_N = 20
 FOOTER_PREFIX = "---\n\n*Generated at "
@@ -351,6 +353,10 @@ CALIBRATION_POINTS = {
         "auto-merge", "meets_acceptance_criteria", "approved", "always approve", "always reject"
     ),
 }
+MEETS_AC_KEY = "auto-merge.meets_acceptance_criteria"
+
+# Whether a row's outcome was positive under some yardstick, or None if unknown.
+Outcome = Callable[[JevEntry], bool | None]
 
 
 def _is_live(entry: JevEntry) -> bool:
@@ -373,15 +379,25 @@ def _incumbent_positive(entry: JevEntry, spec: CalibrationPoint) -> bool | None:
     return verdict != "rejected"
 
 
-def _calibration_points(entries: list[JevEntry], key: str) -> list[tuple[float, bool]]:
-    """(probability, incumbent positive) for live rows that have both."""
+def _calibration_points(
+    entries: list[JevEntry], key: str, outcome: Outcome | None = None
+) -> list[tuple[float, bool]]:
+    """(probability, outcome positive) for live rows that have both.
+
+    outcome defaults to the incumbent's verdict; a None outcome leaves the row out.
+    """
     spec = CALIBRATION_POINTS[key]
+    if outcome is None:
+
+        def outcome(e: JevEntry) -> bool | None:
+            return _incumbent_positive(e, spec)
+
     points = []
     for e in entries:
         if e.point != spec.point or not _is_live(e):
             continue
         prob = e.jev_call.get(spec.field)
-        positive = _incumbent_positive(e, spec)
+        positive = outcome(e)
         if prob is None or positive is None:
             continue
         points.append((float(prob), positive))
@@ -392,9 +408,14 @@ def _bin_label(low: float, high: float) -> str:
     return f"{low:g}–{high:g}"
 
 
-def calibration_bins(entries: list[JevEntry], key: str) -> list[dict]:
+def calibration_bins(
+    entries: list[JevEntry], key: str, outcome: Outcome | None = None
+) -> list[dict]:
     """One row per calibration bin, in order, including empty bins (n=0, share None)."""
-    points = _calibration_points(entries, key)
+    return _bins(_calibration_points(entries, key, outcome))
+
+
+def _bins(points: list[tuple[float, bool]]) -> list[dict]:
     edges = CALIBRATION_BIN_EDGES
     bins = []
     for i, (low, high) in enumerate(zip(edges, edges[1:])):
@@ -468,29 +489,108 @@ def format_band_edges(edges: dict) -> str:
     return "; ".join(parts)
 
 
-def baseline_agreement(entries: list[JevEntry], key: str) -> dict:
-    """Agreement of always picking the incumbent's most common verdict (ties go positive)."""
-    spec = CALIBRATION_POINTS[key]
-    points = _calibration_points(entries, key)
+def _baseline(points: list[tuple[float, bool]], always_positive: str, always_negative: str) -> dict:
+    """Agreement of always picking the most common outcome (ties go positive)."""
     n = len(points)
     positive = sum(pos for _, pos in points)
     if positive >= n - positive:
-        label, agreed = spec.always_positive, positive
+        label, agreed = always_positive, positive
     else:
-        label, agreed = spec.always_negative, n - positive
+        label, agreed = always_negative, n - positive
     return {"label": label, "agreement": agreed / n if n else 0.0, "n": n}
 
 
-def jev_agreement(entries: list[JevEntry], key: str) -> dict:
-    """Agreement of Jev's own call (positive at or above CALIBRATION_CALL_THRESHOLD)."""
-    points = _calibration_points(entries, key)
+def _jev_agreement(points: list[tuple[float, bool]]) -> dict:
     n = len(points)
     agreed = sum((p >= CALIBRATION_CALL_THRESHOLD) == pos for p, pos in points)
     return {"agreement": agreed / n if n else 0.0, "n": n}
 
 
-def compute_calibration(entries: list[JevEntry]) -> dict:
+def baseline_agreement(entries: list[JevEntry], key: str) -> dict:
+    """Agreement of always picking the incumbent's most common verdict (ties go positive)."""
+    spec = CALIBRATION_POINTS[key]
+    points = _calibration_points(entries, key)
+    return _baseline(points, spec.always_positive, spec.always_negative)
+
+
+def jev_agreement(entries: list[JevEntry], key: str) -> dict:
+    """Agreement of Jev's own call (positive at or above CALIBRATION_CALL_THRESHOLD)."""
+    return _jev_agreement(_calibration_points(entries, key))
+
+
+@dataclass(frozen=True)
+class Yardstick:
+    """An outcome other than the incumbent's verdict to calibrate auto-merge against (#496)."""
+
+    name: str
+    positive_label: str
+    always_positive: str
+    always_negative: str
+
+
+FINAL_OUTCOME_YARDSTICK = Yardstick("final outcome", "merged", "always merge", "always close")
+HUMAN_EDIT_YARDSTICK = Yardstick(
+    f"{HUMAN_EDIT_WINDOW_DAYS}-day human edit", "no human edit", "always unedited", "always edited"
+)
+# final_outcome values from the backfill; anything else is unknown and left out.
+FINAL_OUTCOME_POSITIVE = {"merged": True, "closed_unmerged": False}
+
+
+def _final_outcome_positive(entry: JevEntry) -> bool | None:
+    """True if the PR merged, False if it closed unmerged, None if unknown or missing."""
+    value = entry.raw.get("final_outcome")
+    return FINAL_OUTCOME_POSITIVE.get(value) if isinstance(value, str) else None
+
+
+def _yardstick_calibration(
+    entries: list[JevEntry], yardstick: Yardstick, outcome: Outcome, no_data: str
+) -> dict:
+    points = _calibration_points(entries, MEETS_AC_KEY, outcome)
     return {
+        "name": yardstick.name,
+        "positive_label": yardstick.positive_label,
+        "n": len(points),
+        "bins": _bins(points),
+        "baseline": _baseline(points, yardstick.always_positive, yardstick.always_negative),
+        "jev": _jev_agreement(points),
+        "no_data": None if points else no_data,
+    }
+
+
+def final_outcome_calibration(entries: list[JevEntry]) -> dict:
+    """Auto-merge calibration against whether the PR merged or closed unmerged."""
+    return _yardstick_calibration(
+        entries,
+        FINAL_OUTCOME_YARDSTICK,
+        _final_outcome_positive,
+        "no live rows with a merged or closed-unmerged final_outcome",
+    )
+
+
+def human_edit_calibration(entries: list[JevEntry], edited: dict[int, bool] | None) -> dict:
+    """Auto-merge calibration against no human edit within the window after merging.
+
+    edited is {pr: edited within the window} from run history; None means no run history.
+    """
+    if edited is None:
+        no_data = "no run history"
+    elif not edited:
+        no_data = f"run history has no {HUMAN_EDIT_WINDOW_DAYS}-day human-edit signal"
+    else:
+        no_data = "no live rows match a PR with the human-edit signal"
+    signal = edited or {}
+
+    def outcome(e: JevEntry) -> bool | None:
+        return None if e.pr not in signal else not signal[e.pr]
+
+    return _yardstick_calibration(entries, HUMAN_EDIT_YARDSTICK, outcome, no_data)
+
+
+def compute_calibration(entries: list[JevEntry], runs: list[dict] | None = None) -> dict:
+    """Calibration per probability; auto-merge also gets the final-outcome and human-edit
+    yardsticks, the latter from run history (runs None or empty means none was found).
+    """
+    calibration = {
         key: {
             "positive_label": spec.positive_label,
             "bins": calibration_bins(entries, key),
@@ -500,6 +600,12 @@ def compute_calibration(entries: list[JevEntry]) -> dict:
         }
         for key, spec in CALIBRATION_POINTS.items()
     }
+    edited = human_edited_within(runs) if runs else None
+    calibration[MEETS_AC_KEY]["yardsticks"] = [
+        final_outcome_calibration(entries),
+        human_edit_calibration(entries, edited),
+    ]
+    return calibration
 
 
 def _md_label(date_str: str) -> str:
@@ -776,14 +882,32 @@ def _render_calibration_section(
     )
     lines.append("")
     for key, data in calibration.items():
+        yardsticks = data.get("yardsticks", [])
+        # Yardsticks with data become extra columns; the rest get a "no data" note.
+        columns = [y for y in yardsticks if y["no_data"] is None]
         lines.append(f"### {key}")
         lines.append("")
-        lines.append(f"| Bin | n | % {data['positive_label']} |")
-        lines.append("|-----|---|---|")
-        for b in data["bins"]:
+        header = f"| Bin | n | % {data['positive_label']}"
+        if yardsticks:
+            header += " (incumbent verdict)"
+        header += "".join(f" | % {y['positive_label']} ({y['name']})" for y in columns)
+        lines.append(header + " |")
+        lines.append("|-----|---|---|" + "---|" * len(columns))
+        for i, b in enumerate(data["bins"]):
             share = "—" if b["share"] is None else f"{b['share']:.0%}"
-            lines.append(f"| {b['label']} | n={b['n']} | {share} |")
+            row = f"| {b['label']} | n={b['n']} | {share} |"
+            for y in columns:
+                yb = y["bins"][i]
+                y_share = "—" if yb["share"] is None else f"{yb['share']:.0%}"
+                row += f" {y_share} (n={yb['n']}) |"
+            lines.append(row)
         lines.append("")
+        if yardsticks:
+            names = ", ".join(f"**{y['name']}** ({y['positive_label']})" for y in yardsticks)
+            lines.append(
+                f"- **Yardsticks:** **incumbent verdict** ({data['positive_label']}), {names}."
+                " The incumbent's verdict is not ground truth."
+            )
         baseline = data["baseline"]
         jev = data["jev"]
         edges = data["edges"]
@@ -801,7 +925,20 @@ def _render_calibration_section(
                 f"- **Baseline:** {baseline['label']}: {baseline['agreement']:.0%},"
                 f" n={baseline['n']} vs Jev: {jev['agreement']:.0%}, n={jev['n']}"
             )
+        for y in yardsticks:
+            lines.append(_yardstick_baseline_line(y))
         lines.append("")
+
+
+def _yardstick_baseline_line(yardstick: dict) -> str:
+    prefix = f"- **Baseline ({yardstick['name']}):**"
+    if yardstick["no_data"] is not None:
+        return f"{prefix} no data ({yardstick['no_data']})"
+    baseline, jev = yardstick["baseline"], yardstick["jev"]
+    return (
+        f"{prefix} {baseline['label']}: {baseline['agreement']:.0%}, n={baseline['n']}"
+        f" vs Jev: {jev['agreement']:.0%}, n={jev['n']}"
+    )
 
 
 def render_jev_md(
@@ -1008,10 +1145,12 @@ def build_report(
     gate_low: float = GATE_LOW,
     gate_high: float = GATE_HIGH,
     bands: dict | None = None,
+    runs: list[dict] | None = None,
 ) -> str:
     """Compute every stat from parsed decision rows and render JEV.md.
 
     bands is the [jev.bands] config table; None uses the built-in DEFAULT_BANDS.
+    runs is run history, for the auto-merge human-edit yardstick; None means none was found.
     """
     resolved = probability_bands(bands, gate_low, gate_high)
     triage_stats = compute_triage_stats(parsed.live, gate_low, gate_high, resolved)
@@ -1042,7 +1181,7 @@ def build_report(
         counts,
         backfill_triage_stats=backfill_triage_stats,
         backfill_automerge_stats=backfill_automerge_stats,
-        calibration=compute_calibration(parsed.live),
+        calibration=compute_calibration(parsed.live, runs),
         generated_at=generated_at,
         gate_low=gate_low,
         gate_high=gate_high,
@@ -1067,6 +1206,7 @@ def main(
         gate_low=gate_low,
         gate_high=gate_high,
         bands=bands,
+        runs=load_run_history(ctx),
     )
     jev_path = ctx.repo_dir / "JEV.md"
 
