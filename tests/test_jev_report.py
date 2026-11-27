@@ -1,5 +1,6 @@
 import json
 import re
+import subprocess
 from unittest.mock import patch
 
 import pytest
@@ -2353,3 +2354,174 @@ class TestYardstickLabels:
         assert "| Bin | n | % not rejected |" in section
         assert "Yardsticks" not in section
         assert "(final outcome)" not in section
+
+
+NEW_PR_URL = "https://github.com/owner/repo/pull/120\n"
+OLDER_REPORT_PRS = [
+    {"number": 101, "headRefName": "chore/jev-report-2026-11-25"},
+    {"number": 105, "headRefName": "chore/jev-report-2026-11-26"},
+    {"number": 106, "headRefName": "chore/eval-2026-11-26"},
+]
+
+
+def _fake_publish_run(calls, open_prs, *, fail=()):
+    """Fake subprocess.run for _publish_via_pr; fail holds command prefixes that exit 1."""
+
+    def _fake(cmd, **kw):
+        calls.append(cmd)
+        if any(cmd[: len(prefix)] == list(prefix) for prefix in fail):
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
+        stdout = ""
+        if cmd[:3] == ["gh", "pr", "create"]:
+            stdout = NEW_PR_URL
+        elif cmd[:3] == ["gh", "pr", "list"]:
+            stdout = json.dumps(open_prs)
+        return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+    return _fake
+
+
+def _publish(tmp_path, open_prs, *, fail=()):
+    ctx = _make_ctx(tmp_path, tmp_path)
+    calls = []
+    with patch("autoloop.jev_report.subprocess.run", _fake_publish_run(calls, open_prs, fail=fail)):
+        result = jev_report._publish_via_pr(ctx, tmp_path / "JEV.md", "2026-11-27")
+    return result, calls
+
+
+def _close_calls(calls):
+    return [c for c in calls if c[:3] == ["gh", "pr", "close"]]
+
+
+class TestCloseSupersededReportPrs:
+    def test_closes_only_older_report_prs(self, tmp_path):
+        result, calls = _publish(tmp_path, OLDER_REPORT_PRS)
+
+        assert ["gh", "pr", "list", "--state", "open", "--json", "number,headRefName"] in calls
+        assert _close_calls(calls) == [
+            ["gh", "pr", "close", "101", "--comment", "Superseded by #120."],
+            ["gh", "pr", "close", "105", "--comment", "Superseded by #120."],
+        ]
+        assert result.startswith("PR created: https://github.com/owner/repo/pull/120")
+        assert "Closed superseded report PRs: #101, #105" in result
+
+    def test_unrelated_prs_untouched(self, tmp_path):
+        _, calls = _publish(tmp_path, OLDER_REPORT_PRS)
+
+        assert not any("106" in " ".join(c) for c in calls)
+
+    def test_never_deletes_branches(self, tmp_path):
+        _, calls = _publish(tmp_path, OLDER_REPORT_PRS)
+
+        for cmd in _close_calls(calls):
+            assert "--delete-branch" not in cmd and "-d" not in cmd
+        assert not any(c[:2] == ["git", "push"] and "--delete" in c for c in calls)
+        assert not any(c[:2] == ["git", "branch"] for c in calls)
+
+    def test_no_close_when_pr_create_fails(self, tmp_path):
+        result, calls = _publish(tmp_path, OLDER_REPORT_PRS, fail=[("gh", "pr", "create")])
+
+        assert result.startswith("Error: PR creation failed")
+        assert not any(c[:3] == ["gh", "pr", "list"] for c in calls)
+        assert _close_calls(calls) == []
+
+    def test_no_close_when_push_fails(self, tmp_path):
+        result, calls = _publish(tmp_path, OLDER_REPORT_PRS, fail=[("git", "push")])
+
+        assert result.startswith("Error: git push failed")
+        assert _close_calls(calls) == []
+
+    def test_list_failure_still_reports_pr_created(self, tmp_path):
+        result, calls = _publish(tmp_path, OLDER_REPORT_PRS, fail=[("gh", "pr", "list")])
+
+        assert result.startswith("PR created: https://github.com/owner/repo/pull/120")
+        assert "Warning: could not list open report PRs" in result
+        assert _close_calls(calls) == []
+
+    def test_list_bad_json_still_reports_pr_created(self, tmp_path):
+        ctx = _make_ctx(tmp_path, tmp_path)
+
+        def fake_run(cmd, **kw):
+            stdout = NEW_PR_URL if cmd[:3] == ["gh", "pr", "create"] else "not json"
+            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+        with patch("autoloop.jev_report.subprocess.run", fake_run):
+            result = jev_report._publish_via_pr(ctx, tmp_path / "JEV.md", "2026-11-27")
+
+        assert result.startswith("PR created:")
+        assert "Warning: could not list open report PRs" in result
+
+    def test_close_failure_still_reports_pr_created(self, tmp_path):
+        result, calls = _publish(tmp_path, OLDER_REPORT_PRS, fail=[("gh", "pr", "close", "101")])
+
+        assert result.startswith("PR created: https://github.com/owner/repo/pull/120")
+        assert "Warning: could not close superseded report PRs: #101" in result
+        assert "Closed superseded report PRs: #105" in result
+        assert len(_close_calls(calls)) == 2
+
+    def test_gh_missing_on_list_still_reports_pr_created(self, tmp_path):
+        ctx = _make_ctx(tmp_path, tmp_path)
+
+        def fake_run(cmd, **kw):
+            if cmd[:3] == ["gh", "pr", "list"]:
+                raise FileNotFoundError("gh")
+            stdout = NEW_PR_URL if cmd[:3] == ["gh", "pr", "create"] else ""
+            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+        with patch("autoloop.jev_report.subprocess.run", fake_run):
+            result = jev_report._publish_via_pr(ctx, tmp_path / "JEV.md", "2026-11-27")
+
+        assert result.startswith("PR created:")
+        assert "gh not found" in result
+
+    def test_new_pr_never_closed(self, tmp_path):
+        open_prs = [
+            {"number": 120, "headRefName": "chore/jev-report-2026-11-27"},
+            {"number": 105, "headRefName": "chore/jev-report-2026-11-26"},
+        ]
+        _, calls = _publish(tmp_path, open_prs)
+
+        assert _close_calls(calls) == [
+            ["gh", "pr", "close", "105", "--comment", "Superseded by #120."]
+        ]
+
+    def test_new_branch_never_closed_even_with_other_number(self, tmp_path):
+        open_prs = [{"number": 999, "headRefName": "chore/jev-report-2026-11-27"}]
+        result, calls = _publish(tmp_path, open_prs)
+
+        assert _close_calls(calls) == []
+        assert result == "PR created: https://github.com/owner/repo/pull/120"
+
+    def test_unparseable_pr_url_closes_nothing(self, tmp_path):
+        ctx = _make_ctx(tmp_path, tmp_path)
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            if cmd[:3] == ["gh", "pr", "list"]:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=json.dumps(OLDER_REPORT_PRS), stderr=""
+                )
+            return subprocess.CompletedProcess(cmd, 0, stdout="created\n", stderr="")
+
+        with patch("autoloop.jev_report.subprocess.run", fake_run):
+            result = jev_report._publish_via_pr(ctx, tmp_path / "JEV.md", "2026-11-27")
+
+        assert result.startswith("PR created: created")
+        assert "could not parse new PR number" in result
+        assert _close_calls(calls) == []
+
+    def test_no_other_report_prs_adds_no_note(self, tmp_path):
+        result, calls = _publish(tmp_path, [OLDER_REPORT_PRS[2]])
+
+        assert result == "PR created: https://github.com/owner/repo/pull/120"
+        assert _close_calls(calls) == []
+
+
+class TestPrNumberFromUrl:
+    def test_parses_number(self):
+        assert jev_report._pr_number_from_url("https://github.com/owner/repo/pull/42") == 42
+
+    def test_none_without_pull_path(self):
+        assert jev_report._pr_number_from_url("") is None
+        assert jev_report._pr_number_from_url("https://github.com/owner/repo") is None
