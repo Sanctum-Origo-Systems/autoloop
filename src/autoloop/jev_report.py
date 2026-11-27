@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import statistics
 import subprocess
 from collections.abc import Callable
@@ -14,6 +15,7 @@ from autoloop.jev_log import HUMAN_EDIT_WINDOW_DAYS, human_edited_within, load_r
 
 MIN_N = 20
 FOOTER_PREFIX = "---\n\n*Generated at "
+REPORT_BRANCH_PREFIX = "chore/jev-report-"
 
 # Calibration (#495). Each bin includes its lower edge; the last bin also includes 1.0.
 CALIBRATION_BIN_EDGES = (0.0, 0.15, 0.35, 0.5, 0.65, 0.85, 1.0)
@@ -1044,8 +1046,72 @@ def _published_jev_md(ctx: RepoContext) -> str | None:
     return result.stdout
 
 
+def _pr_number_from_url(url: str) -> int | None:
+    """Return the PR number from a `gh pr create` URL, or None if there isn't one."""
+    match = re.search(r"/pull/(\d+)", url)
+    return int(match.group(1)) if match else None
+
+
+def _close_superseded_report_prs(ctx: RepoContext, new_pr: int, new_branch: str) -> str:
+    """Close other open report PRs as superseded by new_pr; return a note on what happened.
+
+    A newer report rewrites all of JEV.md, so older open ones only conflict once it merges
+    (#513). Branches are left in place, and failures are reported rather than raised.
+    """
+    repo_dir = str(ctx.repo_dir)
+    try:
+        result = subprocess.run(
+            ["gh", "pr", "list", "--state", "open", "--json", "number,headRefName"],
+            capture_output=True,
+            text=True,
+            cwd=repo_dir,
+        )
+    except FileNotFoundError:
+        return "Warning: could not list open report PRs: gh not found"
+    if result.returncode != 0:
+        return f"Warning: could not list open report PRs\n{result.stderr}"
+    try:
+        open_prs = json.loads(result.stdout)
+        superseded = sorted(
+            int(p["number"])
+            for p in open_prs
+            if str(p.get("headRefName", "")).startswith(REPORT_BRANCH_PREFIX)
+            and int(p["number"]) != new_pr
+            and p.get("headRefName") != new_branch
+        )
+    except (json.JSONDecodeError, TypeError, KeyError, ValueError, AttributeError):
+        return "Warning: could not list open report PRs: unexpected gh output"
+
+    closed = []
+    failed = []
+    for number in superseded:
+        try:
+            result = subprocess.run(
+                ["gh", "pr", "close", str(number), "--comment", f"Superseded by #{new_pr}."],
+                capture_output=True,
+                text=True,
+                cwd=repo_dir,
+            )
+        except FileNotFoundError:
+            failed.append(number)
+            continue
+        if result.returncode != 0:
+            failed.append(number)
+        else:
+            closed.append(number)
+
+    notes = []
+    if closed:
+        notes.append("Closed superseded report PRs: " + ", ".join(f"#{n}" for n in closed))
+    if failed:
+        notes.append(
+            "Warning: could not close superseded report PRs: " + ", ".join(f"#{n}" for n in failed)
+        )
+    return "\n".join(notes)
+
+
 def _publish_via_pr(ctx: RepoContext, jev_path: Path, date: str) -> str:
-    branch_name = f"chore/jev-report-{date}"
+    branch_name = f"{REPORT_BRANCH_PREFIX}{date}"
     pr_created = False
     repo_dir = str(ctx.repo_dir)
     try:
@@ -1120,7 +1186,14 @@ def _publish_via_pr(ctx: RepoContext, jev_path: Path, date: str) -> str:
             return f"Error: PR creation failed\n{result.stderr}"
 
         pr_created = True
-        return f"PR created: {result.stdout.strip()}"
+        pr_url = result.stdout.strip()
+        message = f"PR created: {pr_url}"
+        new_pr = _pr_number_from_url(pr_url)
+        if new_pr is None:
+            note = "Warning: could not parse new PR number; older report PRs left open"
+        else:
+            note = _close_superseded_report_prs(ctx, new_pr, branch_name)
+        return f"{message}\n{note}" if note else message
     finally:
         try:
             subprocess.run(
