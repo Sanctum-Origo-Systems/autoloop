@@ -1,7 +1,19 @@
 name: Autoloop Cleanup
 on:
   pull_request:
-    types: [closed]
+    types:
+      - opened
+      - reopened
+      - closed
+      - synchronize
+      - edited
+      - ready_for_review
+      - converted_to_draft
+  # Refresh the review queue when CI finishes.
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+  workflow_dispatch:
 
 permissions:
   issues: write
@@ -54,3 +66,32 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: autoloop auto-close-parent "${{ github.event.pull_request.number }}"
+
+  # Rebuilds the Review Queue issue from live PR state on every PR change and CI run.
+  # The other jobs only act on merged PRs, so the extra triggers don't change them.
+  review-queue:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: review-queue
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+      checks: read
+    steps:
+      # Read autoloop.toml from the default branch, never from the PR under review.
+      - name: Check out default branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install autoloop
+        run: pip install git+https://github.com/Sanctum-Origo-Systems/autoloop@v0.21.0
+      - name: Refresh review queue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: autoloop review-queue
