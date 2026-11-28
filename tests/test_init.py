@@ -518,3 +518,82 @@ class TestWriteWorkflow:
         content = path.read_text()
         assert "${{ secrets.GITHUB_TOKEN }}" in content
         assert "${{ github.event.pull_request.number }}" in content
+
+
+def _load_workflow(tmp_path):
+    import yaml
+
+    write_workflow(tmp_path)
+    path = tmp_path / ".github" / "workflows" / "autoloop-cleanup.yml"
+    return yaml.safe_load(path.read_text())
+
+
+def _triggers(workflow):
+    # YAML 1.1 parses a bare ``on`` key as boolean True.
+    return workflow.get("on", workflow.get(True))
+
+
+class TestReviewQueueJob:
+    def test_workflow_parses_as_yaml_with_review_queue_job(self, tmp_path):
+        workflow = _load_workflow(tmp_path)
+        assert "review-queue" in workflow["jobs"]
+
+    def test_triggered_by_pull_request_closed_and_synchronize(self, tmp_path):
+        types = _triggers(_load_workflow(tmp_path))["pull_request"]["types"]
+        assert "closed" in types
+        assert "synchronize" in types
+
+    def test_triggered_by_all_pull_request_types(self, tmp_path):
+        types = _triggers(_load_workflow(tmp_path))["pull_request"]["types"]
+        assert set(types) == {
+            "opened",
+            "reopened",
+            "closed",
+            "synchronize",
+            "edited",
+            "ready_for_review",
+            "converted_to_draft",
+        }
+
+    def test_has_workflow_dispatch_and_commented_workflow_run(self, tmp_path):
+        workflow = _load_workflow(tmp_path)
+        triggers = _triggers(workflow)
+        assert "workflow_dispatch" in triggers
+        assert "workflow_run" not in triggers
+        assert "# workflow_run:" in WORKFLOW_TEMPLATE
+
+    def test_existing_jobs_keep_merged_condition(self, tmp_path):
+        jobs = _load_workflow(tmp_path)["jobs"]
+        assert jobs["cleanup"]["if"] == "github.event.pull_request.merged == true"
+        assert jobs["auto-close-parent"]["if"] == "github.event.pull_request.merged == true"
+
+    def test_review_queue_job_has_no_merged_condition(self, tmp_path):
+        job = _load_workflow(tmp_path)["jobs"]["review-queue"]
+        assert "if" not in job
+
+    def test_concurrency_does_not_cancel_in_progress(self, tmp_path):
+        job = _load_workflow(tmp_path)["jobs"]["review-queue"]
+        assert job["concurrency"] == {"group": "review-queue", "cancel-in-progress": False}
+
+    def test_permissions(self, tmp_path):
+        perms = _load_workflow(tmp_path)["jobs"]["review-queue"]["permissions"]
+        assert perms["issues"] == "write"
+        assert perms["pull-requests"] == "read"
+        assert perms["checks"] == "read"
+
+    def test_checkout_uses_default_branch_ref(self, tmp_path):
+        steps = _load_workflow(tmp_path)["jobs"]["review-queue"]["steps"]
+        checkout = next(s for s in steps if s.get("uses", "").startswith("actions/checkout"))
+        assert checkout["with"]["ref"] == "${{ github.event.repository.default_branch }}"
+
+    def test_installs_like_auto_close_parent_and_runs_review_queue(self, tmp_path):
+        jobs = _load_workflow(tmp_path)["jobs"]
+        steps = jobs["review-queue"]["steps"]
+        acp_install = next(
+            s for s in jobs["auto-close-parent"]["steps"] if "pip" in s.get("run", "")
+        )
+        install = next(s for s in steps if "pip" in s.get("run", ""))
+        assert install["run"] == acp_install["run"]
+        last = steps[-1]
+        assert last["run"] == "autoloop review-queue"
+        assert last["env"] == {"GH_TOKEN": "${{ github.token }}"}

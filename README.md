@@ -137,6 +137,12 @@ If you use the MCP server, include the `mcp` extra when you upgrade: `uv tool in
 
 If running on a VPS with systemd timers, reinstall there too and restart any Claude Code sessions in tmux to pick up the new MCP tools.
 
+`autoloop init` never rewrites an existing `.github/workflows/autoloop-cleanup.yml`. To keep the Review Queue issue current between `autoloop implement` runs in a repo that was set up earlier, add the `review-queue` job by hand. Copy the `on:` triggers and the `review-queue` job from `WORKFLOW_TEMPLATE` in `src/autoloop/init.py`:
+
+- Add the `pull_request` types `opened`, `reopened`, `synchronize`, `edited`, `ready_for_review` and `converted_to_draft` next to `closed`, and add `workflow_dispatch`. The existing jobs keep their `merged == true` condition, so the extra types don't change what they do.
+- To refresh when CI finishes, add a `workflow_run` trigger with your CI workflow's name and `types: [completed]`.
+- Keep the job named `review-queue`. `autoloop review-queue` ignores the check run with that name when it computes CI state.
+
 ### For contributors
 
 ```bash
@@ -162,7 +168,7 @@ This creates three files:
 | File | Purpose |
 |------|---------|
 | `autoloop.toml` | Pipeline configuration (models, timeouts, verify command) |
-| `.github/workflows/autoloop-cleanup.yml` | CI workflow that cleans labels and auto-closes parent issues on merge |
+| `.github/workflows/autoloop-cleanup.yml` | CI workflow that cleans labels and auto-closes parent issues on merge, and refreshes the Review Queue issue when a PR changes |
 | `.gitignore` | Adds `autoloop/run_history.jsonl` and `.autoloop.lock` |
 
 It also creates GitHub labels (`ready`, `rejected`, `in-progress`, etc.) used by the triage system.
@@ -653,6 +659,7 @@ The commands above backfill autoloop's own repo. For another repo, run the scrip
 | `autoloop review-pr` | Review a PR (mutation gate + semantic review, no merge) |
 | `autoloop status` | Show last run, ready issues, timers |
 | `autoloop auto-close-parent` | Close parent when all sub-issues done |
+| `autoloop review-queue` | Rebuild the Review Queue issue from live PR state. Needs only `gh` access, no Claude session. The cleanup workflow runs it when a PR or its CI changes |
 | `autoloop prune` | Remove worktrees and local `autoloop/*` branches whose PRs are merged or closed; keeps dirty worktrees, open PRs, and unmerged commits (listed for human review). `autoloop implement` runs prune at the start of each run, and autoloop removes a worktree right after it auto-merges that PR. `--dry-run` reports what would be removed without removing anything |
 | `autoloop eval` | Performance tracking: snapshots, trends, per-module breakdown (zero LLM cost) |
 | `autoloop jev-report` | Write `JEV.md` from the Jev shadow log: agreement, action zones, calibration, baseline (`--publish [--pr]` commits it or opens a PR) |

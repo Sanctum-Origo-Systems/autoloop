@@ -1,4 +1,4 @@
-"""Review-queue module: find issue, fetch CI/gate data, rebuild the review-queue body."""
+"""Review-queue module: find issue, fetch CI data, rebuild the review-queue body."""
 
 from __future__ import annotations
 
@@ -42,8 +42,16 @@ def find_review_queue_issue(cfg: AutoLoopConfig) -> int:
     return issues[0]["number"]
 
 
+# Name of the cleanup workflow job that runs ``autoloop review-queue``. Its own check run
+# is ignored, or every PR would show CI as pending while the refresh runs.
+REVIEW_QUEUE_CHECK_NAME = "review-queue"
+
+
 def fetch_ci_status(pr_number: int, cfg: AutoLoopConfig) -> str:
-    """Return ``'pass'``, ``'fail'``, or ``'pending'`` by parsing ``gh pr checks``."""
+    """Return ``'pass'``, ``'fail'``, or ``'pending'`` by parsing ``gh pr checks``.
+
+    The ``review-queue`` job's own check run is excluded.
+    """
     result = subprocess.run(
         [
             "gh",
@@ -53,7 +61,7 @@ def fetch_ci_status(pr_number: int, cfg: AutoLoopConfig) -> str:
             "--repo",
             cfg.repo,
             "--json",
-            "bucket",
+            "bucket,name",
         ],
         capture_output=True,
         text=True,
@@ -64,6 +72,7 @@ def fetch_ci_status(pr_number: int, cfg: AutoLoopConfig) -> str:
         checks = json.loads(result.stdout)
     except json.JSONDecodeError:
         return "pending"
+    checks = [c for c in checks if c.get("name") != REVIEW_QUEUE_CHECK_NAME]
     if not checks:
         return "pass"
     buckets = {c.get("bucket", "") for c in checks}
@@ -72,32 +81,6 @@ def fetch_ci_status(pr_number: int, cfg: AutoLoopConfig) -> str:
     if "pending" in buckets:
         return "pending"
     return "pass"
-
-
-def fetch_gate_flags(issue_number: int, cfg: AutoLoopConfig) -> dict:
-    """Return a dict with keys ``owner_approved`` and ``needs_human`` from issue labels."""
-    result = subprocess.run(
-        [
-            "gh",
-            "issue",
-            "view",
-            str(issue_number),
-            "--repo",
-            cfg.repo,
-            "--json",
-            "labels",
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        return {"owner_approved": False, "needs_human": False}
-    data = json.loads(result.stdout)
-    label_names = {label["name"] for label in data.get("labels", [])}
-    return {
-        "owner_approved": "owner-approved" in label_names,
-        "needs_human": "needs-human" in label_names,
-    }
 
 
 # "Depends on:" followed by a run of #N refs separated by commas, spaces, or "and".

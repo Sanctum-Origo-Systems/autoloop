@@ -25,4 +25,4 @@ packages = ["src/autoloop"]
 line-length = 100
 
 [dependency-groups]
-dev = ["pytest", "ruff"]
+dev = ["pytest", "pyyaml", "ruff"]
