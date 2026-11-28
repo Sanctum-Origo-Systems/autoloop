@@ -657,13 +657,20 @@ def test_dependencies_met_uses_cfg_repo(monkeypatch):
 
 
 def _fake_gh_states(states: dict[str, str | None]):
-    """Return a fake subprocess.run mapping issue number -> state; None means gh fails."""
+    """Return a fake subprocess.run mapping issue number -> state; None means gh fails.
+
+    A state may carry a reason as ``"CLOSED:NOT_PLANNED"``; bare ``"CLOSED"`` means completed.
+    """
 
     def fake_run(cmd, **kwargs):
         state = states[cmd[cmd.index("view") + 1]]
         if state is None:
             return type("R", (), {"returncode": 1, "stdout": "", "stderr": "network error"})()
-        return type("R", (), {"returncode": 0, "stdout": json.dumps({"state": state})})()
+        state, _, reason = state.partition(":")
+        if state == "CLOSED" and not reason:
+            reason = "COMPLETED"
+        payload = json.dumps({"state": state, "stateReason": reason})
+        return type("R", (), {"returncode": 0, "stdout": payload})()
 
     return fake_run
 
@@ -688,6 +695,36 @@ def test_dependencies_met_false_when_gh_fails(monkeypatch):
     monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
     monkeypatch.setattr(implement_issue.subprocess, "run", _fake_gh_states({"10": None}))
     assert implement_issue.dependencies_met({"body": "Depends on: #10"}) is False
+
+
+def test_dependencies_met_false_when_dep_closed_not_planned(monkeypatch):
+    # Regression (#531): a decomposed parent is closed as not planned before its work merges.
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
+    fake = _fake_gh_states({"10": "CLOSED:NOT_PLANNED"})
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake)
+    assert implement_issue.dependencies_met({"body": "Depends on: #10"}) is False
+
+
+def test_dependencies_met_true_when_dep_closed_completed(monkeypatch):
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
+    fake = _fake_gh_states({"10": "CLOSED:COMPLETED"})
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake)
+    assert implement_issue.dependencies_met({"body": "Depends on: #10"}) is True
+
+
+def test_dependencies_met_requests_state_reason(monkeypatch):
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        payload = '{"state": "CLOSED", "stateReason": "COMPLETED"}'
+        return type("R", (), {"returncode": 0, "stdout": payload})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    implement_issue.dependencies_met({"body": "Depends on: #10"})
+
+    assert "stateReason" in captured["cmd"][captured["cmd"].index("--json") + 1]
 
 
 def test_has_design_comment_uses_cfg_repo(monkeypatch):

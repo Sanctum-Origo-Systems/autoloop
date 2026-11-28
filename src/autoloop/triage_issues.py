@@ -20,7 +20,7 @@ from autoloop.claude_runner import ClaudeResult, run_claude
 from autoloop.config import REVIEW_QUEUE_LABEL
 from autoloop.create_issue import build_issue_body
 from autoloop.implement_issue import detect_issue_type
-from autoloop.review_queue import parse_dependency_numbers
+from autoloop.review_queue import _DEPENDS_ON_RE, parse_dependency_numbers
 
 
 def build_triage_prompt(cfg: AutoLoopConfig) -> str:
@@ -218,6 +218,47 @@ def _extract_parent_dependency_numbers(body: str) -> list[int]:
         if int(n) not in numbers:
             numbers.append(int(n))
     return numbers
+
+
+def last_sub_issues(decomposition: list[dict], step_to_issue: dict[int, int]) -> list[int]:
+    """Return created sub-issues that no other created sub-issue depends on.
+
+    For a sequential chain this is only the final sub-issue; independent steps are all kept.
+    """
+    depended_on = {
+        d
+        for step in decomposition
+        if step.get("order") in step_to_issue
+        for d in step.get("depends_on", [])
+    }
+    return [num for order, num in step_to_issue.items() if order not in depended_on]
+
+
+def replace_dependency(body: str, old: int, new: list[int]) -> str:
+    """Replace ``#old`` in every ``Depends on:`` list in *body* with the ``new`` numbers."""
+
+    def _rewrite(match: re.Match) -> str:
+        nums = [int(n) for n in re.findall(r"#(\d+)", match.group(1))]
+        if old not in nums:
+            return match.group(0)
+        refs: list[int] = []
+        for n in nums:
+            for m in new if n == old else [n]:
+                if m not in refs:
+                    refs.append(m)
+        prefix = match.group(0)[: match.start(1) - match.start(0)]
+        return prefix + ", ".join(f"#{n}" for n in refs)
+
+    return _DEPENDS_ON_RE.sub(_rewrite, body)
+
+
+def build_dependency_rewrite_comment(parent: int, new: list[int]) -> str:
+    """Comment posted on an issue whose ``Depends on: #parent`` was rewritten."""
+    refs = ", ".join(f"#{n}" for n in new)
+    return (
+        f"**Auto-triage:** #{parent} was decomposed and closed as not planned. "
+        f"Updated `Depends on: #{parent}` to `Depends on: {refs}`."
+    )
 
 
 def _filter_open_issues(numbers: list[int], cfg: AutoLoopConfig) -> list[int]:
@@ -1066,11 +1107,26 @@ def create_sub_issues(
     repo_dir: Path | None = None,
 ) -> list[int]:
     """Create sub-issues from a decomposition and return their numbers."""
+    step_to_issue = create_sub_issues_by_step(
+        parent_number, result, cfg, parent_summary, parent_labels, repo_dir=repo_dir
+    )
+    return list(step_to_issue.values())
+
+
+def create_sub_issues_by_step(
+    parent_number: int,
+    result: dict,
+    cfg: AutoLoopConfig,
+    parent_summary: str = "",
+    parent_labels: list[dict] | None = None,
+    *,
+    repo_dir: Path | None = None,
+) -> dict[int, int]:
+    """Create sub-issues from a decomposition; map each created step's order to its issue."""
     parent_type = detect_issue_type(parent_summary)
     parent_deps = _filter_open_issues(_extract_parent_dependency_numbers(parent_summary), cfg)
     parent_is_blocked = any(lbl.get("name") == "blocked" for lbl in (parent_labels or []))
     step_to_issue: dict[int, int] = {}
-    created: list[int] = []
     for step in result.get("decomposition", []):
         dep_nums = list(parent_deps)
         for d in step.get("depends_on", []):
@@ -1126,7 +1182,6 @@ def create_sub_issues(
             issue_url = proc.stdout.strip()
             issue_num = int(issue_url.rstrip("/").split("/")[-1])
             step_to_issue[step["order"]] = issue_num
-            created.append(issue_num)
             if parent_is_blocked:
                 subprocess.run(
                     [
@@ -1141,7 +1196,76 @@ def create_sub_issues(
                     ],
                 )
 
-    return created
+    return step_to_issue
+
+
+def list_open_dependents(number: int, cfg: AutoLoopConfig) -> list[dict]:
+    """Fetch open issues whose ``Depends on:`` lists include *number*."""
+    proc = subprocess.run(
+        [
+            "gh",
+            "issue",
+            "list",
+            "--repo",
+            cfg.repo,
+            "--state",
+            "open",
+            "--json",
+            "number,body",
+            "--limit",
+            "1000",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    try:
+        issues = json.loads(proc.stdout) if proc.returncode == 0 else None
+    except json.JSONDecodeError:
+        issues = None
+    if not isinstance(issues, list):
+        logging.warning("Could not list open issues to rewrite dependencies on #%s", number)
+        return []
+    return [i for i in issues if number in parse_dependency_numbers(i.get("body") or "")]
+
+
+def redirect_dependents(
+    parent: int, sub_issues: list[int], cfg: AutoLoopConfig, exclude: list[int] | None = None
+) -> list[int]:
+    """Rewrite ``Depends on: #parent`` in open issues to point at *sub_issues*.
+
+    Posts a comment on each issue changed and returns their numbers.
+    """
+    skip = {parent, *(exclude or [])}
+    changed: list[int] = []
+    for issue in list_open_dependents(parent, cfg):
+        if issue["number"] in skip:
+            continue
+        body = issue.get("body") or ""
+        new_body = replace_dependency(body, parent, sub_issues)
+        if new_body == body:
+            continue
+        proc = subprocess.run(
+            ["gh", "issue", "edit", str(issue["number"]), "--repo", cfg.repo, "--body", new_body],
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode != 0:
+            logging.warning("Could not rewrite dependency on #%s in #%s", parent, issue["number"])
+            continue
+        subprocess.run(
+            [
+                "gh",
+                "issue",
+                "comment",
+                str(issue["number"]),
+                "--repo",
+                cfg.repo,
+                "--body",
+                build_dependency_rewrite_comment(parent, sub_issues),
+            ],
+        )
+        changed.append(issue["number"])
+    return changed
 
 
 def decompose_issue(
@@ -1191,10 +1315,17 @@ def decompose_issue(
             comment,
         ],
     )
-    sub_issues = create_sub_issues(
+    step_to_issue = create_sub_issues_by_step(
         number, validated, cfg, parent_summary, parent_labels, repo_dir=repo_dir
     )
+    sub_issues = list(step_to_issue.values())
     if sub_issues:
+        redirect_dependents(
+            number,
+            last_sub_issues(validated["decomposition"], step_to_issue),
+            cfg,
+            exclude=sub_issues,
+        )
         subprocess.run(
             [
                 "gh",
@@ -1215,6 +1346,8 @@ def decompose_issue(
                 str(number),
                 "--repo",
                 cfg.repo,
+                "--reason",
+                "not planned",
                 "--comment",
                 f"Decomposed into {len(sub_issues)} sub-issues. "
                 "Closing parent — work continues in children.",

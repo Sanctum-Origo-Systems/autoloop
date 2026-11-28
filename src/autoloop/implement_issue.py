@@ -552,12 +552,24 @@ def get_issue_by_number(number: int) -> dict | None:
 
 
 def dependencies_met(issue: dict) -> bool:
-    """Check if all issues in Dependencies field are closed."""
+    """Check if all issues in Dependencies field are closed as completed.
+
+    An issue closed as not planned (e.g. a parent triage decomposed) does not count.
+    """
     body = issue.get("body", "") or ""
     deps = parse_dependency_numbers(body)
     for dep_num in deps:
         result = subprocess.run(
-            ["gh", "issue", "view", str(dep_num), "--repo", cfg.repo, "--json", "state"],
+            [
+                "gh",
+                "issue",
+                "view",
+                str(dep_num),
+                "--repo",
+                cfg.repo,
+                "--json",
+                "state,stateReason",
+            ],
             capture_output=True,
             text=True,
         )
@@ -568,8 +580,8 @@ def dependencies_met(issue: dict) -> bool:
                 result.returncode,
             )
             return False
-        state = json.loads(result.stdout).get("state", "")
-        if state != "CLOSED":
+        data = json.loads(result.stdout)
+        if data.get("state", "") != "CLOSED" or data.get("stateReason", "") != "COMPLETED":
             return False
     return True
 
