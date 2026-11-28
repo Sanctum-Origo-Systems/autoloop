@@ -27,6 +27,7 @@ from autoloop.doctor import (
     check_live_probe,
     check_main_settings,
     check_lockfile_ignored,
+    check_test_pattern,
     check_verify_cmd,
     check_worktree_isolation,
     get_checks,
@@ -162,7 +163,7 @@ def test_check_claude_settings_missing(repo_ctx):
 
 def test_get_checks_returns_registered_checks(repo_ctx):
     checks = get_checks(repo_ctx)
-    assert len(checks) == 11
+    assert len(checks) == 12
     assert checks[0].name == "autoloop.toml"
     assert checks[1].name == ".claude/settings.json"
     assert checks[2].name == "claude CLI installed"
@@ -170,10 +171,11 @@ def test_get_checks_returns_registered_checks(repo_ctx):
     assert checks[4].name == "gh CLI installed and authenticated"
     assert checks[5].name == "Claude Code session conflict"
     assert checks[6].name == "verify_cmd"
-    assert checks[7].name == "Jev config"
-    assert checks[8].name == ".autoloop.lock gitignored"
-    assert checks[9].name == "origin/main settings"
-    assert checks[10].name == "claude --settings support"
+    assert checks[7].name == "test_pattern"
+    assert checks[8].name == "Jev config"
+    assert checks[9].name == ".autoloop.lock gitignored"
+    assert checks[10].name == "origin/main settings"
+    assert checks[11].name == "claude --settings support"
     assert "autoloop init" in checks[0].fix_hint
     assert "autoloop init" in checks[1].fix_hint
     assert "autoloop doctor" in checks[6].fix_hint
@@ -189,7 +191,7 @@ def test_get_checks_all_pass(repo_ctx, capsys):
     checks = get_checks(repo_ctx)
     results = run_checks(checks)
 
-    assert len(results) == 11
+    assert len(results) == 12
     file_results = [r for r in results if r.name in ("autoloop.toml", ".claude/settings.json")]
     assert all(r.passed for r in file_results)
     out = capsys.readouterr().out
@@ -200,7 +202,7 @@ def test_get_checks_all_fail(repo_ctx, capsys):
     checks = get_checks(repo_ctx)
     results = run_checks(checks)
 
-    assert len(results) == 11
+    assert len(results) == 12
     out = capsys.readouterr().out
     assert "✗" in out
 
@@ -403,6 +405,42 @@ def test_check_verify_cmd_no_config(repo_ctx):
     passed, msg = check_verify_cmd(repo_ctx)
     assert passed is False
     assert "could not load" in msg
+
+
+# --- test_pattern check ---
+
+
+def test_check_test_pattern_empty_warns(repo_ctx):
+    toml_file = repo_ctx.repo_dir / "autoloop.toml"
+    toml_file.write_text('repo = "acme/widgets"\ntest_pattern = ""\n')
+    status, msg = check_test_pattern(repo_ctx)
+    assert status == WARN
+    assert "test-file gate and mutation gate are disabled" in msg
+    assert "*/tests/*" in msg
+
+
+def test_check_test_pattern_set_passes(repo_ctx):
+    toml_file = repo_ctx.repo_dir / "autoloop.toml"
+    toml_file.write_text('repo = "acme/widgets"\ntest_pattern = "tests/*.py"\n')
+    status, msg = check_test_pattern(repo_ctx)
+    assert status is True
+    assert "tests/*.py" in msg
+
+
+def test_check_test_pattern_no_config(repo_ctx):
+    status, msg = check_test_pattern(repo_ctx)
+    assert status is False
+    assert "could not load" in msg
+
+
+def test_check_test_pattern_warning_does_not_fail_doctor(repo_ctx, capsys):
+    toml_file = repo_ctx.repo_dir / "autoloop.toml"
+    toml_file.write_text('repo = "acme/widgets"\ntest_pattern = ""\n')
+    check = next(c for c in get_checks(repo_ctx) if c.name == "test_pattern")
+    [result] = run_checks([check])
+    assert result.passed is True
+    assert result.warned is True
+    assert "test_pattern" in capsys.readouterr().out
 
 
 # --- Jev config check ---

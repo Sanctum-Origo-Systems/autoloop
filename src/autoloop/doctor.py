@@ -327,6 +327,22 @@ def check_verify_cmd(ctx: RepoContext) -> tuple[bool, str]:
     return False, msg
 
 
+def check_test_pattern(ctx: RepoContext) -> tuple[bool | Literal["warn"], str]:
+    """Warn when test_pattern is empty, since that disables the test-file and mutation gates."""
+    from autoloop.config import load_config
+    from autoloop.init import EMPTY_TEST_PATTERN_WARNING
+
+    config_path = ctx.repo_dir / "autoloop.toml"
+    try:
+        cfg = load_config(config_path)
+    except Exception:
+        return False, "could not load autoloop.toml to read test_pattern"
+
+    if not cfg.test_pattern.strip():
+        return WARN, EMPTY_TEST_PATTERN_WARNING
+    return True, f'test_pattern = "{cfg.test_pattern}"'
+
+
 def check_lockfile_ignored(ctx: RepoContext) -> tuple[bool, str]:
     """Check that .autoloop.lock is gitignored and not tracked by git."""
     lock = ".autoloop.lock"
@@ -396,6 +412,11 @@ def get_checks(ctx: RepoContext, live: bool = False) -> list[Check]:
             name="verify_cmd",
             fn=lambda: check_verify_cmd(ctx),
             fix_hint='resolve the error above, then re-run "autoloop doctor"',
+        ),
+        Check(
+            name="test_pattern",
+            fn=lambda: check_test_pattern(ctx),
+            fix_hint='set test_pattern in autoloop.toml (e.g. test_pattern = "*/tests/*")',
         ),
         Check(
             name="Jev config",

@@ -173,6 +173,8 @@ This creates three files:
 
 It also creates GitHub labels (`ready`, `rejected`, `in-progress`, etc.) used by the triage system.
 
+`test_pattern` is inferred from `--verify-cmd` (pytest, npm test, jest, vitest, mocha). For a custom verify script, pass `--test-pattern GLOB`, e.g. `--test-pattern "*/tests/*"` (fnmatch's `*` also matches `/`, so this matches tests in any top-level folder). If the pattern can't be inferred, init writes `test_pattern = ""` and warns: an empty pattern disables the test-file gate and the mutation gate.
+
 Operational data (`run_history.jsonl`, `jev_decisions.jsonl`) is stored outside the repo tree in `~/.autoloop/<id>/`, keyed by git remote URL. This keeps operational data out of your working tree and supports multiple repos on the same machine. Daily eval snapshots are stored in `~/.autoloop/<id>/eval_snapshots/`. Only published snapshots are committed to `autoloop/eval_snapshots/` together with `EVAL.md` (via PRs with `--publish --pr`). `eval --publish` compares against the last published snapshot and publishes only on a material change, so a no-change run leaves the working tree clean. Add `--force` to publish anyway, e.g. to roll out a fix to how metrics are calculated or formatted. If `chore/eval-<date>` already has an open PR, `--pr` adds the new commit to that PR. A stale local branch (merged, or with a merged or closed PR) is replaced. Any other existing branch gets a suffix (`-2`, `-3`, …). If publishing fails, `EVAL.md` and the snapshot are restored on `main`.
 
 Commit the generated files:
@@ -207,12 +209,13 @@ Checks that everything is set up correctly before your first run:
 ✓ gh CLI installed and authenticated
 ✓ No active Claude Code session conflict
 ✓ verify_cmd passes ("pytest" → exit 0)
+✓ test_pattern = "tests/*.py"
 ✓ .autoloop.lock is ignored and untracked
 ✓ origin/main:.claude/settings.json valid (12 allow rules)
 ✓ claude CLI supports --settings
 ```
 
-Implement runs pass `origin/main:.claude/settings.json` to `claude -p` via `--settings`. Doctor fails if that file can't be read or the installed CLI lacks `--settings`, because implement runs would then have no permission rules. It warns if `permissions.allow` is empty.
+Implement runs pass `origin/main:.claude/settings.json` to `claude -p` via `--settings`. Doctor fails if that file can't be read or the installed CLI lacks `--settings`, because implement runs would then have no permission rules. It warns if `permissions.allow` is empty, and warns if `test_pattern` is empty (the test-file and mutation gates are then off).
 
 `autoloop doctor --live` also runs a paid probe (off by default): it calls `claude -p` in a throwaway worktree of `origin/main` and passes if the agent can write and commit a file and its `git push` to a nonexistent remote is denied. The worktree and branch are removed afterwards, and the probe's cost is printed.
 

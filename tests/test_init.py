@@ -9,6 +9,7 @@ from autoloop.init import (
     build_settings_allowlist,
     create_review_queue_issue,
     infer_test_pattern,
+    main,
     run_init,
     update_gitignore,
     write_claude_settings,
@@ -329,6 +330,70 @@ class TestWriteTomlTestPattern:
 
         cfg = load_config(tmp_path / "autoloop.toml")
         assert cfg.test_pattern == "src/**/*.test.*"
+
+    @patch("autoloop.init.create_labels")
+    def test_explicit_test_pattern_skips_inference(
+        self, mock_labels, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.chdir(tmp_path)
+        run_init(
+            "acme/widgets",
+            verify_cmd="./scripts/verify.sh",
+            skip_labels=True,
+            test_pattern="*/tests/*",
+        )
+        content = (tmp_path / "autoloop.toml").read_text()
+        assert 'test_pattern = "*/tests/*"' in content
+        assert "WARNING" not in capsys.readouterr().out
+
+    @patch("autoloop.init.create_labels")
+    def test_explicit_test_pattern_overrides_inferred(self, mock_labels, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        run_init(
+            "acme/widgets", verify_cmd="uv run pytest", skip_labels=True, test_pattern="t/*.py"
+        )
+        content = (tmp_path / "autoloop.toml").read_text()
+        assert 'test_pattern = "t/*.py"' in content
+
+    @patch("autoloop.init.create_labels")
+    def test_uninferable_pattern_warns(self, mock_labels, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        run_init("acme/widgets", verify_cmd="./scripts/verify.sh", skip_labels=True)
+        content = (tmp_path / "autoloop.toml").read_text()
+        assert 'test_pattern = ""' in content
+        out = capsys.readouterr().out
+        assert "WARNING" in out
+        assert "test-file gate and mutation gate are disabled" in out
+        assert "*/tests/*" in out
+        assert "--test-pattern" in out
+
+    @patch("autoloop.init.create_labels")
+    def test_inferred_pattern_does_not_warn(self, mock_labels, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        run_init("acme/widgets", verify_cmd="uv run pytest", skip_labels=True)
+        assert "WARNING" not in capsys.readouterr().out
+
+
+class TestInitMainTestPattern:
+    @patch("autoloop.init.create_labels")
+    def test_main_passes_test_pattern(self, mock_labels, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            "sys.argv",
+            [
+                "autoloop-init",
+                "--repo",
+                "acme/widgets",
+                "--verify-cmd",
+                "./scripts/verify.sh",
+                "--test-pattern",
+                "*/tests/*",
+                "--skip-labels",
+            ],
+        )
+        main()
+        content = (tmp_path / "autoloop.toml").read_text()
+        assert 'test_pattern = "*/tests/*"' in content
 
 
 class TestWriteTomlTriageLabels:

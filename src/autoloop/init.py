@@ -213,20 +213,32 @@ def infer_test_pattern(verify_cmd: str) -> str | None:
     return None
 
 
-def write_toml(target: Path, repo: str, reviewer: str, verify_cmd: str) -> None:
+EMPTY_TEST_PATTERN_WARNING = (
+    "test_pattern is empty, so the test-file gate and mutation gate are disabled "
+    "until test_pattern is set in autoloop.toml "
+    '(e.g. test_pattern = "*/tests/*" matches tests in any top-level folder, '
+    "because fnmatch's * also matches /)"
+)
+
+
+def write_toml(
+    target: Path, repo: str, reviewer: str, verify_cmd: str, test_pattern: str | None = None
+) -> None:
     path = target / "autoloop.toml"
     if path.exists():
         print("  autoloop.toml already exists, skipping (delete to regenerate)")
         return
-    test_pattern = infer_test_pattern(verify_cmd)
     if test_pattern is None:
-        test_pattern = ""
+        test_pattern = infer_test_pattern(verify_cmd) or ""
     path.write_text(
         TOML_TEMPLATE.format(
             repo=repo, reviewer=reviewer, verify_cmd=verify_cmd, test_pattern=test_pattern
         )
     )
     print("  created autoloop.toml")
+    if not test_pattern:
+        print(f"  WARNING: {EMPTY_TEST_PATTERN_WARNING}")
+        print("  pass --test-pattern GLOB to init, or edit autoloop.toml")
 
 
 def write_workflow(target: Path) -> None:
@@ -457,14 +469,18 @@ def run_init(
     lint_cmd: str = "",
     dry_run: bool = False,
     skip_labels: bool = False,
+    test_pattern: str | None = None,
 ) -> None:
-    """Run the init scaffolding in the current directory."""
+    """Run the init scaffolding in the current directory.
+
+    test_pattern, when given, is written as-is; otherwise it is inferred from verify_cmd.
+    """
     target = Path.cwd()
 
     print(f"Initializing autoloop for {repo} in {target}\n")
 
     print("Config:")
-    write_toml(target, repo, reviewer, verify_cmd)
+    write_toml(target, repo, reviewer, verify_cmd, test_pattern)
 
     print("\nPermissions:")
     write_claude_settings(target, verify_cmd, lint_cmd)
@@ -508,10 +524,22 @@ def main() -> None:
         "--dry-run", action="store_true", help="Print label commands without running"
     )
     parser.add_argument("--skip-labels", action="store_true", help="Skip GitHub label creation")
+    parser.add_argument(
+        "--test-pattern",
+        default=None,
+        metavar="GLOB",
+        help="Test file glob for test_pattern (default: inferred from --verify-cmd)",
+    )
     args = parser.parse_args()
 
     run_init(
-        args.repo, args.reviewer, args.verify_cmd, args.lint_cmd, args.dry_run, args.skip_labels
+        args.repo,
+        args.reviewer,
+        args.verify_cmd,
+        args.lint_cmd,
+        args.dry_run,
+        args.skip_labels,
+        test_pattern=args.test_pattern,
     )
 
 
