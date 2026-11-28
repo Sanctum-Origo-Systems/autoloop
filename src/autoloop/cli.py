@@ -37,6 +37,12 @@ def build_parser():
     init_parser.add_argument("--dry-run", action="store_true", help="Preview without running")
     init_parser.add_argument("--skip-labels", action="store_true", help="Skip label creation")
     init_parser.add_argument(
+        "--test-pattern",
+        default=None,
+        metavar="GLOB",
+        help="Test file glob for test_pattern (default: inferred from --verify-cmd)",
+    )
+    init_parser.add_argument(
         "--force", action="store_true", help="Skip the repo-root and origin-remote checks"
     )
 
@@ -217,6 +223,7 @@ def main():
             args.verify_cmd,
             dry_run=args.dry_run,
             skip_labels=args.skip_labels,
+            test_pattern=args.test_pattern,
             force=args.force,
         )
 

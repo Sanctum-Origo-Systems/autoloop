@@ -214,20 +214,32 @@ def infer_test_pattern(verify_cmd: str) -> str | None:
     return None
 
 
-def write_toml(target: Path, repo: str, reviewer: str, verify_cmd: str) -> None:
+EMPTY_TEST_PATTERN_WARNING = (
+    "test_pattern is empty, so the test-file gate and mutation gate are disabled "
+    "until test_pattern is set in autoloop.toml "
+    '(e.g. test_pattern = "*/tests/*" matches tests in any top-level folder, '
+    "because fnmatch's * also matches /)"
+)
+
+
+def write_toml(
+    target: Path, repo: str, reviewer: str, verify_cmd: str, test_pattern: str | None = None
+) -> None:
     path = target / "autoloop.toml"
     if path.exists():
         print("  autoloop.toml already exists, skipping (delete to regenerate)")
         return
-    test_pattern = infer_test_pattern(verify_cmd)
     if test_pattern is None:
-        test_pattern = ""
+        test_pattern = infer_test_pattern(verify_cmd) or ""
     path.write_text(
         TOML_TEMPLATE.format(
             repo=repo, reviewer=reviewer, verify_cmd=verify_cmd, test_pattern=test_pattern
         )
     )
     print("  created autoloop.toml")
+    if not test_pattern:
+        print(f"  WARNING: {EMPTY_TEST_PATTERN_WARNING}")
+        print("  pass --test-pattern GLOB to init, or edit autoloop.toml")
 
 
 def write_workflow(target: Path) -> None:
@@ -509,12 +521,15 @@ def run_init(
     dry_run: bool = False,
     skip_labels: bool = False,
     force: bool = False,
+    test_pattern: str | None = None,
 ) -> None:
     """Run the init scaffolding in the current directory.
 
     Unless force is set, refuses to run (SystemExit 1) when the current directory is not
     the top level of a checkout of repo. With dry_run, reports the problem and prints the
     plan without writing anything.
+
+    test_pattern, when given, is written as-is; otherwise it is inferred from verify_cmd.
     """
     target = Path.cwd()
 
@@ -550,7 +565,7 @@ def run_init(
         print()
 
     print("Config:")
-    write_toml(target, repo, reviewer, verify_cmd)
+    write_toml(target, repo, reviewer, verify_cmd, test_pattern)
 
     print("\nPermissions:")
     write_claude_settings(target, verify_cmd, lint_cmd)
@@ -595,6 +610,12 @@ def main() -> None:
     )
     parser.add_argument("--skip-labels", action="store_true", help="Skip GitHub label creation")
     parser.add_argument(
+        "--test-pattern",
+        default=None,
+        metavar="GLOB",
+        help="Test file glob for test_pattern (default: inferred from --verify-cmd)",
+    )
+    parser.add_argument(
         "--force", action="store_true", help="Skip the repo-root and origin-remote checks"
     )
     args = parser.parse_args()
@@ -606,7 +627,8 @@ def main() -> None:
         args.lint_cmd,
         args.dry_run,
         args.skip_labels,
-        args.force,
+        force=args.force,
+        test_pattern=args.test_pattern,
     )
 
 
