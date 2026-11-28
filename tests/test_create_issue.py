@@ -16,6 +16,7 @@ from autoloop.create_issue import (
     extract_files_from_spec,
     extract_problem_from_spec,
     fetch_issue,
+    find_text_outside_tasks,
     get_rejection_reason,
     parse_issue_sections,
     parse_spec_enhancements,
@@ -320,6 +321,86 @@ def test_parse_spec_enhancements_empty_file(tmp_path):
     spec_file = tmp_path / "spec.md"
     spec_file.write_text("# No enhancements here\n\nJust text.")
     assert parse_spec_enhancements(str(spec_file)) == []
+
+
+STRAY_SECTION_SPEC = """\
+# Workstream spec
+Shared context every task relies on.
+
+## Task 1: First thing
+Do the first thing.
+
+### Design
+Use a small helper.
+
+## Notes
+Background for the reader.
+
+## Task 2: Second thing
+Do the second thing.
+"""
+
+
+def test_parse_spec_enhancements_non_task_heading_ends_task(tmp_path):
+    spec_file = tmp_path / "spec.md"
+    spec_file.write_text(STRAY_SECTION_SPEC)
+    enhancements = parse_spec_enhancements(str(spec_file))
+    assert len(enhancements) == 2
+    assert "Background for the reader" not in enhancements[0]["body"]
+    assert "## Notes" not in enhancements[0]["body"]
+    assert "Background for the reader" not in enhancements[1]["body"]
+    assert "Shared context" not in enhancements[0]["body"]
+
+
+def test_parse_spec_enhancements_keeps_subheadings_in_task(tmp_path):
+    spec_file = tmp_path / "spec.md"
+    spec_file.write_text(STRAY_SECTION_SPEC)
+    enhancements = parse_spec_enhancements(str(spec_file))
+    assert "### Design\nUse a small helper." in enhancements[0]["body"]
+
+
+def test_parse_spec_enhancements_ignores_headings_in_code_fence(tmp_path):
+    spec = "## Task 1: Document it\n\n```markdown\n## Example\nSample.\n```\n\nAfter the fence.\n"
+    spec_file = tmp_path / "spec.md"
+    spec_file.write_text(spec)
+    enhancements = parse_spec_enhancements(str(spec_file))
+    assert len(enhancements) == 1
+    assert "## Example" in enhancements[0]["body"]
+    assert "After the fence." in enhancements[0]["body"]
+
+
+def test_find_text_outside_tasks_lists_intro_and_stray_sections(tmp_path):
+    spec_file = tmp_path / "spec.md"
+    spec_file.write_text(STRAY_SECTION_SPEC)
+    assert find_text_outside_tasks(str(spec_file)) == ["text before the first task", "## Notes"]
+
+
+def test_find_text_outside_tasks_ignores_title_rules_and_empty_sections(tmp_path):
+    spec = "# Title only\n\n---\n\n## Task 1: Thing\nBody.\n\n## Empty\n\n---\n"
+    spec_file = tmp_path / "spec.md"
+    spec_file.write_text(spec)
+    assert find_text_outside_tasks(str(spec_file)) == []
+
+
+def test_create_issues_from_spec_notes_text_outside_tasks(tmp_path, monkeypatch, capsys, ctx):
+    spec_file = tmp_path / "spec.md"
+    spec_file.write_text(STRAY_SECTION_SPEC)
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+    create_issues_from_spec(ctx, str(spec_file), skip=[], cfg=_cfg(), dry_run=True)
+    out = capsys.readouterr().out
+    note = (
+        "Text outside `## Task` sections is not copied into issues: "
+        "text before the first task, ## Notes."
+    )
+    assert out.count(note) == 1
+
+
+def test_create_issues_from_spec_no_note_when_all_text_in_tasks(tmp_path, monkeypatch, capsys, ctx):
+    spec_file = tmp_path / "spec.md"
+    spec_file.write_text("# Spec\n\n## Task 1: Thing\n\nBody.\n")
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+    create_issues_from_spec(ctx, str(spec_file), skip=[], cfg=_cfg(), dry_run=True)
+    assert "Text outside" not in capsys.readouterr().out
 
 
 # --- Pure function tests: extract_files_from_spec ---

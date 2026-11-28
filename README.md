@@ -405,6 +405,8 @@ The `**File:**` section is optional. Include it if you know which files need mod
 
 Each section becomes one issue. Triage then handles decomposition and dependency ordering if any issue is too large.
 
+A task runs until the next `## ` heading of any kind; `###` and deeper headings stay part of the task. Text before the first task and under other `## ` headings (such as `## Notes`) is not copied into any issue, and `plan --from-spec` prints a note listing those sections. Have tasks link to shared context instead of relying on it.
+
 ## Running Unattended
 
 Once you trust the pipeline, automate it with timers on a Linux VPS.
