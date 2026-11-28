@@ -10,6 +10,7 @@ import argparse
 import json
 import subprocess
 from pathlib import Path
+from urllib.parse import urlparse
 
 LABELS = [
     ("ready", "0E8A16", "Triaged and ready for implementation"),
@@ -450,6 +451,48 @@ def write_claude_settings(target: Path, verify_cmd: str, lint_cmd: str = "") -> 
     print("  created .claude/settings.json")
 
 
+def remote_matches_repo(url: str, repo: str) -> bool:
+    """Return True if a git remote URL (HTTPS or SSH, with or without .git) points at repo."""
+    url = url.strip().rstrip("/")
+    url = url.removesuffix(".git")
+    if "://" in url:
+        path = urlparse(url).path
+    elif ":" in url:
+        path = url.split(":", 1)[1]
+    else:
+        return False
+    return path.strip("/").lower() == repo.strip("/").lower()
+
+
+def _git(target: Path, *args: str) -> tuple[int, str]:
+    """Run a git command in target. Returns (returncode, stripped output)."""
+    try:
+        result = subprocess.run(["git", *args], cwd=target, capture_output=True, text=True)
+    except FileNotFoundError:
+        return 127, "git not found"
+    output = result.stdout if result.returncode == 0 else result.stderr
+    return result.returncode, output.strip()
+
+
+def check_checkout(target: Path, repo: str) -> list[str]:
+    """Check that target is the top level of a git checkout whose origin is repo.
+
+    Returns a list of problems; empty when both checks pass.
+    """
+    code, toplevel = _git(target, "rev-parse", "--show-toplevel")
+    if code != 0:
+        return [f"{target} is not inside a git work tree ({toplevel})"]
+    if Path(toplevel).resolve() != target.resolve():
+        return [f"{target} is not the top level of its git work tree (top level is {toplevel})"]
+
+    code, origin = _git(target, "remote", "get-url", "origin")
+    if code != 0:
+        return [f"no origin remote ({origin})"]
+    if not remote_matches_repo(origin, repo):
+        return [f"origin is {origin}, which does not match --repo {repo}"]
+    return []
+
+
 def run_init(
     repo: str,
     reviewer: str = "",
@@ -457,11 +500,46 @@ def run_init(
     lint_cmd: str = "",
     dry_run: bool = False,
     skip_labels: bool = False,
+    force: bool = False,
 ) -> None:
-    """Run the init scaffolding in the current directory."""
+    """Run the init scaffolding in the current directory.
+
+    Unless force is set, refuses to run (SystemExit 1) when the current directory is not
+    the top level of a checkout of repo. With dry_run, reports the problem and prints the
+    plan without writing anything.
+    """
     target = Path.cwd()
 
     print(f"Initializing autoloop for {repo} in {target}\n")
+
+    if not force:
+        print("Checkout:")
+        problems = check_checkout(target, repo)
+        for problem in problems:
+            print(f"  error: {problem}")
+        if not problems:
+            print(f"  ok: top level of a checkout of {repo}")
+        elif dry_run:
+            print("  [dry-run] a real run would stop here; rerun from the repo root or use --force")
+            print("\nPlan:")
+            for name in (
+                "autoloop.toml",
+                ".claude/settings.json",
+                ".github/workflows/autoloop-cleanup.yml",
+                ".gitignore",
+            ):
+                print(f"  [dry-run] write {name}")
+            if not skip_labels:
+                create_labels(repo, dry_run=True)
+            create_review_queue_issue(repo, dry_run=True)
+            return
+        else:
+            print(
+                "\nNothing was changed. Run init from the top level of a checkout of"
+                f" {repo}, or pass --force to skip these checks."
+            )
+            raise SystemExit(1)
+        print()
 
     print("Config:")
     write_toml(target, repo, reviewer, verify_cmd)
@@ -508,10 +586,19 @@ def main() -> None:
         "--dry-run", action="store_true", help="Print label commands without running"
     )
     parser.add_argument("--skip-labels", action="store_true", help="Skip GitHub label creation")
+    parser.add_argument(
+        "--force", action="store_true", help="Skip the repo-root and origin-remote checks"
+    )
     args = parser.parse_args()
 
     run_init(
-        args.repo, args.reviewer, args.verify_cmd, args.lint_cmd, args.dry_run, args.skip_labels
+        args.repo,
+        args.reviewer,
+        args.verify_cmd,
+        args.lint_cmd,
+        args.dry_run,
+        args.skip_labels,
+        args.force,
     )
 
 
