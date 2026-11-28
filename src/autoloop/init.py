@@ -363,17 +363,17 @@ BASE_ALLOWLIST = [
     "Bash(git commit *)",
     "Bash(git checkout *)",
     "Bash(git branch *)",
-    "Bash(git push *)",
     "Bash(git diff *)",
     "Bash(git log *)",
-    "Bash(gh *)",
 ]
 
+# AutoLoop pushes branches and opens PRs itself, outside Claude's permission rules,
+# so the agent must never push or call GitHub (doctor --live checks the push is denied).
 DENY_LIST = [
-    "Bash(git push --force*)",
-    "Bash(git reset --hard*)",
+    "Bash(git push*)",
+    "Bash(gh *)",
+    "Bash(git reset*)",
     "Bash(rm -rf*)",
-    "Bash(gh pr merge*)",
 ]
 
 
@@ -433,17 +433,25 @@ def write_claude_settings(target: Path, verify_cmd: str, lint_cmd: str = "") -> 
 
     if path.exists():
         existing = json.loads(path.read_text())
-        existing_allow = set(existing.get("permissions", {}).get("allow", []))
-        needed_allow = set(needed["permissions"]["allow"])
-        missing = sorted(needed_allow - existing_allow)
+        existing_perms = existing.get("permissions", {})
+        existing_allow = set(existing_perms.get("allow", []))
+        existing_deny = set(existing_perms.get("deny", []))
+        missing = sorted(set(needed["permissions"]["allow"]) - existing_allow)
+        missing_deny = sorted(set(needed["permissions"]["deny"]) - existing_deny)
+        if not missing and not missing_deny:
+            print("  .claude/settings.json already exists with all needed entries")
+            return
+        print("  .claude/settings.json already exists — skipping creation")
         if missing:
-            print("  .claude/settings.json already exists — skipping creation")
             print("  Entries autoloop needs but are not present:")
             for entry in missing:
                 print(f"    + {entry}")
             print("  Please add them manually if the builder needs them.")
-        else:
-            print("  .claude/settings.json already exists with all needed entries")
+        if missing_deny:
+            print("  Deny entries autoloop needs but are not present:")
+            for entry in missing_deny:
+                print(f"    + {entry}")
+            print("  Please add them to permissions.deny manually.")
         return
 
     claude_dir.mkdir(parents=True, exist_ok=True)

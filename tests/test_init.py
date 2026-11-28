@@ -272,14 +272,23 @@ class TestBuildSettingsAllowlist:
         assert "Bash(git status)" in allow
         assert "Bash(git add *)" in allow
         assert "Bash(git commit *)" in allow
-        assert "Bash(gh *)" in allow
 
     def test_deny_list_present(self):
         settings = build_settings_allowlist("pytest")
         deny = settings["permissions"]["deny"]
-        assert "Bash(git push --force*)" in deny
-        assert "Bash(git reset --hard*)" in deny
+        assert "Bash(git push*)" in deny
+        assert "Bash(gh *)" in deny
+        assert "Bash(git reset*)" in deny
         assert "Bash(rm -rf*)" in deny
+
+    def test_push_and_gh_not_allowed(self):
+        """Regression for #515: doctor --live requires the agent's push to be denied."""
+        settings = build_settings_allowlist("uv run pytest")
+        allow = settings["permissions"]["allow"]
+        deny = settings["permissions"]["deny"]
+        assert not [e for e in allow if e.startswith(("Bash(git push", "Bash(gh"))]
+        assert "Bash(git push*)" in deny
+        assert "Bash(gh *)" in deny
 
     def test_no_duplicates(self):
         settings = build_settings_allowlist("pytest", lint_cmd="pytest")
@@ -331,6 +340,25 @@ class TestWriteClaudeSettings:
         assert "skipping creation" in out
         assert "Entries autoloop needs but are not present" in out
         assert "Bash(pytest*)" in out
+
+    def test_skips_existing_reports_missing_deny(self, tmp_path, capsys):
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        settings_path = claude_dir / "settings.json"
+        needed = build_settings_allowlist("pytest")
+        needed["permissions"]["deny"] = ["Bash(rm -rf*)"]
+        original = json.dumps(needed, indent=2) + "\n"
+        settings_path.write_text(original)
+
+        write_claude_settings(tmp_path, "pytest")
+        out = capsys.readouterr().out
+        assert "skipping creation" in out
+        assert "Deny entries autoloop needs but are not present" in out
+        assert "+ Bash(git push*)" in out
+        assert "+ Bash(gh *)" in out
+        assert "+ Bash(rm -rf*)" not in out
+        assert "Entries autoloop needs but are not present" not in out
+        assert settings_path.read_text() == original
 
     def test_never_overwrites_existing(self, tmp_path):
         claude_dir = tmp_path / ".claude"
