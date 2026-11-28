@@ -177,6 +177,25 @@ Rules:
   no surrounding code fences, no commentary.
 """
 
+DUPLICATE_CONFIRM_PROMPT = """\
+A cheap prefilter flagged these two GitHub issues as possible duplicates because
+they overlap: {overlap}
+
+Do these two issues describe the same change? Sharing a file or a command name is
+not enough; answer true only if implementing one would make the other redundant.
+
+Issue #{number_a}: {title_a}
+{body_a}
+
+---
+
+Issue #{number_b}: {title_b}
+{body_b}
+
+Respond with JSON only:
+{{"duplicate": true|false, "reason": "one sentence"}}
+"""
+
 
 # --- Pure functions (testable without mocking) ---
 
@@ -348,6 +367,20 @@ def parse_triage_response(stdout: str) -> dict:
         return json.loads(text)
     except (json.JSONDecodeError, IndexError):
         return {"verdict": "rejected", "reason": "Failed to parse triage response"}
+
+
+def parse_duplicate_confirmation(stdout: str) -> dict | None:
+    """Extract {"duplicate": bool, "reason": str} from Claude's output, or None."""
+    text = stdout.strip()
+    if "```" in text:
+        text = text.split("```")[1].replace("json", "").strip()
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, IndexError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("duplicate"), bool):
+        return None
+    return {"duplicate": data["duplicate"], "reason": str(data.get("reason") or "")}
 
 
 def parse_file_discovery_response(stdout: str) -> list[dict]:
@@ -859,6 +892,33 @@ def flag_duplicate(number: int, duplicates: list[dict], cfg: AutoLoopConfig, pri
     )
 
 
+def confirm_duplicate(
+    issue: dict,
+    existing: dict,
+    overlap: str,
+    cfg: AutoLoopConfig,
+    *,
+    repo_dir: Path | None = None,
+) -> tuple[dict | None, ClaudeResult]:
+    """Ask the triage model whether two prefilter-flagged issues are the same change.
+
+    Returns (None, result) when the call fails or the answer can't be parsed.
+    """
+    prompt = DUPLICATE_CONFIRM_PROMPT.format(
+        overlap=overlap,
+        number_a=issue["number"],
+        title_a=issue.get("title", ""),
+        body_a=issue.get("body") or "",
+        number_b=existing["number"],
+        title_b=existing.get("title", ""),
+        body_b=existing.get("body") or "",
+    )
+    result = run_claude(prompt, cfg.triage_model, cfg.triage_timeout, repo_dir=repo_dir)
+    if not result.success:
+        return None, result
+    return parse_duplicate_confirmation(result.text), result
+
+
 def enrich_issue_with_files(number: int, files: list[dict], cfg: AutoLoopConfig):
     """Comment with discovered files so the implementation agent sees them."""
     file_lines = "\n".join(f"- `{f['path']}` — {f['reason']}" for f in files)
@@ -1317,13 +1377,36 @@ def triage_issue(
                 for e in existing
                 if _extract_parent_number(e.get("body") or "") != candidate_parent
             ]
-        duplicates = detect_duplicate_issues(issue["title"], candidate_files, existing)
+        candidates = detect_duplicate_issues(issue["title"], candidate_files, existing)
+        existing_by_number = {e["number"]: e for e in existing}
+        duplicates: list[dict] = []
+        overlap_notes: list[str] = []
+        for cand in candidates:
+            answer, confirm_result = confirm_duplicate(
+                issue,
+                existing_by_number[cand["number"]],
+                cand["reason"],
+                cfg,
+                repo_dir=ctx.repo_dir,
+            )
+            results.append(confirm_result)
+            # A failed or unparseable answer keeps the candidate (fail safe).
+            if answer is None or answer["duplicate"]:
+                duplicates.append(cand)
+            else:
+                overlap_notes.append(
+                    f"Overlaps #{cand['number']} ({cand['reason']}); "
+                    f"not a duplicate: {answer['reason']}"
+                )
         if duplicates:
             print(f"  #{issue['number']}: potential duplicate detected, routing to needs-human")
             flag_duplicate(issue["number"], duplicates, cfg, verdict.get("priority", ""))
             return results
 
-        approve_issue(issue["number"], verdict["priority"], verdict["reason"], cfg)
+        reason = verdict["reason"]
+        if overlap_notes:
+            reason += "\n\n" + "\n".join(overlap_notes)
+        approve_issue(issue["number"], verdict["priority"], reason, cfg)
     elif verdict["verdict"] == "needs-decomposition":
         depth = get_decomposition_depth(issue, cfg)
         points = verdict.get("points", 0)

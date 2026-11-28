@@ -2977,6 +2977,194 @@ def test_triage_issue_duplicate_assigns_priority_label(monkeypatch):
     assert "p0" in label_value
 
 
+# --- duplicate confirmation (#545) ---
+
+
+def test_parse_duplicate_confirmation_valid():
+    from autoloop.triage_issues import parse_duplicate_confirmation
+
+    out = parse_duplicate_confirmation('{"duplicate": false, "reason": "different fixes"}')
+    assert out == {"duplicate": False, "reason": "different fixes"}
+
+
+def test_parse_duplicate_confirmation_fenced():
+    from autoloop.triage_issues import parse_duplicate_confirmation
+
+    out = parse_duplicate_confirmation('```json\n{"duplicate": true, "reason": "same"}\n```')
+    assert out == {"duplicate": True, "reason": "same"}
+
+
+def test_parse_duplicate_confirmation_unparseable():
+    from autoloop.triage_issues import parse_duplicate_confirmation
+
+    assert parse_duplicate_confirmation("not json at all") is None
+    assert parse_duplicate_confirmation('{"verdict": "ready"}') is None
+    assert parse_duplicate_confirmation('{"duplicate": "yes"}') is None
+
+
+def test_confirm_duplicate_prompt_includes_both_issues(monkeypatch):
+    from autoloop.triage_issues import confirm_duplicate
+
+    cfg = _cfg()
+    seen: dict = {}
+
+    def fake_run_claude(prompt, model, timeout, **kwargs):
+        seen["prompt"] = prompt
+        seen["model"] = model
+        return ClaudeResult('{"duplicate": false, "reason": "no"}', 0.01, 1, 1, 0, 0, True)
+
+    monkeypatch.setattr("autoloop.triage_issues.run_claude", fake_run_claude)
+
+    answer, result = confirm_duplicate(
+        {"number": 517, "title": "plan honors per-task Type", "body": "BODY-A"},
+        {"number": 521, "title": "plan folds stray sections", "body": "BODY-B"},
+        "shared `src/widget.py`",
+        cfg,
+    )
+    assert answer == {"duplicate": False, "reason": "no"}
+    assert result.success
+    assert seen["model"] == "sonnet"
+    for text in ("#517", "#521", "plan honors per-task Type", "plan folds stray sections"):
+        assert text in seen["prompt"]
+    assert "BODY-A" in seen["prompt"]
+    assert "BODY-B" in seen["prompt"]
+
+
+def test_confirm_duplicate_failed_call_returns_none(monkeypatch):
+    from autoloop.triage_issues import confirm_duplicate
+
+    monkeypatch.setattr(
+        "autoloop.triage_issues.run_claude",
+        lambda *a, **k: ClaudeResult("", 0.0, 0, 0, 0, 0, False),
+    )
+    answer, result = confirm_duplicate(
+        {"number": 1, "title": "a", "body": ""},
+        {"number": 2, "title": "b", "body": ""},
+        "overlap",
+        _cfg(),
+    )
+    assert answer is None
+    assert not result.success
+
+
+_DUP_EXISTING = {
+    "number": 521,
+    "title": "plan --from-spec folds stray sections into the previous task",
+    "body": "## Files to Modify\n- src/widget/create_issue.py\n\n## Type\nbug",
+    "labels": [{"name": "ready"}],
+}
+
+_DUP_CANDIDATE = {
+    "number": 517,
+    "title": "plan --from-spec honors a per-task Type",
+    "body": "## Files to Modify\n- src/widget/create_issue.py\n\n## Type\nbug",
+}
+
+
+def _run_triage_with_confirm(monkeypatch, confirm_text, existing=None):
+    """Run triage_issue where the eval call is ready and later calls answer confirm_text."""
+    cfg = _cfg()
+    monkeypatch.setattr(
+        "autoloop.triage_issues.load_project_context", lambda repo_dir: ("tree", "# CLAUDE.md")
+    )
+    prompts: list[str] = []
+
+    def fake_run_claude(prompt, model, timeout, **kwargs):
+        prompts.append(prompt)
+        if len(prompts) == 1:
+            text = json.dumps(
+                {
+                    "verdict": "ready",
+                    "points": 2,
+                    "priority": "p1",
+                    "reason": "template complete",
+                    "files_missing": False,
+                }
+            )
+        else:
+            text = confirm_text
+        return ClaudeResult(text, 0.02, 100, 50, 0, 0, True)
+
+    monkeypatch.setattr("autoloop.triage_issues.run_claude", fake_run_claude)
+    monkeypatch.setattr(
+        "autoloop.triage_issues.list_issues_with_labels",
+        lambda cfg, labels: [_DUP_EXISTING] if existing is None else existing,
+    )
+    flagged: list = []
+    monkeypatch.setattr(
+        "autoloop.triage_issues.flag_duplicate",
+        lambda number, dups, cfg, priority="": flagged.append((number, dups)),
+    )
+    calls: list[list[str]] = []
+
+    class FakeResult:
+        returncode = 0
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return FakeResult()
+
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import triage_issue
+
+        results = triage_issue(_mock_ctx(), dict(_DUP_CANDIDATE), cfg)
+    return results, prompts, flagged, calls
+
+
+def test_triage_issue_confirm_not_duplicate_approves(monkeypatch):
+    results, prompts, flagged, calls = _run_triage_with_confirm(
+        monkeypatch, '{"duplicate": false, "reason": "they fix unrelated parser bugs"}'
+    )
+    assert flagged == []
+    assert len(prompts) == 2
+    assert len(results) == 2  # eval + confirm both counted in run stats
+
+    label_calls = [c for c in calls if "edit" in c and "--add-label" in c]
+    assert any("ready" in c[c.index("--add-label") + 1] for c in label_calls)
+    assert not any("needs-human" in c[c.index("--add-label") + 1] for c in label_calls)
+
+    bodies = [c[c.index("--body") + 1] for c in calls if "comment" in c and "--body" in c]
+    assert len(bodies) == 1
+    overlap_lines = [ln for ln in bodies[0].splitlines() if ln.startswith("Overlaps #521")]
+    assert len(overlap_lines) == 1
+    assert "src/widget/create_issue.py" in overlap_lines[0]
+    assert "not a duplicate: they fix unrelated parser bugs" in overlap_lines[0]
+
+
+def test_triage_issue_confirm_duplicate_flags_candidate(monkeypatch):
+    results, prompts, flagged, calls = _run_triage_with_confirm(
+        monkeypatch, '{"duplicate": true, "reason": "same change"}'
+    )
+    assert len(flagged) == 1
+    number, dups = flagged[0]
+    assert number == 517
+    assert [d["number"] for d in dups] == [521]
+    assert len(results) == 2
+    label_calls = [c for c in calls if "edit" in c and "--add-label" in c]
+    assert not any("ready" in c[c.index("--add-label") + 1] for c in label_calls)
+
+
+def test_triage_issue_confirm_unparseable_keeps_candidate(monkeypatch):
+    _results, _prompts, flagged, calls = _run_triage_with_confirm(
+        monkeypatch, "I think maybe they are related?"
+    )
+    assert len(flagged) == 1
+    assert [d["number"] for d in flagged[0][1]] == [521]
+    label_calls = [c for c in calls if "edit" in c and "--add-label" in c]
+    assert not any("ready" in c[c.index("--add-label") + 1] for c in label_calls)
+
+
+def test_triage_issue_confirm_skipped_without_candidates(monkeypatch):
+    results, prompts, flagged, calls = _run_triage_with_confirm(
+        monkeypatch, '{"duplicate": true, "reason": "should not be asked"}', existing=[]
+    )
+    assert len(prompts) == 1  # only the eval call
+    assert len(results) == 1
+    assert flagged == []
+    label_calls = [c for c in calls if "edit" in c and "--add-label" in c]
+    assert any("ready" in c[c.index("--add-label") + 1] for c in label_calls)
+
+
 def test_flag_duplicate_includes_priority_label():
     """flag_duplicate should add the priority label alongside needs-human."""
     cfg = _cfg(repo="acme/widgets")
