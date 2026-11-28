@@ -17,7 +17,7 @@ Config-driven AI pipeline that triages GitHub issues, implements them via Claude
 ## TLDR: First PR in 5 Minutes
 
 ```bash
-uv tool install git+https://github.com/Sanctum-Origo-Systems/autoloop@v0.20.0
+uv tool install git+https://github.com/Sanctum-Origo-Systems/autoloop@v0.21.0
 cd your-repo
 autoloop init --repo your-org/your-repo --verify-cmd "npm test"
 autoloop doctor                           # verify environment
@@ -97,7 +97,7 @@ Most users start local. Graduate to unattended when you trust it.
 
 ### As a CLI tool (recommended)
 
-Replace `<tag>` with the latest version from the [tags page](https://github.com/Sanctum-Origo-Systems/autoloop/tags) (e.g. `v0.20.0`). Pinning a tag is recommended; `@main` tracks unreleased changes:
+Replace `<tag>` with the latest version from the [tags page](https://github.com/Sanctum-Origo-Systems/autoloop/tags) (e.g. `v0.21.0`). Pinning a tag is recommended; `@main` tracks unreleased changes:
 
 ```bash
 uv tool install git+https://github.com/Sanctum-Origo-Systems/autoloop@<tag>
@@ -137,7 +137,7 @@ If you use the MCP server, include the `mcp` extra when you upgrade: `uv tool in
 
 If running on a VPS with systemd timers, reinstall there too and restart any Claude Code sessions in tmux to pick up the new MCP tools.
 
-`autoloop init` never rewrites an existing `.github/workflows/autoloop-cleanup.yml`. To keep the Review Queue issue current between `autoloop implement` runs in a repo that was set up earlier, add the `review-queue` job by hand. Copy the `on:` triggers and the `review-queue` job from `WORKFLOW_TEMPLATE` in `src/autoloop/init.py`:
+**Upgrading to v0.21.0 from an earlier release:** after reinstalling, update each repo's cleanup workflow. `autoloop init` never rewrites an existing `.github/workflows/autoloop-cleanup.yml`, so to keep the Review Queue issue current between `autoloop implement` runs, add the `review-queue` job by hand. Without it, the queue still refreshes at the end of every implement run. Copy the `on:` triggers and the `review-queue` job from `WORKFLOW_TEMPLATE` in `src/autoloop/init.py`:
 
 - Add the `pull_request` types `opened`, `reopened`, `synchronize`, `edited`, `ready_for_review` and `converted_to_draft` next to `closed`, and add `workflow_dispatch`. The existing jobs keep their `merged == true` condition, so the extra types don't change what they do.
 - To refresh when CI finishes, add a `workflow_run` trigger with your CI workflow's name and `types: [completed]`.
