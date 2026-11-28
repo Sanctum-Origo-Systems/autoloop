@@ -286,9 +286,9 @@ def create_labels(repo: str, dry_run: bool = False) -> None:
 
 
 REVIEW_QUEUE_BODY = (
-    "This issue tracks PRs that are ready for human review.\n"
-    "Autoloop posts a comment here whenever a PR passes automated checks.\n"
-    "Pin this issue for quick access."
+    "This issue lists open PRs in review order.\n"
+    "AutoLoop rewrites this body after every implement run and whenever a PR changes,\n"
+    "so don't edit it by hand. The first refresh replaces this text."
 )
 
 

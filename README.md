@@ -263,7 +263,7 @@ You don't need to list which files to modify. Triage identifies the relevant fil
 
 Issues can be any size. If an issue is too large, triage automatically decomposes it into ordered sub-issues with dependency tracking.
 
-To order issues yourself, add a `Depends on:` line to the issue body, e.g. `Depends on: #12, #15`. Implement skips the issue until every listed issue is closed. If a dependency's state can't be read, the issue counts as blocked.
+To order issues yourself, add a `Depends on:` line to the issue body, e.g. `Depends on: #12, #15`. Implement skips the issue until every listed issue is closed. If a dependency's state can't be read, the issue counts as blocked. A hand-written PR can carry the same line in its body, and the [Review Queue](#the-review-queue-issue) lists it as `blocked` until the dependency closes.
 
 ### 5. Triage
 
@@ -302,6 +302,7 @@ For each issue, autoloop:
 4. Reviews the implementation for quality
 5. Retries on failure (up to `max_retries`)
 6. Opens a PR with run stats (duration, cost, tokens)
+7. Rebuilds the [Review Queue issue](#the-review-queue-issue), whether or not a PR was opened
 
 ### 7. Review and merge
 
@@ -315,6 +316,37 @@ The CI workflow triggers on `merge_group` events, so it works with GitHub's merg
 2. Enable **Require merge queue** on your target branch
 3. Under **Required status checks**, add the `test` job from the CI workflow
 4. PRs will be queued, rebased, and CI-verified before merging
+
+#### The Review Queue issue
+
+`autoloop init` creates a pinned issue labeled `review-queue`. Its body is the list of what to review next. autoloop rebuilds it from GitHub's live state each time, so merging PRs out of order never leaves it stale.
+
+**Open** lists every open PR in the repo, including hand-written ones, in review order. Each PR has one state:
+
+| State | Meaning |
+|---|---|
+| `ready` | Can be reviewed and merged now. The first `ready` PR whose CI has finished is marked **next**. |
+| `needs update` | Has a merge conflict or failing CI. Rebase it or run `autoloop fix-pr` before reviewing. |
+| `blocked` | A `Depends on: #N` line in the PR body, or in the issue it closes (`Closes #N`), points at an issue or PR that is still open. |
+| `draft` | A draft PR. |
+
+Rows are ordered by state (in the order above), then by `p0`–`p2` label (the PR's own label first, then its issue's), then by PR number. Notes on a row explain its state:
+- `blocked by #N`, `merge conflict`, `CI failing`
+- `merge status pending`: GitHub hadn't computed mergeability yet. The PR is listed as `ready`, and the next refresh settles it.
+- `overlaps #N`: the two PRs change at least one of the same files, so merging one may force a rebase or lock-file refresh on the other.
+
+**Done** lists the 10 most recently closed PRs, newest first, as `merged <date>` or `closed, not merged`. It's read from GitHub on every refresh, never from the previous body, so it survives a failed run and stays visible after the last open PR merges.
+
+The body is rebuilt:
+- at the end of every `autoloop implement` run, batch or `--issue N`
+- by the `review-queue` job in the cleanup workflow, whenever a PR is opened, updated, edited, marked ready or draft, or closed, and on CI completion if you enable the `workflow_run` trigger
+- on demand with `autoloop review-queue` (no Claude session; needs `gh` access)
+
+Notes:
+- **The body is overwritten on every refresh.** Don't edit it by hand. Comment on the issue instead.
+- **Triage always skips the `review-queue` issue,** even if your `triage_labels` leaves the label out.
+- **Write dependencies as `Depends on: #N`.** That's the only form the queue reads, in issue bodies and PR bodies.
+- **A failed refresh never fails the implement run.** It's logged, and the next refresh catches up.
 
 ### 8. Fix broken PRs
 
