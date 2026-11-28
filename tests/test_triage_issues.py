@@ -4683,3 +4683,192 @@ def test_evaluate_issue_comment_changes_requirement_appears_verbatim(monkeypatch
     evaluate_issue(issue, cfg, Path("/fake/repo"))
 
     assert requirement_comment in captured["prompt"]
+
+
+# --- decomposed parent: redirect dependents, close as not planned (#531) ---
+
+
+def test_last_sub_issues_sequential_chain_keeps_only_last():
+    from autoloop.triage_issues import last_sub_issues
+
+    decomposition = _two_step_decomposition()["decomposition"]
+    assert last_sub_issues(decomposition, {1: 41, 2: 42}) == [42]
+
+
+def test_last_sub_issues_independent_steps_keeps_all():
+    from autoloop.triage_issues import last_sub_issues
+
+    decomposition = [
+        {"order": 1, "title": "A", "depends_on": []},
+        {"order": 2, "title": "B", "depends_on": []},
+        {"order": 3, "title": "C", "depends_on": [1]},
+    ]
+    assert last_sub_issues(decomposition, {1: 41, 2: 42, 3: 43}) == [42, 43]
+
+
+def test_last_sub_issues_ignores_edges_from_uncreated_steps():
+    from autoloop.triage_issues import last_sub_issues
+
+    decomposition = _two_step_decomposition()["decomposition"]
+    assert last_sub_issues(decomposition, {1: 41}) == [41]
+
+
+def test_replace_dependency_swaps_parent_for_sub_issues():
+    from autoloop.triage_issues import replace_dependency
+
+    body = "## Summary\nDo X\n\nDepends on: #3, #500 and #7\n\nSee #500 for context."
+    result = replace_dependency(body, 500, [501, 502])
+    assert "Depends on: #3, #501, #502, #7" in result
+    assert "See #500 for context." in result
+
+
+def test_replace_dependency_no_duplicates_and_leaves_other_numbers():
+    from autoloop.triage_issues import replace_dependency
+
+    assert replace_dependency("Depends on: #502, #500", 500, [502]) == "Depends on: #502"
+    assert replace_dependency("Depends on: #5000", 500, [502]) == "Depends on: #5000"
+
+
+def test_build_dependency_rewrite_comment_names_parent_and_sub_issues():
+    from autoloop.triage_issues import build_dependency_rewrite_comment
+
+    comment = build_dependency_rewrite_comment(500, [502])
+    assert "#500" in comment
+    assert "Depends on: #502" in comment
+
+
+def _two_step_triage_result() -> dict:
+    return {"points": 5, **_two_step_decomposition()}
+
+
+def _fake_gh_with_open_issues(open_issues: list[dict], calls: list[list[str]]):
+    counter = {"n": 600}
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        if cmd[:3] == ["gh", "issue", "list"]:
+            return SimpleNamespace(returncode=0, stdout=json.dumps(open_issues))
+        if cmd[:3] == ["gh", "issue", "create"]:
+            counter["n"] += 1
+            return SimpleNamespace(
+                returncode=0, stdout=f"https://github.com/acme/widgets/issues/{counter['n']}"
+            )
+        return SimpleNamespace(returncode=0, stdout="")
+
+    return fake_run
+
+
+def test_list_open_dependents_filters_by_depends_on():
+    cfg = _cfg(repo="acme/widgets")
+    open_issues = [
+        {"number": 1, "body": "Depends on: #500"},
+        {"number": 2, "body": "Mentions #500 only"},
+        {"number": 3, "body": None},
+    ]
+    calls: list[list[str]] = []
+    fake = _fake_gh_with_open_issues(open_issues, calls)
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake):
+        from autoloop.triage_issues import list_open_dependents
+
+        assert [i["number"] for i in list_open_dependents(500, cfg)] == [1]
+    assert calls[0][calls[0].index("--repo") + 1] == "acme/widgets"
+
+
+def test_list_open_dependents_empty_when_gh_fails():
+    cfg = _cfg()
+    fail = SimpleNamespace(returncode=1, stdout="", stderr="boom")
+    with patch("autoloop.triage_issues.subprocess.run", return_value=fail):
+        from autoloop.triage_issues import list_open_dependents
+
+        assert list_open_dependents(500, cfg) == []
+
+
+def test_redirect_dependents_edits_and_comments_changed_issues():
+    cfg = _cfg(repo="acme/widgets")
+    open_issues = [
+        {"number": 1, "body": "Depends on: #500"},
+        {"number": 601, "body": "Depends on: #500"},
+    ]
+    calls: list[list[str]] = []
+    fake = _fake_gh_with_open_issues(open_issues, calls)
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake):
+        from autoloop.triage_issues import redirect_dependents
+
+        assert redirect_dependents(500, [602], cfg, exclude=[601]) == [1]
+
+    edits = [c for c in calls if c[:3] == ["gh", "issue", "edit"]]
+    assert len(edits) == 1
+    assert edits[0][3] == "1"
+    assert edits[0][edits[0].index("--body") + 1] == "Depends on: #602"
+    comments = [c for c in calls if c[:3] == ["gh", "issue", "comment"]]
+    assert [c[3] for c in comments] == ["1"]
+
+
+def test_redirect_dependents_skips_comment_when_edit_fails():
+    cfg = _cfg()
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        if cmd[:3] == ["gh", "issue", "list"]:
+            return SimpleNamespace(
+                returncode=0, stdout=json.dumps([{"number": 1, "body": "Depends on: #500"}])
+            )
+        if cmd[:3] == ["gh", "issue", "edit"]:
+            return SimpleNamespace(returncode=1, stdout="", stderr="boom")
+        return SimpleNamespace(returncode=0, stdout="")
+
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import redirect_dependents
+
+        assert redirect_dependents(500, [602], cfg) == []
+    assert not [c for c in calls if c[:3] == ["gh", "issue", "comment"]]
+
+
+def test_decompose_issue_rewrites_dependents_to_last_sub_issue(monkeypatch):
+    """Decomposing #P into #A then #B rewrites another issue's `Depends on: #P` to #B."""
+    cfg = _cfg(repo="acme/widgets")
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+    open_issues = [{"number": 400, "body": "## Summary\nLater work\n\nDepends on: #500"}]
+    calls: list[list[str]] = []
+    fake = _fake_gh_with_open_issues(open_issues, calls)
+
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake):
+        from autoloop.triage_issues import decompose_issue
+
+        decompose_issue(500, _two_step_triage_result(), cfg, "parent summary")
+
+    # Sub-issues are #601 (step 1) and #602 (step 2, depends on step 1).
+    edits = [c for c in calls if c[:4] == ["gh", "issue", "edit", "400"]]
+    assert len(edits) == 1
+    new_body = edits[0][edits[0].index("--body") + 1]
+    assert "Depends on: #602" in new_body
+    assert "#500" not in new_body
+    assert "#601" not in new_body
+    assert any(c[:4] == ["gh", "issue", "comment", "400"] for c in calls)
+
+
+def test_decompose_issue_closes_parent_as_not_planned(monkeypatch):
+    cfg = _cfg(repo="acme/widgets")
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+    calls: list[list[str]] = []
+    fake = _fake_gh_with_open_issues([], calls)
+
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake):
+        from autoloop.triage_issues import decompose_issue
+
+        decompose_issue(500, _two_step_triage_result(), cfg, "parent summary")
+
+    close_calls = [c for c in calls if c[:3] == ["gh", "issue", "close"]]
+    assert len(close_calls) == 1
+    assert close_calls[0][close_calls[0].index("--reason") + 1] == "not planned"
+
+
+def test_create_sub_issues_by_step_maps_order_to_issue(monkeypatch):
+    cfg = _cfg(repo="acme/widgets")
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+    fake = _fake_gh_with_open_issues([], [])
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake):
+        from autoloop.triage_issues import create_sub_issues_by_step
+
+        assert create_sub_issues_by_step(500, _two_step_decomposition(), cfg) == {1: 601, 2: 602}
