@@ -137,6 +137,12 @@ If you use the MCP server, include the `mcp` extra when you upgrade: `uv tool in
 
 If running on a VPS with systemd timers, reinstall there too and restart any Claude Code sessions in tmux to pick up the new MCP tools.
 
+`autoloop init` never rewrites an existing `.github/workflows/autoloop-cleanup.yml`. To keep the Review Queue issue current between `autoloop implement` runs in a repo that was set up earlier, add the `review-queue` job by hand. Copy the `on:` triggers and the `review-queue` job from `WORKFLOW_TEMPLATE` in `src/autoloop/init.py`:
+
+- Add the `pull_request` types `opened`, `reopened`, `synchronize`, `edited`, `ready_for_review` and `converted_to_draft` next to `closed`, and add `workflow_dispatch`. The existing jobs keep their `merged == true` condition, so the extra types don't change what they do.
+- To refresh when CI finishes, add a `workflow_run` trigger with your CI workflow's name and `types: [completed]`.
+- Keep the job named `review-queue`. `autoloop review-queue` ignores the check run with that name when it computes CI state.
+
 ### For contributors
 
 ```bash
@@ -162,7 +168,7 @@ This creates three files:
 | File | Purpose |
 |------|---------|
 | `autoloop.toml` | Pipeline configuration (models, timeouts, verify command) |
-| `.github/workflows/autoloop-cleanup.yml` | CI workflow that cleans labels and auto-closes parent issues on merge |
+| `.github/workflows/autoloop-cleanup.yml` | CI workflow that cleans labels and auto-closes parent issues on merge, and refreshes the Review Queue issue when a PR changes |
 | `.gitignore` | Adds `autoloop/run_history.jsonl` and `.autoloop.lock` |
 
 It also creates GitHub labels (`ready`, `rejected`, `in-progress`, etc.) used by the triage system.
@@ -257,7 +263,7 @@ You don't need to list which files to modify. Triage identifies the relevant fil
 
 Issues can be any size. If an issue is too large, triage automatically decomposes it into ordered sub-issues with dependency tracking.
 
-To order issues yourself, add a `Depends on:` line to the issue body, e.g. `Depends on: #12, #15`. Implement skips the issue until every listed issue is closed. If a dependency's state can't be read, the issue counts as blocked.
+To order issues yourself, add a `Depends on:` line to the issue body, e.g. `Depends on: #12, #15`. Implement skips the issue until every listed issue is closed. If a dependency's state can't be read, the issue counts as blocked. A hand-written PR can carry the same line in its body, and the [Review Queue](#the-review-queue-issue) lists it as `blocked` until the dependency closes.
 
 ### 5. Triage
 
@@ -296,6 +302,7 @@ For each issue, autoloop:
 4. Reviews the implementation for quality
 5. Retries on failure (up to `max_retries`)
 6. Opens a PR with run stats (duration, cost, tokens)
+7. Rebuilds the [Review Queue issue](#the-review-queue-issue), whether or not a PR was opened
 
 ### 7. Review and merge
 
@@ -309,6 +316,37 @@ The CI workflow triggers on `merge_group` events, so it works with GitHub's merg
 2. Enable **Require merge queue** on your target branch
 3. Under **Required status checks**, add the `test` job from the CI workflow
 4. PRs will be queued, rebased, and CI-verified before merging
+
+#### The Review Queue issue
+
+`autoloop init` creates a pinned issue labeled `review-queue`. Its body is the list of what to review next. autoloop rebuilds it from GitHub's live state each time, so merging PRs out of order never leaves it stale.
+
+**Open** lists every open PR in the repo, including hand-written ones, in review order. Each PR has one state:
+
+| State | Meaning |
+|---|---|
+| `ready` | Can be reviewed and merged now. The first `ready` PR whose CI has finished is marked **next**. |
+| `needs update` | Has a merge conflict or failing CI. Rebase it or run `autoloop fix-pr` before reviewing. |
+| `blocked` | A `Depends on: #N` line in the PR body, or in the issue it closes (`Closes #N`), points at an issue or PR that is still open. |
+| `draft` | A draft PR. |
+
+Rows are ordered by state (in the order above), then by `p0`–`p2` label (the PR's own label first, then its issue's), then by PR number. Notes on a row explain its state:
+- `blocked by #N`, `merge conflict`, `CI failing`
+- `merge status pending`: GitHub hadn't computed mergeability yet. The PR is listed as `ready`, and the next refresh settles it.
+- `overlaps #N`: the two PRs change at least one of the same files, so merging one may force a rebase or lock-file refresh on the other.
+
+**Done** lists the 10 most recently closed PRs, newest first, as `merged <date>` or `closed, not merged`. It's read from GitHub on every refresh, never from the previous body, so it survives a failed run and stays visible after the last open PR merges.
+
+The body is rebuilt:
+- at the end of every `autoloop implement` run, batch or `--issue N`
+- by the `review-queue` job in the cleanup workflow, whenever a PR is opened, updated, edited, marked ready or draft, or closed, and on CI completion if you enable the `workflow_run` trigger
+- on demand with `autoloop review-queue` (no Claude session; needs `gh` access)
+
+Notes:
+- **The body is overwritten on every refresh.** Don't edit it by hand. Comment on the issue instead.
+- **Triage always skips the `review-queue` issue,** even if your `triage_labels` leaves the label out.
+- **Write dependencies as `Depends on: #N`.** That's the only form the queue reads, in issue bodies and PR bodies.
+- **A failed refresh never fails the implement run.** It's logged, and the next refresh catches up.
 
 ### 8. Fix broken PRs
 
@@ -653,6 +691,7 @@ The commands above backfill autoloop's own repo. For another repo, run the scrip
 | `autoloop review-pr` | Review a PR (mutation gate + semantic review, no merge) |
 | `autoloop status` | Show last run, ready issues, timers |
 | `autoloop auto-close-parent` | Close parent when all sub-issues done |
+| `autoloop review-queue` | Rebuild the Review Queue issue from live PR state. Needs only `gh` access, no Claude session. The cleanup workflow runs it when a PR or its CI changes |
 | `autoloop prune` | Remove worktrees and local `autoloop/*` branches whose PRs are merged or closed; keeps dirty worktrees, open PRs, and unmerged commits (listed for human review). `autoloop implement` runs prune at the start of each run, and autoloop removes a worktree right after it auto-merges that PR. `--dry-run` reports what would be removed without removing anything |
 | `autoloop eval` | Performance tracking: snapshots, trends, per-module breakdown (zero LLM cost) |
 | `autoloop jev-report` | Write `JEV.md` from the Jev shadow log: agreement, action zones, calibration, baseline (`--publish [--pr]` commits it or opens a PR) |

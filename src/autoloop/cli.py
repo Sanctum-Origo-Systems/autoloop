@@ -108,6 +108,11 @@ def build_parser():
     )
     acp_parser.add_argument("pr_number", type=int, help="PR number to check")
 
+    # review-queue
+    subparsers.add_parser(
+        "review-queue", help="Rebuild the Review Queue issue from live PR state (no Claude)"
+    )
+
     # doctor
     doctor_parser = subparsers.add_parser("doctor", help="Run environment and config checks")
     doctor_parser.add_argument(
@@ -318,6 +323,13 @@ def main():
             print(f"Closed parent issue #{result}")
         else:
             print("No parent issue to close.")
+
+    elif args.command == "review-queue":
+        from autoloop.config import load_config
+        from autoloop.review_queue import refresh_review_queue
+
+        cfg = load_config()
+        refresh_review_queue(cfg)
 
     elif args.command == "eval":
         from autoloop.config import load_config

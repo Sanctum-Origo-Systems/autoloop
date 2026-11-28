@@ -89,7 +89,20 @@ WORKFLOW_TEMPLATE = """\
 name: Autoloop Cleanup
 on:
   pull_request:
-    types: [closed]
+    types:
+      - opened
+      - reopened
+      - closed
+      - synchronize
+      - edited
+      - ready_for_review
+      - converted_to_draft
+  # Refresh the review queue when CI finishes. Uncomment and replace "CI" with
+  # the name of this repo's CI workflow.
+  # workflow_run:
+  #   workflows: ["CI"]
+  #   types: [completed]
+  workflow_dispatch:
 
 permissions:
   issues: write
@@ -142,6 +155,33 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: autoloop auto-close-parent "${{ github.event.pull_request.number }}"
+
+  review-queue:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: review-queue
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+      checks: read
+    steps:
+      # Read autoloop.toml from the default branch, never from the PR under review.
+      - name: Check out default branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install autoloop
+        run: pip install git+https://github.com/Sanctum-Origo-Systems/autoloop@main
+      - name: Refresh review queue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: autoloop review-queue
 """
 
 GITIGNORE_ENTRIES = ("autoloop/run_history.jsonl", ".autoloop.lock")
@@ -246,9 +286,9 @@ def create_labels(repo: str, dry_run: bool = False) -> None:
 
 
 REVIEW_QUEUE_BODY = (
-    "This issue tracks PRs that are ready for human review.\n"
-    "Autoloop posts a comment here whenever a PR passes automated checks.\n"
-    "Pin this issue for quick access."
+    "This issue lists open PRs in review order.\n"
+    "AutoLoop rewrites this body after every implement run and whenever a PR changes,\n"
+    "so don't edit it by hand. The first refresh replaces this text."
 )
 
 

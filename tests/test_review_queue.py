@@ -11,7 +11,6 @@ from autoloop.review_queue import (
     build_queue_body,
     escape_cell,
     fetch_ci_status,
-    fetch_gate_flags,
     find_overlaps,
     find_review_queue_issue,
     format_done_table,
@@ -139,43 +138,49 @@ def test_fetch_ci_status_gh_failure_returns_pending(monkeypatch):
     assert fetch_ci_status(10, cfg) == "pending"
 
 
-# --- fetch_gate_flags ---
-
-
-def test_fetch_gate_flags_both_present(monkeypatch):
+def test_fetch_ci_status_ignores_review_queue_check(monkeypatch):
     cfg = _test_cfg()
 
     def fake_run(cmd, **kw):
-        labels = [{"name": "owner-approved"}, {"name": "needs-human"}, {"name": "ready"}]
-        return _make_result(stdout=json.dumps({"labels": labels}))
+        checks = [
+            {"name": "test", "bucket": "pass"},
+            {"name": "review-queue", "bucket": "pending"},
+        ]
+        return _make_result(stdout=json.dumps(checks))
 
     monkeypatch.setattr(review_queue.subprocess, "run", fake_run)
-    flags = fetch_gate_flags(5, cfg)
-    assert flags["owner_approved"] is True
-    assert flags["needs_human"] is True
+    assert fetch_ci_status(10, cfg) == "pass"
 
 
-def test_fetch_gate_flags_none_present(monkeypatch):
+def test_fetch_ci_status_only_review_queue_check_returns_pass(monkeypatch):
     cfg = _test_cfg()
 
     def fake_run(cmd, **kw):
-        return _make_result(stdout=json.dumps({"labels": [{"name": "ready"}]}))
+        return _make_result(stdout=json.dumps([{"name": "review-queue", "bucket": "pending"}]))
 
     monkeypatch.setattr(review_queue.subprocess, "run", fake_run)
-    flags = fetch_gate_flags(5, cfg)
-    assert flags["owner_approved"] is False
-    assert flags["needs_human"] is False
+    assert fetch_ci_status(10, cfg) == "pass"
 
 
-def test_fetch_gate_flags_gh_failure(monkeypatch):
+def test_fetch_ci_status_requests_check_names(monkeypatch):
     cfg = _test_cfg()
+    captured = {}
 
     def fake_run(cmd, **kw):
-        return _make_result(returncode=1)
+        captured["cmd"] = cmd
+        return _make_result(stdout="[]")
 
     monkeypatch.setattr(review_queue.subprocess, "run", fake_run)
-    flags = fetch_gate_flags(5, cfg)
-    assert flags == {"owner_approved": False, "needs_human": False}
+    fetch_ci_status(10, cfg)
+    fields = captured["cmd"][captured["cmd"].index("--json") + 1].split(",")
+    assert "name" in fields
+    assert "bucket" in fields
+
+
+def test_review_queue_check_name_matches_workflow_job():
+    from autoloop.init import WORKFLOW_TEMPLATE
+
+    assert f"\n  {review_queue.REVIEW_QUEUE_CHECK_NAME}:\n" in WORKFLOW_TEMPLATE
 
 
 # --- parse_dependency_numbers ---

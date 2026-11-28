@@ -76,6 +76,7 @@ mcp = [
 [package.dev-dependencies]
 dev = [
     { name = "pytest" },
+    { name = "pyyaml" },
     { name = "ruff" },
 ]
 
@@ -86,6 +87,7 @@ provides-extras = ["mcp"]
 [package.metadata.requires-dev]
 dev = [
     { name = "pytest" },
+    { name = "pyyaml" },
     { name = "ruff" },
 ]
 
