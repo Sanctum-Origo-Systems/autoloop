@@ -5450,6 +5450,30 @@ def test_try_auto_merge_gates_from_ctx_history_implementations_only(monkeypatch,
     assert ready_args == [(0.5, 0.5, 1)]
 
 
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [(["api/", "worker/"], ["api/", "worker/"]), ([], None)],
+)
+def test_try_auto_merge_passes_module_prefixes(monkeypatch, tmp_path, configured, expected):
+    """try_auto_merge passes configured module_prefixes, or None to auto-detect when empty."""
+    monkeypatch.setattr(
+        implement_issue, "cfg", _test_cfg(auto_merge=True, module_prefixes=configured)
+    )
+    monkeypatch.setattr("autoloop.eval.load_run_history", lambda ctx: [])
+    monkeypatch.setattr("autoloop.eval.fetch_pr_data", lambda repo: [])
+    monkeypatch.setattr("autoloop.eval.enrich_pr_data_with_runs", lambda pd, r: pd)
+    seen = []
+    monkeypatch.setattr(
+        "autoloop.eval.compute_snapshot",
+        lambda r, pd, **kw: seen.append(kw.get("module_prefixes")) or {},
+    )
+    monkeypatch.setattr("autoloop.eval.is_auto_merge_ready", lambda *a, **kw: "No")
+
+    try_auto_merge("branch", 99, ctx=RepoContext.for_data_dir(tmp_path))
+
+    assert seen == [expected]
+
+
 def test_try_auto_merge_resolves_ctx_from_repo_dir(monkeypatch, tmp_path):
     """When ctx is omitted, try_auto_merge builds a RepoContext from repo_dir."""
     monkeypatch.setattr(implement_issue, "cfg", _test_cfg(auto_merge=True, repo="acme/widget"))

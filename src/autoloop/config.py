@@ -113,6 +113,7 @@ class AutoLoopConfig:
     eval_min_n: int = 20
     fixup_window_days: int = 7
     fixup_ignore: list[str] = field(default_factory=list)
+    module_prefixes: list[str] = field(default_factory=list)
     jev_mode: str = "off"
     jev_api_key_env: str = "OPENROUTER_API_KEY"
     jev_model: str = "typesafe/jev-1.13"
@@ -301,6 +302,8 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
         config.fixup_window_days = int(eval_section["fixup_window_days"])
     if "fixup_ignore" in eval_section:
         config.fixup_ignore = list(eval_section["fixup_ignore"])
+    if "module_prefixes" in eval_section:
+        config.module_prefixes = list(eval_section["module_prefixes"])
 
     if "triage_labels" in data:
         config.triage_labels = list(data["triage_labels"])

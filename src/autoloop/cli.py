@@ -352,6 +352,7 @@ def main():
             eval_min_n=cfg.eval_min_n,
             fixup_window_days=cfg.fixup_window_days,
             fixup_ignore=cfg.fixup_ignore,
+            module_prefixes=cfg.module_prefixes,
         )
 
     elif args.command == "jev-report":

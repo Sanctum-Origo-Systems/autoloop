@@ -1532,8 +1532,11 @@ def main(
     eval_min_n: int = DEFAULT_MIN_N,
     fixup_window_days: int = DEFAULT_FIXUP_WINDOW_DAYS,
     fixup_ignore: list[str] | None = None,
+    module_prefixes: list[str] | None = None,
 ):
     repo_dir = str(ctx.repo_dir)
+    # An empty list means "not configured": fall back to src/<app>/ auto-detection.
+    module_prefixes = module_prefixes or None
 
     if publish:
         try:
@@ -1555,7 +1558,9 @@ def main(
         runs = load_run_history(ctx)
         pr_data = fetch_pr_data(repo, fixup_window_days, fixup_ignore) if repo else []
         pr_data = enrich_pr_data_with_runs(pr_data, runs)
-        snapshot = compute_snapshot(runs, pr_data, fixup_window_days=fixup_window_days)
+        snapshot = compute_snapshot(
+            runs, pr_data, module_prefixes=module_prefixes, fixup_window_days=fixup_window_days
+        )
 
         previous = load_latest_snapshot(ctx)
         snapshot.update(_compute_period_stats(snapshot, previous))
@@ -1652,7 +1657,9 @@ def main(
         runs = load_run_history(ctx)
         pr_data = fetch_pr_data(repo, fixup_window_days, fixup_ignore) if repo else []
         pr_data = enrich_pr_data_with_runs(pr_data, runs)
-        current = compute_snapshot(runs, pr_data, fixup_window_days=fixup_window_days)
+        current = compute_snapshot(
+            runs, pr_data, module_prefixes=module_prefixes, fixup_window_days=fixup_window_days
+        )
         previous = load_latest_snapshot(ctx)
         current.update(_compute_period_stats(current, previous))
         if previous is None:
@@ -1680,7 +1687,9 @@ def main(
     runs = load_run_history(ctx)
     pr_data = fetch_pr_data(repo, fixup_window_days, fixup_ignore) if repo else []
     pr_data = enrich_pr_data_with_runs(pr_data, runs)
-    snapshot = compute_snapshot(runs, pr_data, fixup_window_days=fixup_window_days)
+    snapshot = compute_snapshot(
+        runs, pr_data, module_prefixes=module_prefixes, fixup_window_days=fixup_window_days
+    )
     previous = load_latest_snapshot(ctx)
     snapshot.update(_compute_period_stats(snapshot, previous))
 

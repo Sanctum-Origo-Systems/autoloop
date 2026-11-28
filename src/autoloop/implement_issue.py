@@ -1568,7 +1568,7 @@ def try_auto_merge(
     runs = load_run_history(ctx)
     pr_data = fetch_pr_data(cfg.repo)
     pr_data = enrich_pr_data_with_runs(pr_data, runs)
-    snapshot = compute_snapshot(runs, pr_data)
+    snapshot = compute_snapshot(runs, pr_data, module_prefixes=cfg.module_prefixes or None)
 
     success_rate = snapshot.get("first_attempt_rate", 0)
     edit_rate = snapshot.get("human_edit_rate", 0)

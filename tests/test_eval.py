@@ -4071,7 +4071,11 @@ def _patch_eval_env(monkeypatch, calls, date_holder, *, prs=None, fail=None, rea
 
     def fake_compute(runs, pr_data=None, date=None, module_prefixes=None, fixup_window_days=None):
         return _REAL_COMPUTE_SNAPSHOT(
-            runs, pr_data, date=date_holder[0], fixup_window_days=fixup_window_days
+            runs,
+            pr_data,
+            date=date_holder[0],
+            module_prefixes=module_prefixes,
+            fixup_window_days=fixup_window_days,
         )
 
     monkeypatch.setattr("autoloop.eval.subprocess.run", fake_run)
@@ -5422,6 +5426,119 @@ def test_main_saved_snapshot_records_default_fixup_window_days(tmp_path, capsys)
     main(ctx=_make_ctx(tmp_path))
     files = list((tmp_path / "autoloop" / "eval_snapshots").glob("*.json"))
     assert json.loads(files[0].read_text())["fixup_window_days"] == 7
+
+
+# --- module_prefixes config ---
+
+
+def _top_level_app_prs():
+    runs = [
+        {"type": "implement", "issue": 1, "success": True, "attempts": 1, "cost_usd": 1.0},
+        {"type": "implement", "issue": 2, "success": True, "attempts": 1, "cost_usd": 1.0},
+    ]
+    pr_data = [
+        {
+            "number": 10,
+            "merged": True,
+            "closed": False,
+            "changed_files": ["api/app.py"],
+            "human_edited": False,
+            "first_attempt_success": True,
+            "issue": 1,
+        },
+        {
+            "number": 11,
+            "merged": True,
+            "closed": False,
+            "changed_files": ["worker/run.py"],
+            "human_edited": False,
+            "first_attempt_success": True,
+            "issue": 2,
+        },
+    ]
+    return runs, pr_data
+
+
+def test_compute_snapshot_configured_module_prefixes():
+    runs, pr_data = _top_level_app_prs()
+    snap = compute_snapshot(
+        runs, pr_data, date="2026-11-28", module_prefixes=["api/", "worker/", "shared/"]
+    )
+    assert set(snap["modules"]) == {"api/", "worker/"}
+    assert snap["modules"]["api/"]["implementations"] == 1
+    assert snap["modules"]["worker/"]["implementations"] == 1
+
+
+def test_compute_snapshot_without_module_prefixes_classifies_top_level_as_other():
+    runs, pr_data = _top_level_app_prs()
+    snap = compute_snapshot(runs, pr_data, date="2026-11-28")
+    assert set(snap["modules"]) == {"other"}
+    assert snap["modules"]["other"]["implementations"] == 2
+
+
+def test_compute_snapshot_configured_prefixes_unmatched_files_are_other():
+    runs, pr_data = _top_level_app_prs()
+    pr_data[1]["changed_files"] = ["docs/guide.md"]
+    snap = compute_snapshot(runs, pr_data, date="2026-11-28", module_prefixes=["api/"])
+    assert set(snap["modules"]) == {"api/", "other"}
+
+
+def test_compute_snapshot_configured_prefixes_longest_wins():
+    runs, pr_data = _top_level_app_prs()
+    pr_data[0]["changed_files"] = ["api/v2/app.py"]
+    snap = compute_snapshot(
+        runs, pr_data, date="2026-11-28", module_prefixes=["api/", "api/v2/", "worker/"]
+    )
+    assert set(snap["modules"]) == {"api/v2/", "worker/"}
+
+
+def _capture_compute_prefixes(monkeypatch):
+    seen = []
+
+    def fake_compute(runs, pr_data=None, date=None, module_prefixes=None, fixup_window_days=None):
+        seen.append(module_prefixes)
+        return _REAL_COMPUTE_SNAPSHOT(runs, pr_data, date=date, fixup_window_days=fixup_window_days)
+
+    monkeypatch.setattr("autoloop.eval.compute_snapshot", fake_compute)
+    return seen
+
+
+def test_main_passes_configured_module_prefixes(tmp_path, monkeypatch, capsys):
+    seen = _capture_compute_prefixes(monkeypatch)
+    main(ctx=_make_ctx(tmp_path), module_prefixes=["api/", "worker/"])
+    main(ctx=_make_ctx(tmp_path), compare="latest", module_prefixes=["api/", "worker/"])
+    assert seen == [["api/", "worker/"], ["api/", "worker/"]]
+
+
+def test_main_publish_passes_configured_module_prefixes(tmp_path, monkeypatch, capsys):
+    ctx = _make_split_ctx(tmp_path)
+    _init_repo(ctx, monkeypatch)
+    _write_runs(ctx, _runs(5, 0))
+    seen = _capture_compute_prefixes(monkeypatch)
+    main(ctx=ctx, publish=True, module_prefixes=["api/"])
+    assert seen == [["api/"]]
+
+
+def test_cli_eval_passes_configured_module_prefixes(tmp_path, monkeypatch):
+    (tmp_path / "autoloop.toml").write_text('[eval]\nmodule_prefixes = ["api/", "worker/"]\n')
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sys.argv", ["autoloop", "eval"])
+    monkeypatch.setattr("autoloop.config.RepoContext", lambda **kw: "fake_ctx")
+    seen = {}
+    monkeypatch.setattr("autoloop.eval.main", lambda **kw: seen.update(kw))
+
+    from autoloop.cli import main as cli_main
+
+    cli_main()
+
+    assert seen["module_prefixes"] == ["api/", "worker/"]
+
+
+def test_main_empty_module_prefixes_auto_detects(tmp_path, monkeypatch, capsys):
+    seen = _capture_compute_prefixes(monkeypatch)
+    main(ctx=_make_ctx(tmp_path), module_prefixes=[])
+    main(ctx=_make_ctx(tmp_path))
+    assert seen == [None, None]
 
 
 def _edit_trend_pair(prev_window, curr_window):
