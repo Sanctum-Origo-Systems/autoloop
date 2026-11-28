@@ -10,6 +10,7 @@ import argparse
 import json
 import subprocess
 from pathlib import Path
+from urllib.parse import urlparse
 
 LABELS = [
     ("ready", "0E8A16", "Triaged and ready for implementation"),
@@ -374,17 +375,17 @@ BASE_ALLOWLIST = [
     "Bash(git commit *)",
     "Bash(git checkout *)",
     "Bash(git branch *)",
-    "Bash(git push *)",
     "Bash(git diff *)",
     "Bash(git log *)",
-    "Bash(gh *)",
 ]
 
+# AutoLoop pushes branches and opens PRs itself, outside Claude's permission rules,
+# so the agent must never push or call GitHub (doctor --live checks the push is denied).
 DENY_LIST = [
-    "Bash(git push --force*)",
-    "Bash(git reset --hard*)",
+    "Bash(git push*)",
+    "Bash(gh *)",
+    "Bash(git reset*)",
     "Bash(rm -rf*)",
-    "Bash(gh pr merge*)",
 ]
 
 
@@ -444,22 +445,72 @@ def write_claude_settings(target: Path, verify_cmd: str, lint_cmd: str = "") -> 
 
     if path.exists():
         existing = json.loads(path.read_text())
-        existing_allow = set(existing.get("permissions", {}).get("allow", []))
-        needed_allow = set(needed["permissions"]["allow"])
-        missing = sorted(needed_allow - existing_allow)
+        existing_perms = existing.get("permissions", {})
+        existing_allow = set(existing_perms.get("allow", []))
+        existing_deny = set(existing_perms.get("deny", []))
+        missing = sorted(set(needed["permissions"]["allow"]) - existing_allow)
+        missing_deny = sorted(set(needed["permissions"]["deny"]) - existing_deny)
+        if not missing and not missing_deny:
+            print("  .claude/settings.json already exists with all needed entries")
+            return
+        print("  .claude/settings.json already exists — skipping creation")
         if missing:
-            print("  .claude/settings.json already exists — skipping creation")
             print("  Entries autoloop needs but are not present:")
             for entry in missing:
                 print(f"    + {entry}")
             print("  Please add them manually if the builder needs them.")
-        else:
-            print("  .claude/settings.json already exists with all needed entries")
+        if missing_deny:
+            print("  Deny entries autoloop needs but are not present:")
+            for entry in missing_deny:
+                print(f"    + {entry}")
+            print("  Please add them to permissions.deny manually.")
         return
 
     claude_dir.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(needed, indent=2) + "\n")
     print("  created .claude/settings.json")
+
+
+def remote_matches_repo(url: str, repo: str) -> bool:
+    """Return True if a git remote URL (HTTPS or SSH, with or without .git) points at repo."""
+    url = url.strip().rstrip("/")
+    url = url.removesuffix(".git")
+    if "://" in url:
+        path = urlparse(url).path
+    elif ":" in url:
+        path = url.split(":", 1)[1]
+    else:
+        return False
+    return path.strip("/").lower() == repo.strip("/").lower()
+
+
+def _git(target: Path, *args: str) -> tuple[int, str]:
+    """Run a git command in target. Returns (returncode, stripped output)."""
+    try:
+        result = subprocess.run(["git", *args], cwd=target, capture_output=True, text=True)
+    except FileNotFoundError:
+        return 127, "git not found"
+    output = result.stdout if result.returncode == 0 else result.stderr
+    return result.returncode, output.strip()
+
+
+def check_checkout(target: Path, repo: str) -> list[str]:
+    """Check that target is the top level of a git checkout whose origin is repo.
+
+    Returns a list of problems; empty when both checks pass.
+    """
+    code, toplevel = _git(target, "rev-parse", "--show-toplevel")
+    if code != 0:
+        return [f"{target} is not inside a git work tree ({toplevel})"]
+    if Path(toplevel).resolve() != target.resolve():
+        return [f"{target} is not the top level of its git work tree (top level is {toplevel})"]
+
+    code, origin = _git(target, "remote", "get-url", "origin")
+    if code != 0:
+        return [f"no origin remote ({origin})"]
+    if not remote_matches_repo(origin, repo):
+        return [f"origin is {origin}, which does not match --repo {repo}"]
+    return []
 
 
 def run_init(
@@ -469,15 +520,49 @@ def run_init(
     lint_cmd: str = "",
     dry_run: bool = False,
     skip_labels: bool = False,
+    force: bool = False,
     test_pattern: str | None = None,
 ) -> None:
     """Run the init scaffolding in the current directory.
+
+    Unless force is set, refuses to run (SystemExit 1) when the current directory is not
+    the top level of a checkout of repo. With dry_run, reports the problem and prints the
+    plan without writing anything.
 
     test_pattern, when given, is written as-is; otherwise it is inferred from verify_cmd.
     """
     target = Path.cwd()
 
     print(f"Initializing autoloop for {repo} in {target}\n")
+
+    if not force:
+        print("Checkout:")
+        problems = check_checkout(target, repo)
+        for problem in problems:
+            print(f"  error: {problem}")
+        if not problems:
+            print(f"  ok: top level of a checkout of {repo}")
+        elif dry_run:
+            print("  [dry-run] a real run would stop here; rerun from the repo root or use --force")
+            print("\nPlan:")
+            for name in (
+                "autoloop.toml",
+                ".claude/settings.json",
+                ".github/workflows/autoloop-cleanup.yml",
+                ".gitignore",
+            ):
+                print(f"  [dry-run] write {name}")
+            if not skip_labels:
+                create_labels(repo, dry_run=True)
+            create_review_queue_issue(repo, dry_run=True)
+            return
+        else:
+            print(
+                "\nNothing was changed. Run init from the top level of a checkout of"
+                f" {repo}, or pass --force to skip these checks."
+            )
+            raise SystemExit(1)
+        print()
 
     print("Config:")
     write_toml(target, repo, reviewer, verify_cmd, test_pattern)
@@ -530,6 +615,9 @@ def main() -> None:
         metavar="GLOB",
         help="Test file glob for test_pattern (default: inferred from --verify-cmd)",
     )
+    parser.add_argument(
+        "--force", action="store_true", help="Skip the repo-root and origin-remote checks"
+    )
     args = parser.parse_args()
 
     run_init(
@@ -539,6 +627,7 @@ def main() -> None:
         args.lint_cmd,
         args.dry_run,
         args.skip_labels,
+        force=args.force,
         test_pattern=args.test_pattern,
     )
 

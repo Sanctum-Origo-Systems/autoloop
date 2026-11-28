@@ -457,7 +457,8 @@ def main():
         runs = load_run_history(ctx)
         pr_data = fetch_pr_data(repo) if repo else []
         pr_data = enrich_pr_data_with_runs(pr_data, runs)
-        current = compute_snapshot(runs, pr_data)
+        module_prefixes = (cfg.module_prefixes or None) if cfg else None
+        current = compute_snapshot(runs, pr_data, module_prefixes=module_prefixes)
 
         if compare:
             previous = load_latest_snapshot(ctx)

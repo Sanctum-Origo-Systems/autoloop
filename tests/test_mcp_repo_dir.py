@@ -857,6 +857,34 @@ def test_eval_snapshot_no_history(mcp_tools, tmp_path):
     assert "(0/0 implement runs)" in result
 
 
+@pytest.mark.parametrize(
+    ("toml", "expected"),
+    [
+        ('[eval]\nmodule_prefixes = ["api/", "worker/"]\n', ["api/", "worker/"]),
+        ("[eval]\n", None),
+        (None, None),
+    ],
+)
+def test_eval_passes_module_prefixes(mcp_tools, tmp_path, toml, expected):
+    """autoloop_eval passes configured module_prefixes, or None to auto-detect."""
+    if toml is not None:
+        (tmp_path / "autoloop.toml").write_text(toml)
+    seen = []
+
+    def fake_compute(runs, pr_data=None, **kw):
+        seen.append(kw.get("module_prefixes"))
+        return {"date": "2026-11-28", "total_implementations": 0}
+
+    with (
+        patch("autoloop.mcp_server.RepoContext", side_effect=_make_ctx),
+        patch("autoloop.eval.compute_snapshot", side_effect=fake_compute),
+        patch("autoloop.eval.format_snapshot", return_value="snapshot"),
+    ):
+        mcp_tools["autoloop_eval"](repo_dir=str(tmp_path))
+
+    assert seen == [expected]
+
+
 def test_eval_trend(mcp_tools, tmp_path):
     """autoloop_eval with trend=True returns trend output."""
     snap_dir = tmp_path / "autoloop" / "eval_snapshots"

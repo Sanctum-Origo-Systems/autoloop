@@ -163,6 +163,8 @@ cd ~/my-project
 autoloop init --repo owner/repo --reviewer your-github-username --verify-cmd "pytest"
 ```
 
+Run init from the top level of a clone of `owner/repo`. Before it changes anything, init checks that the current directory is the root of a git work tree and that `origin` points at `--repo` (HTTPS or SSH). If either check fails, it prints what it found and exits non-zero. Pass `--force` to skip the checks, for example before the remote exists. `--dry-run` reports the check result and prints the plan.
+
 This creates three files:
 
 | File | Purpose |
@@ -408,6 +410,8 @@ The `**File:**` section is optional. Include it if you know which files need mod
 
 Each section becomes one issue. Triage then handles decomposition and dependency ordering if any issue is too large.
 
+A task runs until the next `## ` heading of any kind; `###` and deeper headings stay part of the task. Text before the first task and under other `## ` headings (such as `## Notes`) is not copied into any issue, and `plan --from-spec` prints a note listing those sections. Have tasks link to shared context instead of relying on it.
+
 ## Running Unattended
 
 Once you trust the pipeline, automate it with timers on a Linux VPS.
@@ -552,6 +556,7 @@ Example workflow from your phone:
 | `auto_merge_promotion_level` | `"module"` | `"repo"` evaluates aggregate repo metrics; `"module"` evaluates each module independently |
 | `eval_min_n` | `20` | Minimum sample size for a headline rate in EVAL.md. Rates with fewer samples render as "insufficient data" instead of a percentage |
 | `eval.fixup_window_days` | `7` | Days after an autoloop PR merges during which a later non-autoloop PR touching the same files counts as a fixup (release and eval-report PRs never count) |
+| `eval.module_prefixes` | `[]` | Path prefixes that define modules for per-module metrics and module-level auto-merge promotion (e.g. `["api/", "worker/", "shared/"]`). The longest matching prefix wins and files matching none count as `other`. Empty auto-detects `src/<app>/` modules |
 | `eval.fixup_ignore` | `[]` | Glob patterns for shared files (e.g. `["docs/**", "*.lock"]`) that never count as fixups, in addition to the built-in ignore list |
 | `max_pr_review_rounds` | `3` | Max rounds of automated PR review+fix when `--auto-fix` is used |
 | `implement.isolation` | `"off"` | `"off"` — run in project directory (default). `"worktree"` — run in a persistent git worktree. See [Worktree Isolation](#worktree-isolation) |

@@ -1,20 +1,217 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from unittest.mock import patch
+
+import pytest
 
 from autoloop.init import (
     WORKFLOW_TEMPLATE,
     _extract_command_prefixes,
     build_settings_allowlist,
+    check_checkout,
     create_review_queue_issue,
     infer_test_pattern,
     main,
+    remote_matches_repo,
     run_init,
     update_gitignore,
     write_claude_settings,
     write_workflow,
 )
+
+GENERATED_FILES = (
+    "autoloop.toml",
+    ".claude/settings.json",
+    ".github/workflows/autoloop-cleanup.yml",
+    ".gitignore",
+)
+
+
+def _git_init(path, origin=None):
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    if origin is not None:
+        subprocess.run(["git", "-C", str(path), "remote", "add", "origin", origin], check=True)
+
+
+def _make_checkout(path, monkeypatch, origin="https://github.com/acme/widgets.git"):
+    """Turn path into a git checkout of acme/widgets and chdir into it."""
+    _git_init(path, origin)
+    monkeypatch.chdir(path)
+
+
+def _assert_nothing_written(path):
+    for name in GENERATED_FILES:
+        assert not (path / name).exists(), name
+
+
+class TestRemoteMatchesRepo:
+    def test_https_with_git_suffix(self):
+        assert remote_matches_repo("https://github.com/owner/target.git", "owner/target")
+
+    def test_ssh_with_git_suffix(self):
+        assert remote_matches_repo("git@github.com:owner/target.git", "owner/target")
+
+    def test_https_without_git_suffix(self):
+        assert remote_matches_repo("https://github.com/owner/target", "owner/target")
+
+    def test_ssh_without_git_suffix(self):
+        assert remote_matches_repo("git@github.com:owner/target", "owner/target")
+
+    def test_ssh_url_scheme(self):
+        assert remote_matches_repo("ssh://git@github.com/owner/target.git", "owner/target")
+
+    def test_trailing_slash_and_newline(self):
+        assert remote_matches_repo("https://github.com/owner/target/\n", "owner/target")
+
+    def test_case_insensitive(self):
+        assert remote_matches_repo("git@github.com:Owner/Target.git", "owner/target")
+
+    def test_different_repo(self):
+        assert not remote_matches_repo("git@github.com:owner/other.git", "owner/target")
+
+    def test_different_owner(self):
+        assert not remote_matches_repo("https://github.com/other/target.git", "owner/target")
+
+    def test_repo_name_prefix_does_not_match(self):
+        assert not remote_matches_repo("https://github.com/owner/target-two.git", "owner/target")
+
+    def test_local_path_does_not_match(self):
+        assert not remote_matches_repo("/srv/git/target", "owner/target")
+
+
+class TestCheckCheckout:
+    def test_ok_at_top_level_with_matching_origin(self, tmp_path):
+        _git_init(tmp_path, "git@github.com:owner/target.git")
+        assert check_checkout(tmp_path, "owner/target") == []
+
+    def test_not_a_git_repo(self, tmp_path):
+        problems = check_checkout(tmp_path, "owner/target")
+        assert len(problems) == 1
+        assert "not inside a git work tree" in problems[0]
+
+    def test_subdirectory_of_repo(self, tmp_path):
+        _git_init(tmp_path, "git@github.com:owner/target.git")
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        problems = check_checkout(sub, "owner/target")
+        assert len(problems) == 1
+        assert "not the top level" in problems[0]
+        assert str(tmp_path.resolve()) in problems[0]
+
+    def test_no_origin(self, tmp_path):
+        _git_init(tmp_path)
+        problems = check_checkout(tmp_path, "owner/target")
+        assert len(problems) == 1
+        assert "no origin remote" in problems[0]
+
+    def test_mismatched_origin(self, tmp_path):
+        _git_init(tmp_path, "git@github.com:owner/other.git")
+        problems = check_checkout(tmp_path, "owner/target")
+        assert problems == [
+            "origin is git@github.com:owner/other.git, which does not match --repo owner/target"
+        ]
+
+    @patch("autoloop.init.subprocess.run", side_effect=FileNotFoundError)
+    def test_git_missing(self, mock_run, tmp_path):
+        problems = check_checkout(tmp_path, "owner/target")
+        assert len(problems) == 1
+        assert "git not found" in problems[0]
+
+
+@patch("autoloop.init.create_review_queue_issue")
+@patch("autoloop.init.create_labels")
+class TestRunInitCheckoutGuard:
+    def test_subdirectory_exits_nonzero_without_writing(
+        self, mock_labels, mock_rq, tmp_path, monkeypatch, capsys
+    ):
+        _git_init(tmp_path, "git@github.com:owner/target.git")
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        monkeypatch.chdir(sub)
+        with pytest.raises(SystemExit) as exc:
+            run_init("owner/target", verify_cmd="pytest")
+        assert exc.value.code != 0
+        _assert_nothing_written(sub)
+        _assert_nothing_written(tmp_path)
+        mock_labels.assert_not_called()
+        mock_rq.assert_not_called()
+        out = capsys.readouterr().out
+        assert "not the top level" in out
+        assert "Nothing was changed" in out
+
+    def test_mismatched_origin_exits_nonzero_without_writing(
+        self, mock_labels, mock_rq, tmp_path, monkeypatch, capsys
+    ):
+        _make_checkout(tmp_path, monkeypatch, origin="git@github.com:owner/other.git")
+        with pytest.raises(SystemExit) as exc:
+            run_init("owner/target", verify_cmd="pytest")
+        assert exc.value.code != 0
+        _assert_nothing_written(tmp_path)
+        mock_labels.assert_not_called()
+        mock_rq.assert_not_called()
+        assert "git@github.com:owner/other.git" in capsys.readouterr().out
+
+    def test_matching_origin_writes_files(self, mock_labels, mock_rq, tmp_path, monkeypatch):
+        _make_checkout(tmp_path, monkeypatch, origin="git@github.com:owner/target.git")
+        run_init("owner/target", verify_cmd="pytest")
+        for name in GENERATED_FILES:
+            assert (tmp_path / name).exists(), name
+        mock_labels.assert_called_once()
+        mock_rq.assert_called_once()
+
+    def test_force_skips_both_checks(self, mock_labels, mock_rq, tmp_path, monkeypatch):
+        # Subdirectory of a repo whose origin is a different repo: fails both checks.
+        _git_init(tmp_path, "git@github.com:owner/other.git")
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        monkeypatch.chdir(sub)
+        with patch("autoloop.init.check_checkout") as mock_check:
+            run_init("owner/target", verify_cmd="pytest", force=True)
+        mock_check.assert_not_called()
+        for name in GENERATED_FILES:
+            assert (sub / name).exists(), name
+
+    def test_force_works_outside_git(self, mock_labels, mock_rq, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        run_init("owner/target", verify_cmd="pytest", force=True)
+        assert (tmp_path / "autoloop.toml").exists()
+
+    def test_dry_run_reports_failure_and_prints_plan(
+        self, mock_labels, mock_rq, tmp_path, monkeypatch, capsys
+    ):
+        _make_checkout(tmp_path, monkeypatch, origin="git@github.com:owner/other.git")
+        run_init("owner/target", verify_cmd="pytest", dry_run=True)
+        _assert_nothing_written(tmp_path)
+        out = capsys.readouterr().out
+        assert "error: origin is git@github.com:owner/other.git" in out
+        for name in GENERATED_FILES:
+            assert f"[dry-run] write {name}" in out
+        mock_labels.assert_called_once_with("owner/target", dry_run=True)
+        mock_rq.assert_called_once_with("owner/target", dry_run=True)
+
+    def test_dry_run_reports_ok(self, mock_labels, mock_rq, tmp_path, monkeypatch, capsys):
+        _make_checkout(tmp_path, monkeypatch, origin="https://github.com/owner/target.git")
+        run_init("owner/target", verify_cmd="pytest", dry_run=True, skip_labels=True)
+        out = capsys.readouterr().out
+        assert "ok: top level of a checkout of owner/target" in out
+        mock_rq.assert_called_once_with("owner/target", dry_run=True)
+
+
+class TestCliInitArgs:
+    @patch("autoloop.init.run_init")
+    def test_cli_passes_force_and_dry_run_by_keyword(self, mock_run_init, monkeypatch):
+        from autoloop.cli import main
+
+        monkeypatch.setattr(
+            "sys.argv", ["autoloop", "init", "--repo", "owner/target", "--dry-run", "--force"]
+        )
+        main()
+        _, kwargs = mock_run_init.call_args
+        assert kwargs["dry_run"] is True
+        assert kwargs["force"] is True
+        assert kwargs["skip_labels"] is False
 
 
 class TestExtractCommandPrefixes:
@@ -76,14 +273,23 @@ class TestBuildSettingsAllowlist:
         assert "Bash(git status)" in allow
         assert "Bash(git add *)" in allow
         assert "Bash(git commit *)" in allow
-        assert "Bash(gh *)" in allow
 
     def test_deny_list_present(self):
         settings = build_settings_allowlist("pytest")
         deny = settings["permissions"]["deny"]
-        assert "Bash(git push --force*)" in deny
-        assert "Bash(git reset --hard*)" in deny
+        assert "Bash(git push*)" in deny
+        assert "Bash(gh *)" in deny
+        assert "Bash(git reset*)" in deny
         assert "Bash(rm -rf*)" in deny
+
+    def test_push_and_gh_not_allowed(self):
+        """Regression for #515: doctor --live requires the agent's push to be denied."""
+        settings = build_settings_allowlist("uv run pytest")
+        allow = settings["permissions"]["allow"]
+        deny = settings["permissions"]["deny"]
+        assert not [e for e in allow if e.startswith(("Bash(git push", "Bash(gh"))]
+        assert "Bash(git push*)" in deny
+        assert "Bash(gh *)" in deny
 
     def test_no_duplicates(self):
         settings = build_settings_allowlist("pytest", lint_cmd="pytest")
@@ -136,6 +342,25 @@ class TestWriteClaudeSettings:
         assert "Entries autoloop needs but are not present" in out
         assert "Bash(pytest*)" in out
 
+    def test_skips_existing_reports_missing_deny(self, tmp_path, capsys):
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        settings_path = claude_dir / "settings.json"
+        needed = build_settings_allowlist("pytest")
+        needed["permissions"]["deny"] = ["Bash(rm -rf*)"]
+        original = json.dumps(needed, indent=2) + "\n"
+        settings_path.write_text(original)
+
+        write_claude_settings(tmp_path, "pytest")
+        out = capsys.readouterr().out
+        assert "skipping creation" in out
+        assert "Deny entries autoloop needs but are not present" in out
+        assert "+ Bash(git push*)" in out
+        assert "+ Bash(gh *)" in out
+        assert "+ Bash(rm -rf*)" not in out
+        assert "Entries autoloop needs but are not present" not in out
+        assert settings_path.read_text() == original
+
     def test_never_overwrites_existing(self, tmp_path):
         claude_dir = tmp_path / ".claude"
         claude_dir.mkdir()
@@ -164,7 +389,7 @@ class TestWriteClaudeSettings:
 class TestRunInitSettings:
     @patch("autoloop.init.create_labels")
     def test_init_creates_settings(self, mock_labels, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
+        _make_checkout(tmp_path, monkeypatch)
         run_init("acme/widgets", verify_cmd="pytest", skip_labels=True)
         path = tmp_path / ".claude" / "settings.json"
         assert path.exists()
@@ -173,7 +398,7 @@ class TestRunInitSettings:
 
     @patch("autoloop.init.create_labels")
     def test_init_passes_lint_cmd(self, mock_labels, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
+        _make_checkout(tmp_path, monkeypatch)
         run_init("acme/widgets", verify_cmd="pytest", lint_cmd="ruff check", skip_labels=True)
         path = tmp_path / ".claude" / "settings.json"
         data = json.loads(path.read_text())
@@ -181,7 +406,7 @@ class TestRunInitSettings:
 
     @patch("autoloop.init.create_labels")
     def test_init_protected_paths_excludes_settings(self, mock_labels, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
+        _make_checkout(tmp_path, monkeypatch)
         run_init("acme/widgets", verify_cmd="pytest", skip_labels=True)
         toml_content = (tmp_path / "autoloop.toml").read_text()
         assert ".claude/settings.json" not in toml_content
@@ -189,7 +414,7 @@ class TestRunInitSettings:
 
     @patch("autoloop.init.create_labels")
     def test_init_next_steps_mentions_settings(self, mock_labels, tmp_path, monkeypatch, capsys):
-        monkeypatch.chdir(tmp_path)
+        _make_checkout(tmp_path, monkeypatch)
         run_init("acme/widgets", verify_cmd="pytest", skip_labels=True)
         out = capsys.readouterr().out
         assert ".claude/settings.json" in out
@@ -240,7 +465,7 @@ class TestUpdateGitignore:
 
     @patch("autoloop.init.create_labels")
     def test_run_init_gitignores_lock(self, mock_labels, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
+        _make_checkout(tmp_path, monkeypatch)
         run_init("acme/widgets", verify_cmd="pytest", skip_labels=True)
         assert ".autoloop.lock" in (tmp_path / ".gitignore").read_text().splitlines()
 
@@ -289,21 +514,21 @@ class TestInferTestPattern:
 class TestWriteTomlTestPattern:
     @patch("autoloop.init.create_labels")
     def test_pytest_writes_test_pattern(self, mock_labels, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
+        _make_checkout(tmp_path, monkeypatch)
         run_init("acme/widgets", verify_cmd="uv run pytest", skip_labels=True)
         content = (tmp_path / "autoloop.toml").read_text()
         assert 'test_pattern = "tests/*.py"' in content
 
     @patch("autoloop.init.create_labels")
     def test_npm_build_writes_empty_test_pattern(self, mock_labels, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
+        _make_checkout(tmp_path, monkeypatch)
         run_init("acme/widgets", verify_cmd="npm run build", skip_labels=True)
         content = (tmp_path / "autoloop.toml").read_text()
         assert 'test_pattern = ""' in content
 
     @patch("autoloop.init.create_labels")
     def test_test_pattern_has_comment(self, mock_labels, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
+        _make_checkout(tmp_path, monkeypatch)
         run_init("acme/widgets", verify_cmd="uv run pytest", skip_labels=True)
         content = (tmp_path / "autoloop.toml").read_text()
         for line in content.splitlines():
@@ -315,7 +540,7 @@ class TestWriteTomlTestPattern:
 
     @patch("autoloop.init.create_labels")
     def test_test_pattern_loadable_by_config(self, mock_labels, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
+        _make_checkout(tmp_path, monkeypatch)
         run_init("acme/widgets", verify_cmd="uv run pytest", skip_labels=True)
         from autoloop.config import load_config
 
@@ -324,7 +549,7 @@ class TestWriteTomlTestPattern:
 
     @patch("autoloop.init.create_labels")
     def test_npm_test_pattern_roundtrips(self, mock_labels, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
+        _make_checkout(tmp_path, monkeypatch)
         run_init("acme/widgets", verify_cmd="npm test", skip_labels=True)
         from autoloop.config import load_config
 
@@ -335,7 +560,7 @@ class TestWriteTomlTestPattern:
     def test_explicit_test_pattern_skips_inference(
         self, mock_labels, tmp_path, monkeypatch, capsys
     ):
-        monkeypatch.chdir(tmp_path)
+        _make_checkout(tmp_path, monkeypatch)
         run_init(
             "acme/widgets",
             verify_cmd="./scripts/verify.sh",
@@ -348,7 +573,7 @@ class TestWriteTomlTestPattern:
 
     @patch("autoloop.init.create_labels")
     def test_explicit_test_pattern_overrides_inferred(self, mock_labels, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
+        _make_checkout(tmp_path, monkeypatch)
         run_init(
             "acme/widgets", verify_cmd="uv run pytest", skip_labels=True, test_pattern="t/*.py"
         )
@@ -357,7 +582,7 @@ class TestWriteTomlTestPattern:
 
     @patch("autoloop.init.create_labels")
     def test_uninferable_pattern_warns(self, mock_labels, tmp_path, monkeypatch, capsys):
-        monkeypatch.chdir(tmp_path)
+        _make_checkout(tmp_path, monkeypatch)
         run_init("acme/widgets", verify_cmd="./scripts/verify.sh", skip_labels=True)
         content = (tmp_path / "autoloop.toml").read_text()
         assert 'test_pattern = ""' in content
@@ -369,7 +594,7 @@ class TestWriteTomlTestPattern:
 
     @patch("autoloop.init.create_labels")
     def test_inferred_pattern_does_not_warn(self, mock_labels, tmp_path, monkeypatch, capsys):
-        monkeypatch.chdir(tmp_path)
+        _make_checkout(tmp_path, monkeypatch)
         run_init("acme/widgets", verify_cmd="uv run pytest", skip_labels=True)
         assert "WARNING" not in capsys.readouterr().out
 
@@ -377,7 +602,7 @@ class TestWriteTomlTestPattern:
 class TestInitMainTestPattern:
     @patch("autoloop.init.create_labels")
     def test_main_passes_test_pattern(self, mock_labels, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
+        _make_checkout(tmp_path, monkeypatch)
         monkeypatch.setattr(
             "sys.argv",
             [
@@ -399,7 +624,7 @@ class TestInitMainTestPattern:
 class TestWriteTomlTriageLabels:
     @patch("autoloop.init.create_labels")
     def test_triage_labels_include_review_queue(self, mock_labels, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
+        _make_checkout(tmp_path, monkeypatch)
         run_init("acme/widgets", verify_cmd="uv run pytest", skip_labels=True)
         from autoloop.config import load_config
 
@@ -410,7 +635,7 @@ class TestWriteTomlTriageLabels:
 class TestWriteTomlJevBlock:
     @patch("autoloop.init.create_labels")
     def test_jev_block_present(self, mock_labels, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
+        _make_checkout(tmp_path, monkeypatch)
         run_init("acme/widgets", verify_cmd="uv run pytest", skip_labels=True)
         content = (tmp_path / "autoloop.toml").read_text()
         assert "[jev]" in content
@@ -418,14 +643,14 @@ class TestWriteTomlJevBlock:
 
     @patch("autoloop.init.create_labels")
     def test_jev_block_has_shadow_comment(self, mock_labels, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
+        _make_checkout(tmp_path, monkeypatch)
         run_init("acme/widgets", verify_cmd="uv run pytest", skip_labels=True)
         content = (tmp_path / "autoloop.toml").read_text()
         assert "JEV_MODE=shadow" in content
 
     @patch("autoloop.init.create_labels")
     def test_jev_block_loadable_by_config(self, mock_labels, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
+        _make_checkout(tmp_path, monkeypatch)
         monkeypatch.delenv("JEV_MODE", raising=False)
         run_init("acme/widgets", verify_cmd="uv run pytest", skip_labels=True)
         from autoloop.config import load_config

@@ -42,6 +42,9 @@ def build_parser():
         metavar="GLOB",
         help="Test file glob for test_pattern (default: inferred from --verify-cmd)",
     )
+    init_parser.add_argument(
+        "--force", action="store_true", help="Skip the repo-root and origin-remote checks"
+    )
 
     # plan
     plan_parser = subparsers.add_parser("plan", help="Create issues from a spec file")
@@ -221,6 +224,7 @@ def main():
             dry_run=args.dry_run,
             skip_labels=args.skip_labels,
             test_pattern=args.test_pattern,
+            force=args.force,
         )
 
     elif args.command == "plan":
@@ -365,6 +369,7 @@ def main():
             eval_min_n=cfg.eval_min_n,
             fixup_window_days=cfg.fixup_window_days,
             fixup_ignore=cfg.fixup_ignore,
+            module_prefixes=cfg.module_prefixes,
         )
 
     elif args.command == "jev-report":

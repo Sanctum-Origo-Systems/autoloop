@@ -45,4 +45,5 @@ def test_init_dispatch_passes_flags_by_name():
         dry_run=True,
         skip_labels=True,
         test_pattern="*/tests/*",
+        force=False,
     )

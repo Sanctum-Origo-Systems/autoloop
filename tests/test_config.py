@@ -578,6 +578,23 @@ def test_fixup_fields_absent_from_eval_section_yield_defaults(tmp_path, monkeypa
     assert config.fixup_ignore == []
 
 
+def test_module_prefixes_default_empty():
+    assert AutoLoopConfig().module_prefixes == []
+
+
+def test_module_prefixes_from_toml(tmp_path):
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('[eval]\nmodule_prefixes = ["api/", "worker/", "shared/"]\n')
+    config = load_config(toml_path)
+    assert config.module_prefixes == ["api/", "worker/", "shared/"]
+
+
+def test_module_prefixes_absent_from_toml_yields_empty(tmp_path):
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('repo = "example-org/example-repo"\n\n[eval]\nfixup_window_days = 3\n')
+    assert load_config(toml_path).module_prefixes == []
+
+
 def test_fixup_fields_no_eval_section_yield_defaults(tmp_path, monkeypatch):
     for var in ("AUTOLOOP_TRIAGE_MODEL", "AUTOLOOP_IMPL_MODEL", "AUTOLOOP_TIMEOUT"):
         monkeypatch.delenv(var, raising=False)

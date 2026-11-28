@@ -22,6 +22,7 @@ from autoloop.implement_issue import (
     build_branch_name,
     build_changed_files_manifest,
     build_pr_body,
+    build_protected_changes_comment,
     build_timeout_comment,
     check_test_integrity,
     cleanup_merged_labels,
@@ -38,6 +39,7 @@ from autoloop.implement_issue import (
     ensure_clean_main,
     ensure_worktree,
     extract_linked_issue_number,
+    find_protected_changes,
     get_issue_by_number,
     has_design_comment,
     has_needs_design_label,
@@ -5103,6 +5105,122 @@ def test_implement_single_issue_integrity_guard_no_violation_no_label(monkeypatc
     assert len(needs_human_after_pr) == 0
 
 
+# --- protected-path check on the real diff ---
+
+
+def _fake_run_with_diff(diff_stdout: str, gh_calls: list):
+    def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list) and cmd[0] == "gh":
+            gh_calls.append(cmd)
+        if isinstance(cmd, list) and cmd[:3] == ["git", "rev-list", "--count"]:
+            return type("R", (), {"returncode": 0, "stdout": "1\n", "stderr": ""})()
+        if isinstance(cmd, str):
+            return type("R", (), {"returncode": 0, "stdout": "passed", "stderr": ""})()
+        if isinstance(cmd, list) and cmd[:3] == ["git", "diff", "--name-only"]:
+            return type("R", (), {"returncode": 0, "stdout": diff_stdout, "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    return fake_run
+
+
+def test_find_protected_changes_returns_only_protected_files(monkeypatch):
+    monkeypatch.setattr(
+        implement_issue, "cfg", _test_cfg(protected_paths=["autoloop.toml", "scripts/"])
+    )
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        _fake_run_with_diff("src/app.py\nautoloop.toml\nscripts/verify.sh\n", []),
+    )
+    assert find_protected_changes("branch") == ["autoloop.toml", "scripts/verify.sh"]
+
+
+def test_find_protected_changes_empty_when_no_protected_paths(monkeypatch):
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(protected_paths=[]))
+    monkeypatch.setattr(
+        implement_issue.subprocess, "run", _fake_run_with_diff("autoloop.toml\n", [])
+    )
+    assert find_protected_changes("branch") == []
+
+
+def test_build_protected_changes_comment_lists_files():
+    comment = build_protected_changes_comment(["autoloop.toml", "scripts/verify.sh"])
+    assert "`autoloop.toml`" in comment
+    assert "`scripts/verify.sh`" in comment
+
+
+def _setup_protected_diff_run(monkeypatch, tmp_path, diff_stdout, gh_calls):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        implement_issue.subprocess, "run", _fake_run_with_diff(diff_stdout, gh_calls)
+    )
+    monkeypatch.setattr(
+        implement_issue, "implement", lambda issue, previous_errors=None, **kw: _claude_result()
+    )
+    monkeypatch.setattr(
+        implement_issue, "create_branch", lambda issue, repo_dir=None: "autoloop/42-feat"
+    )
+    monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: 99)
+    monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
+    monkeypatch.setattr(
+        implement_issue,
+        "review_implementation",
+        lambda issue, branch, **kw: (True, "", _free_review()),
+    )
+    monkeypatch.setattr(implement_issue, "check_test_integrity", lambda branch, repo_dir=None: [])
+
+
+def test_implement_single_issue_flags_unannounced_protected_change(monkeypatch, tmp_path):
+    """Regression (#519): a protected file in the real diff, not named by the issue, is flagged."""
+    monkeypatch.setattr(
+        implement_issue, "cfg", _test_cfg(auto_merge=False, protected_paths=["autoloop.toml"])
+    )
+    gh_calls = []
+    _setup_protected_diff_run(
+        monkeypatch, tmp_path, "src/app.py\ntests/test_app.py\nautoloop.toml\n", gh_calls
+    )
+    try_merge_called = []
+    monkeypatch.setattr(
+        implement_issue,
+        "try_auto_merge",
+        lambda *a, **kw: try_merge_called.append(1) or ("skipped-disabled", {}),
+    )
+    issue = {
+        "number": 42,
+        "title": "Add feature",
+        "body": "## Type\nfeature\n\n## Files to Modify\n- src/app.py\n",
+        "labels": [],
+    }
+
+    assert implement_single_issue(issue) is True
+
+    needs_human = [
+        c for c in gh_calls if c[1:3] == ["issue", "edit"] and "needs-human" in c and "42" in c
+    ]
+    assert len(needs_human) == 1
+    pr_comments = [c for c in gh_calls if c[1:3] == ["pr", "comment"] and "99" in c]
+    assert len(pr_comments) == 1
+    assert "autoloop.toml" in pr_comments[0][pr_comments[0].index("--body") + 1]
+    assert try_merge_called == []
+    entry = json.loads(_history_path(tmp_path).read_text().strip())
+    assert entry["auto_merge"]["decision"] == "skipped-protected"
+
+
+def test_implement_single_issue_no_protected_change_no_label_or_comment(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        implement_issue, "cfg", _test_cfg(auto_merge=False, protected_paths=["autoloop.toml"])
+    )
+    gh_calls = []
+    _setup_protected_diff_run(monkeypatch, tmp_path, "src/app.py\ntests/test_app.py\n", gh_calls)
+
+    assert implement_single_issue(_FAKE_ISSUE) is True
+
+    assert [c for c in gh_calls if "needs-human" in c] == []
+    assert [c for c in gh_calls if c[1:3] == ["pr", "comment"]] == []
+    entry = json.loads(_history_path(tmp_path).read_text().strip())
+    assert entry["auto_merge"]["decision"] == "skipped-disabled"
+
+
 # --- wait_for_ci tests ---
 
 
@@ -5448,6 +5566,30 @@ def test_try_auto_merge_gates_from_ctx_history_implementations_only(monkeypatch,
     # 1 of 2 implementations succeeded first try; counting the triage rows would inflate it.
     assert gates == {"success_rate": 0.5, "edit_rate": 0.5, "merged_clean_count": 1}
     assert ready_args == [(0.5, 0.5, 1)]
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [(["api/", "worker/"], ["api/", "worker/"]), ([], None)],
+)
+def test_try_auto_merge_passes_module_prefixes(monkeypatch, tmp_path, configured, expected):
+    """try_auto_merge passes configured module_prefixes, or None to auto-detect when empty."""
+    monkeypatch.setattr(
+        implement_issue, "cfg", _test_cfg(auto_merge=True, module_prefixes=configured)
+    )
+    monkeypatch.setattr("autoloop.eval.load_run_history", lambda ctx: [])
+    monkeypatch.setattr("autoloop.eval.fetch_pr_data", lambda repo: [])
+    monkeypatch.setattr("autoloop.eval.enrich_pr_data_with_runs", lambda pd, r: pd)
+    seen = []
+    monkeypatch.setattr(
+        "autoloop.eval.compute_snapshot",
+        lambda r, pd, **kw: seen.append(kw.get("module_prefixes")) or {},
+    )
+    monkeypatch.setattr("autoloop.eval.is_auto_merge_ready", lambda *a, **kw: "No")
+
+    try_auto_merge("branch", 99, ctx=RepoContext.for_data_dir(tmp_path))
+
+    assert seen == [expected]
 
 
 def test_try_auto_merge_resolves_ctx_from_repo_dir(monkeypatch, tmp_path):

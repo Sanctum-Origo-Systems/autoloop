@@ -955,6 +955,30 @@ def check_test_integrity(branch: str, repo_dir: Path | None = None) -> list[str]
     return scan_test_integrity_violations(diff.stdout, cfg.test_integrity_patterns)
 
 
+def find_protected_changes(branch: str, repo_dir: Path | None = None) -> list[str]:
+    """Return the files changed on *branch* (vs main) that fall under ``cfg.protected_paths``."""
+    from autoloop.config import touches_protected_path
+
+    diff = subprocess.run(
+        ["git", "diff", "--name-only", f"main..{branch}"],
+        capture_output=True,
+        text=True,
+        cwd=repo_dir,
+    )
+    changed_files = [f for f in diff.stdout.strip().split("\n") if f]
+    return [f for f in changed_files if touches_protected_path([f], cfg.protected_paths)]
+
+
+def build_protected_changes_comment(files: list[str]) -> str:
+    """Build the PR comment listing protected files the implementation changed."""
+    listing = "\n".join(f"- `{f}`" for f in files)
+    return (
+        "**Protected paths changed:** this PR modifies files under `protected_paths` "
+        "that the issue did not name. A human must review these changes before merge; "
+        f"auto-merge is skipped.\n\n{listing}"
+    )
+
+
 def verify_implementation(
     branch: str, issue_body: str = "", title: str = "", repo_dir: Path | None = None
 ) -> tuple[bool, str]:
@@ -1568,7 +1592,7 @@ def try_auto_merge(
     runs = load_run_history(ctx)
     pr_data = fetch_pr_data(cfg.repo)
     pr_data = enrich_pr_data_with_runs(pr_data, runs)
-    snapshot = compute_snapshot(runs, pr_data)
+    snapshot = compute_snapshot(runs, pr_data, module_prefixes=cfg.module_prefixes or None)
 
     success_rate = snapshot.get("first_attempt_rate", 0)
     edit_rate = snapshot.get("human_edit_rate", 0)
@@ -1894,6 +1918,35 @@ def implement_single_issue(
                     ],
                 )
 
+        protected_changes = find_protected_changes(branch, work_dir)
+        if protected_changes:
+            print(f"  Protected paths changed: {', '.join(protected_changes)}")
+            subprocess.run(
+                [
+                    "gh",
+                    "issue",
+                    "edit",
+                    str(issue["number"]),
+                    "--repo",
+                    cfg.repo,
+                    "--add-label",
+                    "needs-human",
+                ],
+            )
+            if pr_number is not None:
+                subprocess.run(
+                    [
+                        "gh",
+                        "pr",
+                        "comment",
+                        str(pr_number),
+                        "--repo",
+                        cfg.repo,
+                        "--body",
+                        build_protected_changes_comment(protected_changes),
+                    ],
+                )
+
         if auto_fix and pr_number is not None and not approved:
             run_auto_fix_loop(pr_number, issue, cfg, repo_dir)
         elif auto_fix and pr_number is not None and approved:
@@ -1918,6 +1971,8 @@ def implement_single_issue(
 
         if integrity_violations:
             auto_merge_decision, auto_merge_gates = "skipped-integrity", {}
+        elif protected_changes:
+            auto_merge_decision, auto_merge_gates = "skipped-protected", {}
         else:
             auto_merge_decision, auto_merge_gates = try_auto_merge(
                 branch, pr_number, work_dir, ctx=ctx

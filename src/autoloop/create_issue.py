@@ -193,49 +193,65 @@ Rules:
 """
 
 
-def parse_spec_enhancements(spec_path: str) -> list[dict]:
-    """Parse a spec markdown file into task/enhancement sections."""
-    text = Path(spec_path).read_text()
-    enhancements = []
-    current_title = None
-    current_lines = []
+SPEC_TASK_HEADING = re.compile(r"^## (?:Task|Enhancement)\s*\d*[.:]\s*(.+)")
+SPEC_PREAMBLE_LABEL = "text before the first task"
+
+
+def _split_spec(text: str) -> tuple[list[dict], list[dict]]:
+    """Split spec text into task sections and the non-task sections around them.
+
+    Any `## ` heading that isn't a task heading ends the current task. `###` and
+    deeper headings stay in the task. Lines inside fenced code blocks are never
+    treated as headings.
+    """
+    tasks: list[dict] = []
+    others: list[dict] = [{"heading": SPEC_PREAMBLE_LABEL, "lines": []}]
+    current = others[0]
+    in_fence = False
 
     for line in text.split("\n"):
-        match = re.match(r"^## (?:Task|Enhancement)\s*\d*[.:]\s*(.+)", line)
-        if match:
-            if "## Enhancement" in line:
-                print("Note: '## Enhancement' is supported but '## Task' is preferred.")
-            if current_title is not None:
-                enhancements.append(
-                    {
-                        "title": current_title,
-                        "body": "\n".join(current_lines).strip(),
-                    }
-                )
-            current_title = match.group(1).strip()
-            current_lines = []
-        elif current_title is not None:
-            if re.match(r"^## ((?:Task|Enhancement)\s*\d+|Summary|Critical Files)", line):
-                enhancements.append(
-                    {
-                        "title": current_title,
-                        "body": "\n".join(current_lines).strip(),
-                    }
-                )
-                current_title = None
-                current_lines = []
+        if re.match(r"^\s*(```|~~~)", line):
+            in_fence = not in_fence
+        elif not in_fence and line.startswith("## "):
+            match = SPEC_TASK_HEADING.match(line)
+            if match:
+                current = {
+                    "title": match.group(1).strip(),
+                    "lines": [],
+                    "legacy": line.startswith("## Enhancement"),
+                }
+                tasks.append(current)
             else:
-                current_lines.append(line)
+                current = {"heading": line.strip(), "lines": []}
+                others.append(current)
+            continue
+        current["lines"].append(line)
 
-    if current_title is not None:
-        enhancements.append(
-            {
-                "title": current_title,
-                "body": "\n".join(current_lines).strip(),
-            }
-        )
+    return tasks, others
 
-    return enhancements
+
+def _has_spec_content(lines: list[str]) -> bool:
+    """True if lines hold text beyond blanks, `# ` titles, and horizontal rules."""
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("# ") or re.fullmatch(r"[-*_]{3,}", stripped):
+            continue
+        return True
+    return False
+
+
+def parse_spec_enhancements(spec_path: str) -> list[dict]:
+    """Parse a spec markdown file into task/enhancement sections."""
+    tasks, _ = _split_spec(Path(spec_path).read_text())
+    if any(task["legacy"] for task in tasks):
+        print("Note: '## Enhancement' is supported but '## Task' is preferred.")
+    return [{"title": task["title"], "body": "\n".join(task["lines"]).strip()} for task in tasks]
+
+
+def find_text_outside_tasks(spec_path: str) -> list[str]:
+    """List the spec sections with non-blank text that no task issue will include."""
+    _, others = _split_spec(Path(spec_path).read_text())
+    return [section["heading"] for section in others if _has_spec_content(section["lines"])]
 
 
 def spec_to_issue_fields(enhancement: dict, cfg: AutoLoopConfig) -> dict | None:
@@ -307,6 +323,13 @@ def create_issues_from_spec(
         return
 
     print(f"Found {len(enhancements)} task(s) in {spec_path}\n")
+
+    outside = find_text_outside_tasks(spec_path)
+    if outside:
+        print(
+            "Note: Text outside `## Task` sections is not copied into issues: "
+            f"{', '.join(outside)}. Link tasks to shared context instead of relying on it.\n"
+        )
 
     for i, enh in enumerate(enhancements, 1):
         if i in skip:
