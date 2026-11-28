@@ -76,6 +76,12 @@ def _stub_prune(monkeypatch):
     monkeypatch.setattr(implement_issue, "prune", lambda ctx, cfg: PruneResult())
 
 
+@pytest.fixture(autouse=True)
+def _stub_refresh_review_queue(monkeypatch):
+    """Keep main() and implement_targeted_issue() from calling gh to rebuild the queue."""
+    monkeypatch.setattr(implement_issue, "refresh_review_queue", lambda cfg: None)
+
+
 def _test_cfg(**overrides):
     """Build an AutoLoopConfig with test defaults."""
     defaults = {
@@ -6376,7 +6382,6 @@ def test_main_isolation_off_detects_session_before_branch_switch(monkeypatch, tm
     monkeypatch.setattr(implement_issue, "get_top_ready_issue", lambda: _FAKE_ISSUE)
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
     monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
-    monkeypatch.setattr(implement_issue, "post_batch_summary", lambda prs, cfg: None)
 
     implement_issue.main(ctx=ctx)
 
@@ -6593,164 +6598,6 @@ def test_implement_single_issue_does_not_append_on_failure(monkeypatch, tmp_path
     assert created_prs == []
 
 
-# --- review_queue integration: main() calls post_batch_summary ---
-
-
-def test_main_calls_post_batch_summary_after_batch_with_prs(monkeypatch, tmp_path):
-    """post_batch_summary is called with all PRs created during the batch run."""
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(implement_issue, "load_config", lambda path=None: _test_cfg())
-    monkeypatch.setattr(
-        implement_issue, "detect_active_claude_session", lambda project_dir=None: False
-    )
-    monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
-    monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
-
-    issues = [
-        {"number": 10, "title": "First feature", "body": "", "labels": []},
-        {"number": 11, "title": "Second feature", "body": "", "labels": []},
-    ]
-    call_idx = [0]
-
-    def fake_get_top():
-        if call_idx[0] < len(issues):
-            issue = issues[call_idx[0]]
-            call_idx[0] += 1
-            return issue
-        return None
-
-    monkeypatch.setattr(implement_issue, "get_top_ready_issue", fake_get_top)
-
-    def fake_implement_single(
-        issue, require_design=False, auto_fix=False, ctx=None, created_prs=None
-    ):
-        if created_prs is not None:
-            created_prs.append(
-                {
-                    "pr_number": 100 + issue["number"],
-                    "issue_number": issue["number"],
-                    "title": issue["title"],
-                }
-            )
-        return True
-
-    monkeypatch.setattr(implement_issue, "implement_single_issue", fake_implement_single)
-
-    post_calls = []
-    monkeypatch.setattr(
-        implement_issue, "post_batch_summary", lambda prs, cfg: post_calls.append(prs)
-    )
-
-    implement_issue.cfg = None
-    implement_issue.main(max_issues=5)
-
-    assert len(post_calls) == 1
-    assert len(post_calls[0]) == 2
-    assert post_calls[0][0] == {
-        "pr_number": 110,
-        "issue_number": 10,
-        "title": "First feature",
-    }
-    assert post_calls[0][1] == {
-        "pr_number": 111,
-        "issue_number": 11,
-        "title": "Second feature",
-    }
-
-
-def test_main_skips_post_batch_summary_when_zero_prs(monkeypatch, tmp_path):
-    """post_batch_summary is not called when no PRs were created."""
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(implement_issue, "load_config", lambda path=None: _test_cfg())
-    monkeypatch.setattr(
-        implement_issue, "detect_active_claude_session", lambda project_dir=None: False
-    )
-    monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
-    monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
-
-    issues = [{"number": 10, "title": "Failing issue", "body": "", "labels": []}]
-    call_idx = [0]
-
-    def fake_get_top():
-        if call_idx[0] < len(issues):
-            issue = issues[call_idx[0]]
-            call_idx[0] += 1
-            return issue
-        return None
-
-    monkeypatch.setattr(implement_issue, "get_top_ready_issue", fake_get_top)
-
-    def fake_implement_single(
-        issue, require_design=False, auto_fix=False, ctx=None, created_prs=None
-    ):
-        return False
-
-    monkeypatch.setattr(implement_issue, "implement_single_issue", fake_implement_single)
-
-    post_calls = []
-    monkeypatch.setattr(
-        implement_issue, "post_batch_summary", lambda prs, cfg: post_calls.append(prs)
-    )
-
-    implement_issue.cfg = None
-    implement_issue.main(max_issues=5)
-
-    assert post_calls == []
-
-
-def test_main_post_batch_summary_contains_only_current_batch_prs(monkeypatch, tmp_path):
-    """The PR list contains only PRs from the current batch, not prior runs."""
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(implement_issue, "load_config", lambda path=None: _test_cfg())
-    monkeypatch.setattr(
-        implement_issue, "detect_active_claude_session", lambda project_dir=None: False
-    )
-    monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
-    monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
-
-    issues = [
-        {"number": 20, "title": "Only this one", "body": "", "labels": []},
-    ]
-    call_idx = [0]
-
-    def fake_get_top():
-        if call_idx[0] < len(issues):
-            issue = issues[call_idx[0]]
-            call_idx[0] += 1
-            return issue
-        return None
-
-    monkeypatch.setattr(implement_issue, "get_top_ready_issue", fake_get_top)
-
-    def fake_implement_single(
-        issue, require_design=False, auto_fix=False, ctx=None, created_prs=None
-    ):
-        if created_prs is not None:
-            created_prs.append(
-                {
-                    "pr_number": 200,
-                    "issue_number": 20,
-                    "title": "Only this one",
-                }
-            )
-        return True
-
-    monkeypatch.setattr(implement_issue, "implement_single_issue", fake_implement_single)
-
-    post_calls = []
-    monkeypatch.setattr(
-        implement_issue, "post_batch_summary", lambda prs, cfg: post_calls.append(list(prs))
-    )
-
-    implement_issue.cfg = None
-    implement_issue.main(max_issues=5)
-
-    assert len(post_calls) == 1
-    assert len(post_calls[0]) == 1
-    assert post_calls[0][0]["pr_number"] == 200
-    assert post_calls[0][0]["issue_number"] == 20
-
-
 # --- prune at start of implement (#424) ---
 
 
@@ -6762,7 +6609,6 @@ def _patch_main_for_prune(monkeypatch, events, *, isolation="worktree"):
     monkeypatch.setattr(implement_issue, "detect_active_claude_session", lambda d: False)
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
     monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
-    monkeypatch.setattr(implement_issue, "post_batch_summary", lambda prs, cfg: None)
 
     def fake_prune(ctx, cfg):
         events.append("prune")
