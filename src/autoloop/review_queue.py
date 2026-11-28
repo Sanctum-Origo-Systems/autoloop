@@ -6,7 +6,7 @@ import json
 import re
 import subprocess
 
-from autoloop.config import AutoLoopConfig
+from autoloop.config import REVIEW_QUEUE_LABEL, AutoLoopConfig
 
 
 def find_review_queue_issue(cfg: AutoLoopConfig) -> int:
@@ -22,7 +22,7 @@ def find_review_queue_issue(cfg: AutoLoopConfig) -> int:
             "--repo",
             cfg.repo,
             "--label",
-            "review-queue",
+            REVIEW_QUEUE_LABEL,
             "--state",
             "open",
             "--json",
@@ -35,7 +35,7 @@ def find_review_queue_issue(cfg: AutoLoopConfig) -> int:
         raise RuntimeError(f"Failed to list review-queue issues: {result.stderr.strip()}")
     issues = json.loads(result.stdout)
     if not issues:
-        raise RuntimeError("No open issue with label 'review-queue' found")
+        raise RuntimeError(f"No open issue with label '{REVIEW_QUEUE_LABEL}' found")
     return issues[0]["number"]
 
 

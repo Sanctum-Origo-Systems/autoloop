@@ -409,6 +409,31 @@ def test_list_untriaged_issues_filters_by_cfg_triage_labels():
     assert result[0]["number"] == 2
 
 
+def test_list_untriaged_issues_always_skips_review_queue():
+    """Regression #522: the Review Queue issue is skipped even if triage_labels omits it."""
+    cfg = _cfg(triage_labels=["ready", "rejected"])
+    issues = [
+        {
+            "number": 1,
+            "title": "Review Queue",
+            "body": "",
+            "labels": [{"name": "review-queue"}],
+        },
+        {"number": 2, "title": "B", "body": "", "labels": []},
+    ]
+
+    class FakeResult:
+        returncode = 0
+        stdout = json.dumps(issues)
+
+    with patch("autoloop.triage_issues.subprocess.run", return_value=FakeResult()):
+        from autoloop.triage_issues import list_untriaged_issues
+
+        result = list_untriaged_issues(cfg)
+
+    assert [i["number"] for i in result] == [2]
+
+
 def test_reject_issue_uses_cfg_repo():
     cfg = _cfg(repo="acme/widgets")
     calls: list[list[str]] = []

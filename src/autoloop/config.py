@@ -13,6 +13,9 @@ from pathlib import Path
 
 from autoloop.jev import DEFAULT_BANDS, GATE_HIGH, GATE_LOW, JEV_POINTS, band_for
 
+# Label on AutoLoop's pinned Review Queue issue. Triage always skips it.
+REVIEW_QUEUE_LABEL = "review-queue"
+
 
 def __getattr__(name: str):
     if name == "REPO_DIR":
@@ -97,6 +100,7 @@ class AutoLoopConfig:
             "in-progress",
             "in-review",
             "needs-human",
+            REVIEW_QUEUE_LABEL,
         ]
     )
     max_pr_review_rounds: int = 3
