@@ -1,19 +1,28 @@
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 
 import autoloop.review_queue as review_queue
 from autoloop.config import AutoLoopConfig
 from autoloop.review_queue import (
+    build_queue_body,
+    escape_cell,
     fetch_ci_status,
     fetch_gate_flags,
     find_review_queue_issue,
+    format_open_table,
     format_summary,
     order_by_dependencies,
+    parse_closes_number,
     parse_dependency_numbers,
     post_batch_summary,
+    priority_rank,
+    read_section,
+    refresh_review_queue,
+    resolve_mergeable,
 )
 
 
@@ -395,3 +404,364 @@ def test_post_batch_summary_comment_contains_table(monkeypatch):
     assert "| Order | PR | Issue | Title | CI | Gate |" in body
     assert "#5" in body
     assert "#15" in body
+
+
+# --- refresh_review_queue ---
+
+
+def _pr(number, title="Change", body="", draft=False, mergeable="MERGEABLE", labels=()):
+    return {
+        "number": number,
+        "title": title,
+        "body": body,
+        "isDraft": draft,
+        "mergeable": mergeable,
+        "labels": [{"name": n} for n in labels],
+    }
+
+
+class FakeGh:
+    """Dispatch mocked ``gh`` calls for refresh_review_queue tests."""
+
+    def __init__(
+        self,
+        prs,
+        issues=None,
+        states=None,
+        ci=None,
+        mergeable_views=None,
+        rq=99,
+        rq_body="",
+    ):
+        self.prs = prs
+        self.issues = issues or {}
+        self.states = states or {}
+        self.ci = ci or {}
+        self.mergeable_views = mergeable_views or {}
+        self.rq = rq
+        self.rq_body = rq_body
+        self.calls = []
+        self.edits = []
+
+    def __call__(self, cmd, **kw):
+        self.calls.append(cmd)
+        if cmd[1:3] == ["issue", "list"]:
+            return _make_result(stdout=json.dumps([{"number": self.rq}] if self.rq else []))
+        if cmd[1:3] == ["pr", "list"]:
+            return _make_result(stdout=json.dumps(self.prs))
+        if cmd[1:3] == ["pr", "checks"]:
+            bucket = self.ci.get(int(cmd[3]), "pass")
+            return _make_result(stdout=json.dumps([{"bucket": bucket}]))
+        if cmd[1:3] == ["pr", "view"]:
+            values = self.mergeable_views.get(int(cmd[3]), ["UNKNOWN"])
+            value = values.pop(0) if len(values) > 1 else values[0]
+            return _make_result(stdout=json.dumps({"mergeable": value}))
+        if cmd[1:3] == ["issue", "view"]:
+            number = int(cmd[3])
+            if number == self.rq:
+                return _make_result(stdout=json.dumps({"body": self.rq_body}))
+            issue = self.issues.get(number, {})
+            return _make_result(
+                stdout=json.dumps(
+                    {
+                        "body": issue.get("body", ""),
+                        "labels": [{"name": n} for n in issue.get("labels", ())],
+                    }
+                )
+            )
+        if cmd[1] == "api":
+            number = int(cmd[2].rsplit("/", 1)[1])
+            return _make_result(stdout=self.states.get(number, "closed") + "\n")
+        if cmd[1:3] == ["issue", "edit"]:
+            path = cmd[cmd.index("--body-file") + 1]
+            with open(path) as f:
+                self.edits.append({"cmd": cmd, "body": f.read()})
+            return _make_result()
+        raise AssertionError(f"unexpected gh call: {cmd}")
+
+
+def _refresh(monkeypatch, fake):
+    monkeypatch.setattr(review_queue.subprocess, "run", fake)
+    monkeypatch.setattr(review_queue, "_sleep", lambda s: None)
+    refresh_review_queue(_test_cfg())
+    assert fake.edits, "expected a gh issue edit call"
+    return fake.edits[-1]["body"]
+
+
+def _open_rows(body):
+    """Parse the Open table into a list of row dicts in display order."""
+    section = read_section(body, "open")
+    rows = []
+    for line in section.splitlines()[2:]:
+        cells = [c.strip() for c in re.split(r"(?<!\\)\|", line)[1:-1]]
+        rows.append(
+            {
+                "next": cells[0],
+                "pr": int(cells[1].lstrip("#")),
+                "issue": cells[2],
+                "title": cells[3],
+                "state": cells[4],
+                "ci": cells[5],
+                "notes": cells[6],
+            }
+        )
+    return rows
+
+
+def _states(body):
+    return {r["pr"]: r["state"] for r in _open_rows(body)}
+
+
+def _next_prs(body):
+    return [r["pr"] for r in _open_rows(body) if r["next"] == "next"]
+
+
+def test_refresh_edits_review_queue_issue_with_body_file(monkeypatch):
+    fake = FakeGh([_pr(1, body="Closes #10")], rq=77)
+    _refresh(monkeypatch, fake)
+    cmd = fake.edits[0]["cmd"]
+    assert cmd[:4] == ["gh", "issue", "edit", "77"]
+    assert "--body-file" in cmd
+    assert cmd[cmd.index("--repo") + 1] == "acme-corp/widget"
+
+
+def test_refresh_removes_body_tempfile(monkeypatch):
+    import os
+
+    fake = FakeGh([_pr(1)])
+    _refresh(monkeypatch, fake)
+    cmd = fake.edits[0]["cmd"]
+    assert not os.path.exists(cmd[cmd.index("--body-file") + 1])
+
+
+def test_refresh_no_edit_when_no_review_queue_issue(monkeypatch):
+    fake = FakeGh([_pr(1)], rq=None)
+    monkeypatch.setattr(review_queue.subprocess, "run", fake)
+    assert refresh_review_queue(_test_cfg()) is None
+    assert not [c for c in fake.calls if c[1:3] == ["issue", "edit"]]
+
+
+def test_refresh_raises_and_skips_edit_when_pr_list_fails(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        if cmd[1:3] == ["issue", "list"]:
+            return _make_result(stdout=json.dumps([{"number": 99}]))
+        return _make_result(returncode=1, stderr="boom")
+
+    monkeypatch.setattr(review_queue.subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match="Failed to list open PRs"):
+        refresh_review_queue(_test_cfg())
+    assert not [c for c in calls if c[1:3] == ["issue", "edit"]]
+
+
+def test_refresh_does_not_use_batch_summary_helpers(monkeypatch):
+    def boom(*a, **kw):
+        raise AssertionError("must not be called")
+
+    for name in ("post_batch_summary", "order_by_dependencies", "format_summary"):
+        monkeypatch.setattr(review_queue, name, boom)
+    _refresh(monkeypatch, FakeGh([_pr(1)]))
+
+
+def test_refresh_blocked_by_open_pr_then_ready_when_removed(monkeypatch):
+    dependent = _pr(2, body="Closes #20\n\nDepends on: #1")
+    fake = FakeGh([_pr(1, body="Closes #10"), dependent], states={1: "open"})
+    body = _refresh(monkeypatch, fake)
+    assert _states(body)[2] == "blocked"
+    assert "blocked by #1" in _open_rows(body)[1]["notes"]
+
+    fake.prs = [dependent]
+    fake.states = {1: "closed"}
+    body = _refresh(monkeypatch, fake)
+    row = _open_rows(body)[0]
+    assert row["pr"] == 2
+    assert row["state"] == "ready"
+    assert row["next"] == "next"
+
+
+def test_refresh_blocked_by_dependency_in_linked_issue_body(monkeypatch):
+    fake = FakeGh(
+        [_pr(3, body="Closes #30"), _pr(4, body="Closes #40")],
+        issues={30: {"body": "Depends on: #5"}, 40: {"body": "Depends on: #6"}},
+        states={5: "open", 6: "closed"},
+    )
+    body = _refresh(monkeypatch, fake)
+    assert _states(body) == {3: "blocked", 4: "ready"}
+
+
+def test_refresh_needs_update_for_conflict_or_ci_fail(monkeypatch):
+    fake = FakeGh(
+        [
+            _pr(1, draft=True),
+            _pr(2, body="Depends on: #50"),
+            _pr(3, mergeable="CONFLICTING"),
+            _pr(4),
+            _pr(5),
+        ],
+        ci={4: "fail"},
+        states={50: "open"},
+    )
+    body = _refresh(monkeypatch, fake)
+    assert _states(body) == {
+        1: "draft",
+        2: "blocked",
+        3: "needs update",
+        4: "needs update",
+        5: "ready",
+    }
+    assert [r["pr"] for r in _open_rows(body)] == [5, 3, 4, 2, 1]
+
+
+def test_refresh_draft_wins_over_conflict_and_dependency(monkeypatch):
+    fake = FakeGh(
+        [
+            _pr(1, draft=True, mergeable="CONFLICTING", body="Depends on: #50"),
+            _pr(2, mergeable="CONFLICTING"),
+            _pr(3, body="Depends on: #50"),
+            _pr(4),
+        ],
+        states={50: "open"},
+    )
+    body = _refresh(monkeypatch, fake)
+    assert _states(body)[1] == "draft"
+    assert [r["pr"] for r in _open_rows(body)] == [4, 2, 3, 1]
+
+
+def test_refresh_orders_by_priority_then_number(monkeypatch):
+    fake = FakeGh(
+        [
+            _pr(1),
+            _pr(2, labels=["p2"]),
+            _pr(3, labels=["p1"]),
+            _pr(4, labels=["p0"]),
+            _pr(5, labels=["p1"]),
+            _pr(6, body="Closes #60"),
+        ],
+        issues={60: {"labels": ["p0"]}},
+    )
+    body = _refresh(monkeypatch, fake)
+    assert [r["pr"] for r in _open_rows(body)] == [4, 6, 3, 5, 2, 1]
+
+
+def test_refresh_next_skips_pending_ci(monkeypatch):
+    fake = FakeGh([_pr(1), _pr(2), _pr(3)], ci={1: "pending"})
+    body = _refresh(monkeypatch, fake)
+    assert _next_prs(body) == [2]
+
+
+def test_refresh_no_next_when_none_qualifies(monkeypatch):
+    fake = FakeGh([_pr(1), _pr(2, draft=True), _pr(3, mergeable="CONFLICTING")], ci={1: "pending"})
+    body = _refresh(monkeypatch, fake)
+    assert _next_prs(body) == []
+    assert "next" not in [r["next"] for r in _open_rows(body)]
+
+
+def test_refresh_row_links_issue_and_includes_all_authors(monkeypatch):
+    # gh pr list is called without --author, so PRs from anyone are listed.
+    fake = FakeGh([_pr(7, body="Closes #70"), _pr(8, body="Unrelated change by a contributor")])
+    body = _refresh(monkeypatch, fake)
+    rows = {r["pr"]: r for r in _open_rows(body)}
+    assert rows[7]["issue"] == "#70"
+    assert rows[8]["issue"] == "-"
+    pr_list = next(c for c in fake.calls if c[1:3] == ["pr", "list"])
+    assert "--author" not in pr_list
+    assert "--state" in pr_list and pr_list[pr_list.index("--state") + 1] == "open"
+
+
+def test_refresh_mergeable_unknown_resolves_on_retry(monkeypatch):
+    fake = FakeGh(
+        [_pr(1, mergeable="UNKNOWN"), _pr(2, mergeable="UNKNOWN")],
+        mergeable_views={1: ["UNKNOWN", "CONFLICTING"], 2: ["UNKNOWN", "MERGEABLE"]},
+    )
+    body = _refresh(monkeypatch, fake)
+    rows = {r["pr"]: r for r in _open_rows(body)}
+    assert rows[1]["state"] == "needs update"
+    assert rows[2]["state"] == "ready"
+    assert "merge status pending" not in rows[2]["notes"]
+
+
+def test_refresh_mergeable_stays_unknown_is_ready_with_note(monkeypatch):
+    sleeps = []
+    fake = FakeGh([_pr(1, mergeable="UNKNOWN")], mergeable_views={1: ["UNKNOWN"]})
+    monkeypatch.setattr(review_queue.subprocess, "run", fake)
+    monkeypatch.setattr(review_queue, "_sleep", sleeps.append)
+    refresh_review_queue(_test_cfg())
+    row = _open_rows(fake.edits[0]["body"])[0]
+    assert row["state"] == "ready"
+    assert "merge status pending" in row["notes"]
+    assert len(sleeps) == review_queue._MERGEABLE_RETRIES
+    assert len([c for c in fake.calls if c[1:3] == ["pr", "view"]]) == len(sleeps)
+
+
+def test_refresh_escapes_title(monkeypatch):
+    fake = FakeGh([_pr(1, title="fix a | b\nsecond line cc @someuser")])
+    body = _refresh(monkeypatch, fake)
+    row = _open_rows(body)[0]
+    assert "\\|" in row["title"]
+    assert "@someuser" not in body
+    assert len(read_section(body, "open").splitlines()) == 3  # header + separator + 1 row
+    assert row["state"] == "ready"
+
+
+def test_refresh_preserves_done_section(monkeypatch):
+    previous = build_queue_body("old table", "- #3 merged")
+    fake = FakeGh([_pr(1)], rq_body=previous)
+    body = _refresh(monkeypatch, fake)
+    assert read_section(body, "done") == "- #3 merged"
+    assert "old table" not in body
+
+
+def test_refresh_empty_open_list(monkeypatch):
+    body = _refresh(monkeypatch, FakeGh([]))
+    assert read_section(body, "open") == "_No open PRs._"
+
+
+# --- helpers for refresh_review_queue ---
+
+
+def test_parse_closes_number():
+    assert parse_closes_number("Summary\n\nCloses #12") == 12
+    assert parse_closes_number("fixes #3 and closes #4") == 3
+    assert parse_closes_number("No link") is None
+
+
+def test_escape_cell():
+    assert escape_cell("a|b\r\nc @x") == "a\\|b c @​x"
+
+
+def test_priority_rank_prefers_pr_labels_then_issue():
+    assert priority_rank({"p1"}, {"p0"}) == 1
+    assert priority_rank(set(), {"p2"}) == 2
+    assert priority_rank({"bug"}, set()) == 3
+
+
+def test_resolve_mergeable_no_retry_when_known(monkeypatch):
+    def fail(*a, **kw):
+        raise AssertionError("should not re-query")
+
+    monkeypatch.setattr(review_queue.subprocess, "run", fail)
+    monkeypatch.setattr(review_queue, "_sleep", fail)
+    assert resolve_mergeable(1, "MERGEABLE", _test_cfg()) == "MERGEABLE"
+
+
+def test_format_open_table_marks_next():
+    rows = [
+        {
+            "pr_number": 1,
+            "issue_number": 10,
+            "title": "A",
+            "state": "ready",
+            "ci": "pass",
+            "priority": 3,
+            "notes": [],
+            "next": True,
+        }
+    ]
+    assert "| next | #1 | #10 | A | ready | pass |  |" in format_open_table(rows)
+
+
+def test_read_section_missing_returns_none():
+    assert read_section("plain body", "done") is None
+    assert read_section(build_queue_body("t", "d"), "open") == "t"
