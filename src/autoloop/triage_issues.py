@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from autoloop.config import AutoLoopConfig, RepoContext
 
 from autoloop.claude_runner import ClaudeResult, run_claude
+from autoloop.config import REVIEW_QUEUE_LABEL
 from autoloop.create_issue import build_issue_body
 from autoloop.implement_issue import detect_issue_type
 from autoloop.review_queue import parse_dependency_numbers
@@ -714,8 +715,11 @@ def fetch_single_issue(issue_number: int, cfg: AutoLoopConfig) -> dict | None:
 
 
 def list_untriaged_issues(cfg: AutoLoopConfig) -> list[dict]:
-    """Fetch open issues that have no triage labels yet."""
-    triage_labels = set(cfg.triage_labels)
+    """Fetch open issues that have no triage labels yet.
+
+    Always skips the Review Queue issue, even if ``cfg.triage_labels`` omits its label.
+    """
+    triage_labels = set(cfg.triage_labels) | {REVIEW_QUEUE_LABEL}
     result = subprocess.run(
         [
             "gh",

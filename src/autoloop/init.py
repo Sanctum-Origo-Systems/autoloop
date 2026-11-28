@@ -75,6 +75,7 @@ triage_labels = [
     "in-progress",
     "in-review",
     "needs-human",
+    "review-queue",
 ]
 
 # Jev evaluation — lightweight quality gate for triage and merge decisions.

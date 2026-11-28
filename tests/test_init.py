@@ -331,6 +331,17 @@ class TestWriteTomlTestPattern:
         assert cfg.test_pattern == "src/**/*.test.*"
 
 
+class TestWriteTomlTriageLabels:
+    @patch("autoloop.init.create_labels")
+    def test_triage_labels_include_review_queue(self, mock_labels, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        run_init("acme/widgets", verify_cmd="uv run pytest", skip_labels=True)
+        from autoloop.config import load_config
+
+        cfg = load_config(tmp_path / "autoloop.toml")
+        assert "review-queue" in cfg.triage_labels
+
+
 class TestWriteTomlJevBlock:
     @patch("autoloop.init.create_labels")
     def test_jev_block_present(self, mock_labels, tmp_path, monkeypatch):
