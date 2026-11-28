@@ -553,6 +553,7 @@ Example workflow from your phone:
 | `auto_merge_promotion_level` | `"module"` | `"repo"` evaluates aggregate repo metrics; `"module"` evaluates each module independently |
 | `eval_min_n` | `20` | Minimum sample size for a headline rate in EVAL.md. Rates with fewer samples render as "insufficient data" instead of a percentage |
 | `eval.fixup_window_days` | `7` | Days after an autoloop PR merges during which a later non-autoloop PR touching the same files counts as a fixup (release and eval-report PRs never count) |
+| `eval.module_prefixes` | `[]` | Path prefixes that define modules for per-module metrics and module-level auto-merge promotion (e.g. `["api/", "worker/", "shared/"]`). The longest matching prefix wins and files matching none count as `other`. Empty auto-detects `src/<app>/` modules |
 | `eval.fixup_ignore` | `[]` | Glob patterns for shared files (e.g. `["docs/**", "*.lock"]`) that never count as fixups, in addition to the built-in ignore list |
 | `max_pr_review_rounds` | `3` | Max rounds of automated PR review+fix when `--auto-fix` is used |
 | `implement.isolation` | `"off"` | `"off"` — run in project directory (default). `"worktree"` — run in a persistent git worktree. See [Worktree Isolation](#worktree-isolation) |
