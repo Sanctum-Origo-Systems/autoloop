@@ -1,25 +1,25 @@
 # EVAL Report
 
-Report date 2026-11-10: data as of 2026-11-09T19:09:41.216782+00:00, 430 history rows.
+Report date 2026-11-28: data as of 2026-11-27T19:04:00.983929+00:00, 438 history rows.
 
 ## Overall
 
 | Metric | Value | Pending |
 |--------|-------|---------|
-| Total PRs | 185 | — |
-| First-attempt success | 75% (n=220 implement runs) | pending: 2 |
-| Avg cost/run | $1.85 (n=222 implement runs) | included |
-| Avg review cost/run | $0.23 (n=15 implement runs) | included |
-| Human edit rate | 16% (n=183 merged PRs; edited by a human PR within 7 days) | pending: 2 |
+| Total PRs | 190 | — |
+| First-attempt success | 76% (n=227 implement runs) | pending: 0 |
+| Avg cost/run | $1.84 (n=227 implement runs) | included |
+| Avg review cost/run | $0.24 (n=20 implement runs) | included |
+| Human edit rate | 15% (n=190 merged PRs; edited by a human PR within 7 days) | pending: 0 |
 
 ## Charts
 
 ```mermaid
 xychart-beta horizontal
     title "Weekly First-Attempt Success Rate (2026)"
-    x-axis ["7/19 (n=2)", "7/26 (n=9)", "8/2 (n=19)", "8/9 (n=3)", "9/6 (n=15)", "9/13 (n=14)", "9/20 (n=70)", "9/27 (n=32)", "10/4 (n=70)", "10/11 (n=2)", "11/8 (n=1)", "11/10 (n=8)"]
+    x-axis ["7/19 (n=2)", "7/26 (n=9)", "8/2 (n=19)", "8/9 (n=3)", "9/6 (n=15)", "9/13 (n=14)", "9/20 (n=70)", "9/27 (n=32)", "10/4 (n=70)", "10/11 (n=2)", "11/8 (n=1)", "11/15 (n=12)", "11/28 (n=1)"]
     y-axis "Success %" 0 --> 100
-    bar [100, 78, 68, 100, 60, 86, 57, 78, 81, 50, 100, 100]
+    bar [100, 78, 68, 100, 60, 86, 57, 78, 81, 50, 100, 100, 100]
 ```
 
 > bars before 10/26 count triage runs as implementations (#400)
@@ -27,9 +27,9 @@ xychart-beta horizontal
 ```mermaid
 xychart-beta horizontal
     title "Weekly Avg Cost/PR (2026)"
-    x-axis ["7/19 (n=2)", "7/26 (n=9)", "8/2 (n=19)", "8/9 (n=3)", "9/6 (n=15)", "9/13 (n=14)", "9/20 (n=70)", "9/27 (n=32)", "10/4 (n=70)", "10/11 (n=2)", "11/8 (n=1)", "11/10 (n=8)"]
+    x-axis ["7/19 (n=2)", "7/26 (n=9)", "8/2 (n=19)", "8/9 (n=3)", "9/6 (n=15)", "9/13 (n=14)", "9/20 (n=70)", "9/27 (n=32)", "10/4 (n=70)", "10/11 (n=2)", "11/8 (n=1)", "11/15 (n=12)", "11/28 (n=1)"]
     y-axis "Cost ($)" 0 --> 3
-    bar [0.61, 0.55, 0.81, 0.28, 0.97, 1.04, 2.00, 1.04, 1.60, 0.26, 1.88, 1.05]
+    bar [0.61, 0.55, 0.81, 0.28, 0.97, 1.04, 2.00, 1.04, 1.60, 0.26, 1.88, 1.32, 0.00]
 ```
 
 > bars before 10/26 count triage runs as implementations (#400)
@@ -37,16 +37,16 @@ xychart-beta horizontal
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': {'pie1': '#4CAF50', 'pie2': '#2196F3', 'pie3': '#FF9800', 'pie4': '#E91E63', 'pie5': '#9C27B0', 'pie6': '#00BCD4', 'pieTitleTextColor': '#aaa', 'pieLegendTextColor': '#aaa', 'pieSectionTextColor': '#fff'}}}%%
 pie title Attempt Distribution by Module
-    "other (73%, 12 impl)" : 12
-    "src/autoloop/ (88%, 185 impl)" : 185
+    "other (75%, 13 impl)" : 13
+    "src/autoloop/ (88%, 189 impl)" : 189
 ```
 
 ## Per-Module Breakdown
 
 | Module | Success | Avg Cost | Impl | Auto-merge ready? |
 |--------|---------|----------|------|--------------------|
-| other | insufficient data (n=11 runs) | insufficient data (n=11 runs) | 12 | No |
-| src/autoloop/ | 88% (n=172 runs) | $1.75 (n=174 runs) | 185 | No |
+| other | insufficient data (n=12 runs) | insufficient data (n=12 runs) | 13 | No |
+| src/autoloop/ | 88% (n=178 runs) | $1.75 (n=178 runs) | 189 | No |
 
 ## Trend
 
@@ -109,6 +109,24 @@ pie title Attempt Distribution by Module
 | 2026-11-08 | 0 | — | — | — |
 | 2026-11-09 | 4 | 100% | $1.34 | 0% |
 | 2026-11-10 | 4 | 100% | $0.76 | 0% |
+| 2026-11-11 | 2 | 100% | $1.85 | 0% |
+| 2026-11-12 | 2 | 100% | $1.85 | 0% |
+| 2026-11-13 | 0 | — | — | — |
+| 2026-11-14 | 0 | — | — | — |
+| 2026-11-15 | 0 | — | — | — |
+| 2026-11-16 | 0 | — | — | — |
+| 2026-11-17 | 0 | — | — | — |
+| 2026-11-18 | 0 | — | — | — |
+| 2026-11-19 | 0 | — | — | — |
+| 2026-11-20 | 0 | — | — | — |
+| 2026-11-21 | 0 | — | — | — |
+| 2026-11-22 | 0 | — | — | — |
+| 2026-11-23 | 0 | — | — | — |
+| 2026-11-24 | 0 | — | — | — |
+| 2026-11-25 | 0 | — | — | — |
+| 2026-11-26 | 0 | — | — | — |
+| 2026-11-27 | 0 | — | — | — |
+| 2026-11-28 | 1 | 100% | $0.00 | 0% |
 
 > Baseline break at 2026-10-26: earlier snapshots counted triage runs as implementations (#400), so their first-attempt and cost values are not comparable with later rows.
 
