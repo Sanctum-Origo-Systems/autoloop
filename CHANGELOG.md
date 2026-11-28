@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.21.0
+
+The Review Queue issue is now one list that AutoLoop keeps current, replacing the summary comment it used to post after batch runs only. Its body is rebuilt from live PR state. **Open** shows every open PR as next, ready, needs update (conflict or failing CI), blocked (an unmerged `Depends on:`) or draft, with notes on PRs that change the same files. **Done** shows the 10 most recently closed PRs. It's rebuilt after every implement run, including `--issue N`, by a new `review-queue` job in the cleanup workflow whenever a PR changes, and on demand with `autoloop review-queue`. Triage now always skips the Review Queue issue. Jev bands can be set per decision point and probability, and JEV.md uses them. It also adds a second auto-merge calibration yardstick from final outcomes and 7-day human edits.
+
+### Review Queue
+- fix: triage always skips the `review-queue` issue, and `review-queue` is in the default `triage_labels` (#522) ($0.69)
+- feat: build the Open table from live PR state, with states, priority ordering and the next marker (#529) ($1.23)
+- feat: file-overlap notes, and a Done table of the 10 most recently closed PRs, read from GitHub on every refresh (#530) ($0.88)
+- refactor: refresh the review queue after batch and `--issue` runs, and remove the old batch summary comment (#528) ($1.89)
+- feat: `autoloop review-queue` command, and a `review-queue` job in the cleanup workflow that `init` writes (#526) ($1.36)
+
+### Triage
+- fix: decomposition carries the parent's bare `Depends on: #N` lines into its sub-issues (#499) ($0.68)
+
+### Jev
+- feat: per-point, per-probability Jev band config and lookup (#493) ($1.38)
+- feat: store the applied band in shadow records, and show differing bands in JEV.md (#494) ($2.82)
+- fix: `backfill_jev.py` triage mode uses the data-dir log and the current repo, and skips issues it already backfilled (#506) ($1.04)
+
+### Jev Report
+- feat: auto-merge calibration against final outcome and the 7-day human-edit signal (#496) ($2.33)
+- fix: JEV.md action zones and Band line use per-probability bands (#505) ($1.50)
+- feat: `jev-report --pr` closes older open report PRs as superseded (#513) ($0.90)
+
+### Docs
+- docs: README install examples point at v0.21.0. A new "The Review Queue issue" section explains states, ordering, notes, Done and when the body is rebuilt. Upgrade notes cover adding the `review-queue` job to an existing cleanup workflow.
+
+Total: 12 PRs, $16.70
+
 ## v0.20.0
 
 Jev auto-merge shadow decisions are logged again. From 2026-10-03 on, decisions made in an implement worktree were written to a repo-local file and lost. They now go to the main data dir, and a new backfill mode rebuilds the missing records from GitHub. JEV.md puts its charts first and shows `n` on every rate. It uses the configured Jev band for its action zones, and a new Calibration section gives per-bin agreement, suggested band edges and an "always pick the usual verdict" baseline. EVAL.md also puts its charts first.
