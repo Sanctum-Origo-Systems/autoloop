@@ -9,6 +9,7 @@ import pytest
 
 from autoloop.claude_runner import ClaudeResult
 from autoloop.triage_issues import (
+    REWRITE_PROMPT,
     SUB_ISSUE_PROMPT,
     _extract_dependency_notes,
     _extract_files_from_body,
@@ -299,6 +300,15 @@ def test_build_triage_prompt_uses_verify_cmd():
     prompt = build_triage_prompt(cfg)
     assert "make test" in prompt
     assert "uv run pytest" not in prompt
+
+
+def test_build_triage_prompt_lists_chore_and_docs_types():
+    prompt = build_triage_prompt(_cfg())
+    assert "Type (bug/feature/refactor/chore/docs)" in prompt
+
+
+def test_rewrite_prompt_lists_chore_and_docs_types():
+    assert "Type (bug/feature/refactor/chore/docs)" in REWRITE_PROMPT
 
 
 def test_build_triage_prompt_uses_lint_command():

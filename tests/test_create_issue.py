@@ -10,11 +10,13 @@ import pytest
 from autoloop.config import RepoContext
 from autoloop.create_issue import (
     DEFAULT_ACCEPTANCE,
+    VALID_TYPES,
     build_issue,
     build_issue_body,
     create_issues_from_spec,
     extract_files_from_spec,
     extract_problem_from_spec,
+    extract_type_from_spec,
     fetch_issue,
     find_text_outside_tasks,
     get_rejection_reason,
@@ -401,6 +403,86 @@ def test_create_issues_from_spec_no_note_when_all_text_in_tasks(tmp_path, monkey
     monkeypatch.setattr("shutil.which", lambda cmd: None)
     create_issues_from_spec(ctx, str(spec_file), skip=[], cfg=_cfg(), dry_run=True)
     assert "Text outside" not in capsys.readouterr().out
+
+
+TYPED_SPEC = """\
+## Task 1: Write the Makefile
+
+**Type:** chore
+
+**Problem:** No shortcut for dev commands.
+
+## Task 2: Add the widget endpoint
+
+**Problem:** No widget endpoint.
+"""
+
+
+def test_create_issues_from_spec_honors_task_type(tmp_path, monkeypatch, capsys, ctx):
+    spec_file = tmp_path / "spec.md"
+    spec_file.write_text(TYPED_SPEC)
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+    create_issues_from_spec(ctx, str(spec_file), skip=[], cfg=_cfg(), dry_run=True)
+    out = capsys.readouterr().out
+    task1, task2 = out.split("--- Task 2:")
+    assert "## Type\nchore" in task1
+    assert "## Type\nfeature" in task2
+
+
+def test_create_issues_from_spec_chore_body_detected_as_chore(tmp_path, monkeypatch, ctx):
+    from autoloop.implement_issue import detect_issue_type
+
+    spec_file = tmp_path / "spec.md"
+    spec_file.write_text(TYPED_SPEC)
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+    bodies: list[str] = []
+
+    def fake_run(cmd, **_kwargs):
+        if cmd[:3] == ["gh", "issue", "create"]:
+            bodies.append(cmd[cmd.index("--body") + 1])
+        return SimpleNamespace(returncode=0, stdout="https://github.com/o/r/issues/1", stderr="")
+
+    with patch("autoloop.create_issue.subprocess.run", side_effect=fake_run):
+        create_issues_from_spec(ctx, str(spec_file), skip=[], cfg=_cfg())
+
+    assert detect_issue_type(bodies[0], "Write the Makefile") == "chore"
+    assert detect_issue_type(bodies[1], "Add the widget endpoint") == "feat"
+
+
+def test_create_issues_from_spec_unknown_type_falls_back_to_feature(
+    tmp_path, monkeypatch, capsys, ctx
+):
+    spec_file = tmp_path / "spec.md"
+    spec_file.write_text("## Task 1: Thing\n\n**Type:** epic\n\n**Problem:** Missing thing.\n")
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+    create_issues_from_spec(ctx, str(spec_file), skip=[], cfg=_cfg(), dry_run=True)
+    out = capsys.readouterr().out
+    assert "## Type\nfeature" in out
+    assert "unknown Type 'epic', using 'feature'" in out
+
+
+@pytest.mark.parametrize("issue_type", ["chore", "docs"])
+def test_valid_types_include_chore_and_docs(issue_type):
+    assert issue_type in VALID_TYPES
+
+
+# --- Pure function tests: extract_type_from_spec ---
+
+
+def test_extract_type_from_spec_lowercases_value():
+    assert extract_type_from_spec("**Problem:** x\n\n**Type:** Docs\n") == "docs"
+
+
+def test_extract_type_from_spec_accepts_backticks():
+    assert extract_type_from_spec("**Type:** `refactor`") == "refactor"
+
+
+def test_extract_type_from_spec_missing_returns_none():
+    assert extract_type_from_spec("**Problem:** x\n") is None
+
+
+def test_extract_type_from_spec_empty_line_returns_none():
+    assert extract_type_from_spec("**Type:**\n\n**Problem:** x\n") is None
 
 
 # --- Pure function tests: extract_files_from_spec ---

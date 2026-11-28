@@ -40,7 +40,7 @@ them as ground truth about the codebase:
 
 TEMPLATE REQUIREMENTS — reject if missing:
 - Summary (one clear sentence)
-- Type (bug/feature/refactor)
+- Type (bug/feature/refactor/chore/docs)
 - Expected Behavior (specific and testable)
 - Acceptance Criteria (at least one checkbox item)
 
@@ -165,7 +165,7 @@ CURRENT ISSUE BODY:
 
 The rewritten body MUST satisfy every template requirement:
 - Summary (one clear sentence)
-- Type (bug/feature/refactor)
+- Type (bug/feature/refactor/chore/docs)
 - Expected Behavior (specific and testable — describe observable output)
 - Acceptance Criteria (at least one checkbox item, each verifiable)
 
