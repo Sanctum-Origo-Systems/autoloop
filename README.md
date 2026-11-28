@@ -163,6 +163,8 @@ cd ~/my-project
 autoloop init --repo owner/repo --reviewer your-github-username --verify-cmd "pytest"
 ```
 
+Run init from the top level of a clone of `owner/repo`. Before it changes anything, init checks that the current directory is the root of a git work tree and that `origin` points at `--repo` (HTTPS or SSH). If either check fails, it prints what it found and exits non-zero. Pass `--force` to skip the checks, for example before the remote exists. `--dry-run` reports the check result and prints the plan.
+
 This creates three files:
 
 | File | Purpose |
