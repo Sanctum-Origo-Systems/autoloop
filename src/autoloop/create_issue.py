@@ -20,7 +20,7 @@ DEFAULT_ACCEPTANCE = [
     "`uv run ruff check && uv run ruff format --check` clean",
 ]
 
-VALID_TYPES = {"bug", "feature", "refactor"}
+VALID_TYPES = {"bug", "feature", "refactor", "chore", "docs"}
 
 
 def prompt_required(label: str) -> str:
@@ -300,6 +300,14 @@ def extract_files_from_spec(body: str) -> list[str]:
     return files
 
 
+def extract_type_from_spec(body: str) -> str | None:
+    """Extract the lowercased **Type:** value from the spec body, or None if absent."""
+    match = re.search(r"\*\*Type:\*\*[ \t]*`?([^`\s]+)", body)
+    if match:
+        return match.group(1).lower()
+    return None
+
+
 def extract_problem_from_spec(body: str) -> str:
     """Extract the **Problem:** text from the spec body."""
     match = re.search(r"\*\*Problem:\*\*\s*(.+?)(?:\n\n|\n\*\*)", body, re.DOTALL)
@@ -340,6 +348,10 @@ def create_issues_from_spec(
 
         files = extract_files_from_spec(enh["body"])
         problem = extract_problem_from_spec(enh["body"])
+        issue_type = extract_type_from_spec(enh["body"]) or "feature"
+        if issue_type not in VALID_TYPES:
+            print(f"    Note: unknown Type '{issue_type}', using 'feature'.")
+            issue_type = "feature"
 
         print("    Generating structured fields via Claude...")
         fields = spec_to_issue_fields(enh, cfg)
@@ -360,7 +372,7 @@ def create_issues_from_spec(
 
         body = build_issue_body(
             summary=problem or title,
-            issue_type="feature",
+            issue_type=issue_type,
             files=files_str,
             current_behavior="",
             expected=expected,
@@ -590,7 +602,7 @@ def build_issue(
 
     if issue_type is None:
         while True:
-            issue_type = input("Type (bug / feature / refactor): ").strip().lower()
+            issue_type = input("Type (bug / feature / refactor / chore / docs): ").strip().lower()
             if issue_type in VALID_TYPES:
                 break
             print(f"  Must be one of: {', '.join(sorted(VALID_TYPES))}")

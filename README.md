@@ -404,9 +404,17 @@ Add login and logout endpoints with session management.
 **Problem:** API allows unlimited requests.
 
 **File:** `src/api/middleware.py`
+
+## Task 3: Add a Makefile
+
+**Type:** chore
+
+**Problem:** No shortcut for common dev commands.
 ```
 
 The `**File:**` section is optional. Include it if you know which files need modification. The builder will determine the correct files from the description if omitted.
+
+The `**Type:**` line is optional and sets the issue's `## Type` to `bug`, `feature`, `refactor`, `chore`, or `docs`. Without it, the issue is typed `feature`; an unknown value also falls back to `feature` with a printed note. Use `chore` or `docs` for tasks that don't need tests, so `test_gate_skip_types` exempts them from the test-file and mutation gates.
 
 Each section becomes one issue. Triage then handles decomposition and dependency ordering if any issue is too large.
 
