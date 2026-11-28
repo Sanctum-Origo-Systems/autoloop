@@ -6,7 +6,7 @@ import re
 import pytest
 
 import autoloop.review_queue as review_queue
-from autoloop.config import AutoLoopConfig
+from autoloop.config import AutoLoopConfig, RepoContext
 from autoloop.review_queue import (
     build_queue_body,
     escape_cell,
@@ -16,11 +16,8 @@ from autoloop.review_queue import (
     find_review_queue_issue,
     format_done_table,
     format_open_table,
-    format_summary,
-    order_by_dependencies,
     parse_closes_number,
     parse_dependency_numbers,
-    post_batch_summary,
     priority_rank,
     read_section,
     refresh_review_queue,
@@ -201,213 +198,6 @@ def test_parse_depends_on_list_on_one_line():
     assert parse_dependency_numbers("Depends on: #13, #14, #9, #12") == [13, 14, 9, 12]
 
 
-# --- order_by_dependencies ---
-
-
-def test_order_by_dependencies_no_deps(monkeypatch):
-    cfg = _test_cfg()
-    prs = [
-        {"pr_number": 1, "issue_number": 10, "title": "A"},
-        {"pr_number": 2, "issue_number": 20, "title": "B"},
-    ]
-
-    def fake_run(cmd, **kw):
-        return _make_result(stdout=json.dumps({"body": "No deps"}))
-
-    monkeypatch.setattr(review_queue.subprocess, "run", fake_run)
-    ordered = order_by_dependencies(prs, cfg)
-    assert [p["issue_number"] for p in ordered] == [10, 20]
-
-
-def test_order_by_dependencies_respects_deps(monkeypatch):
-    cfg = _test_cfg()
-    prs = [
-        {"pr_number": 2, "issue_number": 20, "title": "B"},
-        {"pr_number": 1, "issue_number": 10, "title": "A"},
-    ]
-
-    bodies = {
-        "20": json.dumps({"body": "Depends on: #10"}),
-        "10": json.dumps({"body": "No deps"}),
-    }
-
-    def fake_run(cmd, **kw):
-        for i, arg in enumerate(cmd):
-            if arg == "view":
-                issue_num = cmd[i + 1]
-                return _make_result(stdout=bodies[issue_num])
-        return _make_result(stdout=json.dumps({"body": ""}))
-
-    monkeypatch.setattr(review_queue.subprocess, "run", fake_run)
-    ordered = order_by_dependencies(prs, cfg)
-    issues = [p["issue_number"] for p in ordered]
-    assert issues.index(10) < issues.index(20)
-
-
-def test_order_by_dependencies_after_all_deps_not_just_first(monkeypatch):
-    # Regression (#470): only the first dependency on the line was used for ordering.
-    cfg = _test_cfg()
-    prs = [
-        {"pr_number": 3, "issue_number": 5, "title": "C"},
-        {"pr_number": 1, "issue_number": 10, "title": "A"},
-        {"pr_number": 2, "issue_number": 20, "title": "B"},
-    ]
-
-    bodies = {
-        "5": json.dumps({"body": "Depends on: #10, #20"}),
-        "10": json.dumps({"body": "No deps"}),
-        "20": json.dumps({"body": "No deps"}),
-    }
-
-    def fake_run(cmd, **kw):
-        return _make_result(stdout=bodies[cmd[cmd.index("view") + 1]])
-
-    monkeypatch.setattr(review_queue.subprocess, "run", fake_run)
-    issues = [p["issue_number"] for p in order_by_dependencies(prs, cfg)]
-    assert issues.index(5) > issues.index(10)
-    assert issues.index(5) > issues.index(20)
-
-
-def test_order_by_dependencies_empty():
-    cfg = _test_cfg()
-    assert order_by_dependencies([], cfg) == []
-
-
-# --- format_summary ---
-
-
-def test_format_summary_table_header():
-    prs = [
-        {
-            "pr_number": 1,
-            "issue_number": 10,
-            "title": "Add feature",
-            "ci": "pass",
-            "gate": {"owner_approved": True, "needs_human": False},
-        },
-    ]
-    result = format_summary(prs)
-    assert "| Order | PR | Issue | Title | CI | Gate |" in result
-    assert "| 1 | #1 | #10 | Add feature | pass | owner-approved |" in result
-
-
-def test_format_summary_multiple_rows():
-    prs = [
-        {
-            "pr_number": 1,
-            "issue_number": 10,
-            "title": "A",
-            "ci": "pass",
-            "gate": {},
-        },
-        {
-            "pr_number": 2,
-            "issue_number": 20,
-            "title": "B",
-            "ci": "fail",
-            "gate": {"needs_human": True},
-        },
-    ]
-    result = format_summary(prs)
-    lines = result.strip().split("\n")
-    assert len(lines) == 4  # header + separator + 2 rows
-    assert "| 1 |" in lines[2]
-    assert "| 2 |" in lines[3]
-
-
-def test_format_summary_no_gate_shows_dash():
-    prs = [
-        {
-            "pr_number": 1,
-            "issue_number": 10,
-            "title": "A",
-            "ci": "pass",
-            "gate": {},
-        },
-    ]
-    result = format_summary(prs)
-    assert "| - |" in result
-
-
-# --- post_batch_summary ---
-
-
-def test_post_batch_summary_empty_returns_none():
-    cfg = _test_cfg()
-    assert post_batch_summary([], cfg) is None
-
-
-def test_post_batch_summary_empty_no_gh_calls(monkeypatch):
-    cfg = _test_cfg()
-    calls = []
-
-    def fake_run(cmd, **kw):
-        calls.append(cmd)
-        return _make_result()
-
-    monkeypatch.setattr(review_queue.subprocess, "run", fake_run)
-    post_batch_summary([], cfg)
-    assert calls == []
-
-
-def test_post_batch_summary_posts_comment(monkeypatch):
-    cfg = _test_cfg()
-    prs = [
-        {"pr_number": 5, "issue_number": 15, "title": "Fix widget"},
-    ]
-    calls = []
-
-    def fake_run(cmd, **kw):
-        calls.append(cmd)
-        if "issue" in cmd and "list" in cmd:
-            return _make_result(stdout=json.dumps([{"number": 99}]))
-        if "pr" in cmd and "checks" in cmd:
-            return _make_result(stdout=json.dumps([{"bucket": "pass"}]))
-        if "issue" in cmd and "view" in cmd:
-            if "labels" in cmd:
-                return _make_result(stdout=json.dumps({"labels": []}))
-            return _make_result(stdout=json.dumps({"body": ""}))
-        return _make_result()
-
-    monkeypatch.setattr(review_queue.subprocess, "run", fake_run)
-    result = post_batch_summary(prs, cfg)
-    assert result is None
-
-    comment_calls = [c for c in calls if "comment" in c]
-    assert len(comment_calls) == 1
-    assert "99" in comment_calls[0]
-
-
-def test_post_batch_summary_comment_contains_table(monkeypatch):
-    cfg = _test_cfg()
-    prs = [
-        {"pr_number": 5, "issue_number": 15, "title": "Fix widget"},
-    ]
-    posted_body = {}
-
-    def fake_run(cmd, **kw):
-        if "issue" in cmd and "list" in cmd:
-            return _make_result(stdout=json.dumps([{"number": 99}]))
-        if "pr" in cmd and "checks" in cmd:
-            return _make_result(stdout=json.dumps([{"bucket": "pass"}]))
-        if "issue" in cmd and "view" in cmd:
-            if "labels" in cmd:
-                return _make_result(stdout=json.dumps({"labels": []}))
-            return _make_result(stdout=json.dumps({"body": ""}))
-        if "comment" in cmd:
-            body_idx = cmd.index("--body") + 1
-            posted_body["body"] = cmd[body_idx]
-        return _make_result()
-
-    monkeypatch.setattr(review_queue.subprocess, "run", fake_run)
-    post_batch_summary(prs, cfg)
-
-    body = posted_body["body"]
-    assert "| Order | PR | Issue | Title | CI | Gate |" in body
-    assert "#5" in body
-    assert "#15" in body
-
-
 # --- refresh_review_queue ---
 
 
@@ -430,6 +220,18 @@ def _closed(number, closed_at, merged_at=None, title="Change", body=""):
         "body": body,
         "closedAt": closed_at,
         "mergedAt": merged_at,
+    }
+
+
+def _rest_pr(pr):
+    """Render a ``_closed`` dict the way the REST pulls endpoint returns it."""
+    return {
+        "number": pr["number"],
+        "title": pr["title"],
+        "body": pr["body"] or None,
+        "state": "closed",
+        "closed_at": pr["closedAt"],
+        "merged_at": pr["mergedAt"],
     }
 
 
@@ -463,8 +265,9 @@ class FakeGh:
         if cmd[1:3] == ["issue", "list"]:
             return _make_result(stdout=json.dumps([{"number": self.rq}] if self.rq else []))
         if cmd[1:3] == ["pr", "list"]:
-            state = cmd[cmd.index("--state") + 1]
-            return _make_result(stdout=json.dumps(self.closed if state == "closed" else self.prs))
+            return _make_result(stdout=json.dumps(self.prs))
+        if cmd[1] == "api" and "/pulls?" in cmd[2]:
+            return _make_result(stdout=json.dumps([_rest_pr(pr) for pr in self.closed]))
         if cmd[1:3] == ["pr", "checks"]:
             bucket = self.ci.get(int(cmd[3]), "pass")
             return _make_result(stdout=json.dumps([{"bucket": bucket}]))
@@ -570,15 +373,6 @@ def test_refresh_raises_and_skips_edit_when_pr_list_fails(monkeypatch):
     with pytest.raises(RuntimeError, match="Failed to list open PRs"):
         refresh_review_queue(_test_cfg())
     assert not [c for c in calls if c[1:3] == ["issue", "edit"]]
-
-
-def test_refresh_does_not_use_batch_summary_helpers(monkeypatch):
-    def boom(*a, **kw):
-        raise AssertionError("must not be called")
-
-    for name in ("post_batch_summary", "order_by_dependencies", "format_summary"):
-        monkeypatch.setattr(review_queue, name, boom)
-    _refresh(monkeypatch, FakeGh([_pr(1)]))
 
 
 def test_refresh_blocked_by_open_pr_then_ready_when_removed(monkeypatch):
@@ -783,16 +577,6 @@ def test_refresh_done_merged_and_closed_entries(monkeypatch):
     assert rows[41]["issue"] == "#40"
     assert rows[42]["result"] == "closed, not merged"
     assert rows[42]["issue"] == "-"
-    pr_list = next(
-        c for c in fake.calls if c[1:3] == ["pr", "list"] and c[c.index("--state") + 1] == "closed"
-    )
-    assert set(pr_list[pr_list.index("--json") + 1].split(",")) >= {
-        "number",
-        "title",
-        "body",
-        "closedAt",
-        "mergedAt",
-    }
 
 
 def test_refresh_done_kept_when_no_prs_open(monkeypatch):
@@ -855,7 +639,7 @@ def test_refresh_raises_and_skips_edit_when_closed_pr_list_fails(monkeypatch):
     fake = FakeGh([_pr(1)])
 
     def fake_run(cmd, **kw):
-        if cmd[1:3] == ["pr", "list"] and cmd[cmd.index("--state") + 1] == "closed":
+        if cmd[1] == "api" and "/pulls?" in cmd[2]:
             fake.calls.append(cmd)
             return _make_result(returncode=1, stderr="boom")
         return fake(cmd, **kw)
@@ -936,3 +720,144 @@ def test_format_done_table_row():
 def test_read_section_missing_returns_none():
     assert read_section("plain body", "done") is None
     assert read_section(build_queue_body("t", "d"), "open") == "t"
+
+
+# --- _list_closed_prs: REST pulls endpoint sorted by update time ---
+
+
+def test_list_closed_prs_uses_pulls_endpoint_sorted_by_updated(monkeypatch):
+    calls = []
+    rest = [
+        _rest_pr(_closed(3, "2026-03-05T00:00:00Z", "2026-03-05T00:00:00Z", "Old PR")),
+        _rest_pr(_closed(90, "2026-03-01T00:00:00Z", title="New PR", body="Closes #9")),
+    ]
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        return _make_result(stdout=json.dumps(rest))
+
+    monkeypatch.setattr(review_queue.subprocess, "run", fake_run)
+    prs = review_queue._list_closed_prs(_test_cfg())
+
+    assert len(calls) == 1
+    cmd = calls[0]
+    assert cmd[:2] == ["gh", "api"]
+    assert cmd[2].startswith("repos/acme-corp/widget/pulls?")
+    assert "state=closed&sort=updated&direction=desc" in cmd[2]
+    assert "per_page=50" in cmd[2]
+    assert prs == [
+        _closed(3, "2026-03-05T00:00:00Z", "2026-03-05T00:00:00Z", "Old PR"),
+        _closed(90, "2026-03-01T00:00:00Z", title="New PR", body="Closes #9"),
+    ]
+
+
+def test_list_closed_prs_raises_on_gh_failure(monkeypatch):
+    monkeypatch.setattr(
+        review_queue.subprocess, "run", lambda cmd, **kw: _make_result(returncode=1, stderr="x")
+    )
+    with pytest.raises(RuntimeError, match="Failed to list closed PRs"):
+        review_queue._list_closed_prs(_test_cfg())
+
+
+def test_refresh_done_orders_by_close_time_not_fetch_order(monkeypatch):
+    # The endpoint sorts by update time; a PR updated after closing can come back first.
+    fake = FakeGh(
+        [],
+        closed=[
+            _closed(1, "2026-04-01T00:00:00Z", "2026-04-01T00:00:00Z"),
+            _closed(2, "2026-04-03T00:00:00Z"),
+            _closed(3, "2026-04-02T00:00:00Z", "2026-04-02T00:00:00Z"),
+        ],
+    )
+    body = _refresh(monkeypatch, fake)
+    assert [r["pr"] for r in _done_rows(body)] == [2, 3, 1]
+
+
+# --- implement_issue calls refresh_review_queue ---
+
+
+def _stub_implement_main(monkeypatch, tmp_path, refresh):
+    """Stub implement_issue.main()'s collaborators; *refresh* replaces refresh_review_queue."""
+    import autoloop.implement_issue as implement_issue
+    from autoloop.prune import PruneResult
+
+    cfg = _test_cfg(implement_isolation="worktree")
+    monkeypatch.setattr(implement_issue, "cfg", cfg)
+    monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
+    monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
+    monkeypatch.setattr(implement_issue, "prune", lambda ctx, cfg: PruneResult())
+    monkeypatch.setattr(implement_issue, "refresh_review_queue", refresh)
+    return implement_issue, cfg, RepoContext(tmp_path)
+
+
+def _stub_targeted(monkeypatch, refresh):
+    import autoloop.implement_issue as implement_issue
+
+    cfg = _test_cfg()
+    monkeypatch.setattr(implement_issue, "cfg", cfg)
+    monkeypatch.setattr(implement_issue, "refresh_review_queue", refresh)
+    monkeypatch.setattr(
+        implement_issue,
+        "get_issue_by_number",
+        lambda n: {"number": n, "title": "Targeted", "body": "", "labels": []},
+    )
+    monkeypatch.setattr(implement_issue, "dependencies_met", lambda issue: True)
+    monkeypatch.setattr(implement_issue, "implement_single_issue", lambda issue, **kw: True)
+    return implement_issue, cfg
+
+
+def test_implement_targeted_issue_refreshes_review_queue(monkeypatch):
+    calls = []
+    implement_issue, cfg = _stub_targeted(monkeypatch, calls.append)
+
+    assert implement_issue.implement_targeted_issue(28) is True
+    assert calls == [cfg]
+
+
+def test_implement_targeted_issue_refresh_failure_is_logged(monkeypatch, caplog):
+    def boom(cfg):
+        raise RuntimeError("gh exploded")
+
+    implement_issue, _ = _stub_targeted(monkeypatch, boom)
+
+    with caplog.at_level("ERROR"):
+        assert implement_issue.implement_targeted_issue(28) is True
+    assert "Failed to refresh review queue" in caplog.text
+    assert "gh exploded" in caplog.text
+
+
+def test_main_batch_refreshes_review_queue_once_after_loop(monkeypatch, tmp_path, capsys):
+    events = []
+    implement_issue, cfg, ctx = _stub_implement_main(
+        monkeypatch, tmp_path, lambda c: events.append(("refresh", c))
+    )
+    queue = [
+        {"number": 1, "title": "One", "body": "", "labels": []},
+        {"number": 2, "title": "Two", "body": "", "labels": []},
+    ]
+    monkeypatch.setattr(implement_issue, "get_top_ready_issue", lambda: queue.pop(0))
+    monkeypatch.setattr(
+        implement_issue,
+        "implement_single_issue",
+        lambda issue, **kw: events.append(("implement", issue["number"])) or True,
+    )
+    assert implement_issue.main(ctx=ctx, max_issues=2) is None
+    assert events == [("implement", 1), ("implement", 2), ("refresh", cfg)]
+    assert "Implemented 2 issue(s) this run." in capsys.readouterr().out
+
+
+def test_main_batch_refresh_failure_is_logged(monkeypatch, tmp_path, capsys, caplog):
+    def boom(cfg):
+        raise RuntimeError("gh exploded")
+
+    implement_issue, _, ctx = _stub_implement_main(monkeypatch, tmp_path, boom)
+    queue = [{"number": 1, "title": "One", "body": "", "labels": []}]
+    monkeypatch.setattr(implement_issue, "get_top_ready_issue", lambda: queue.pop(0))
+    monkeypatch.setattr(implement_issue, "implement_single_issue", lambda issue, **kw: True)
+
+    with caplog.at_level("ERROR"):
+        assert implement_issue.main(ctx=ctx, max_issues=1) is None
+    assert "Implemented 1 issue(s) this run." in capsys.readouterr().out
+    assert "Failed to refresh review queue" in caplog.text
+    assert "gh exploded" in caplog.text
+    assert not (tmp_path / ".autoloop.lock").exists()

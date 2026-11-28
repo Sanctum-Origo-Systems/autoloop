@@ -20,7 +20,7 @@ from pathlib import Path
 from autoloop.claude_runner import ClaudeResult, run_claude
 from autoloop.config import AutoLoopConfig, RepoContext, load_config
 from autoloop.prune import delete_branch, format_report, prune, remove_worktree
-from autoloop.review_queue import parse_dependency_numbers, post_batch_summary
+from autoloop.review_queue import parse_dependency_numbers, refresh_review_queue
 
 cfg = None
 
@@ -1986,8 +1986,17 @@ def implement_targeted_issue(
     success = implement_single_issue(
         issue, require_design=require_design, auto_fix=auto_fix, ctx=ctx
     )
+    _refresh_review_queue_safely()
     print(f"\nImplemented {1 if success else 0} issue(s) this run.")
     return success
+
+
+def _refresh_review_queue_safely() -> None:
+    """Rebuild the review-queue issue; log any failure so it never fails the run."""
+    try:
+        refresh_review_queue(cfg)
+    except Exception:
+        logging.exception("Failed to refresh review queue")
 
 
 def main(
@@ -2027,7 +2036,6 @@ def main(
             return
 
         implemented = 0
-        created_prs: list[dict] = []
         while implemented < max_issues:
             top_issue = get_top_ready_issue()
             if not top_issue:
@@ -2040,7 +2048,6 @@ def main(
                     require_design=require_design,
                     auto_fix=auto_fix,
                     ctx=ctx,
-                    created_prs=created_prs,
                 )
             except SystemicError as exc:
                 print(f"Systemic failure, aborting run: {exc}")
@@ -2049,11 +2056,7 @@ def main(
             if success:
                 implemented += 1
 
-        if created_prs:
-            try:
-                post_batch_summary(created_prs, cfg)
-            except Exception:
-                logging.exception("Failed to post review-queue summary")
+        _refresh_review_queue_safely()
 
         print(f"\nImplemented {implemented} issue(s) this run.")
     finally:
