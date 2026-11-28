@@ -1,4 +1,4 @@
-"""Review-queue module: find issue, fetch CI/gate data, format and post summary comment."""
+"""Review-queue module: find issue, fetch CI/gate data, rebuild the review-queue body."""
 
 from __future__ import annotations
 
@@ -251,6 +251,8 @@ def post_batch_summary(prs: list[dict], cfg: AutoLoopConfig) -> None:
 
 _MERGEABLE_RETRIES = 3
 _MERGEABLE_RETRY_DELAY = 2.0
+_CLOSED_FETCH_LIMIT = 50
+DONE_LIMIT = 10
 
 STATE_ORDER = ("ready", "needs update", "blocked", "draft")
 _PRIORITY_LABELS = ("p0", "p1", "p2")
@@ -310,13 +312,37 @@ def _list_open_prs(cfg: AutoLoopConfig) -> list[dict]:
             "--limit",
             "500",
             "--json",
-            "number,title,body,isDraft,mergeable,labels",
+            "number,title,body,isDraft,mergeable,labels,files",
         ],
         capture_output=True,
         text=True,
     )
     if result.returncode != 0:
         raise RuntimeError(f"Failed to list open PRs: {result.stderr.strip()}")
+    return json.loads(result.stdout or "[]")
+
+
+def _list_closed_prs(cfg: AutoLoopConfig) -> list[dict]:
+    """Return recently closed (merged or unmerged) PRs, enough to pick the latest few."""
+    result = subprocess.run(
+        [
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            cfg.repo,
+            "--state",
+            "closed",
+            "--limit",
+            str(_CLOSED_FETCH_LIMIT),
+            "--json",
+            "number,title,body,closedAt,mergedAt",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to list closed PRs: {result.stderr.strip()}")
     return json.loads(result.stdout or "[]")
 
 
@@ -383,13 +409,29 @@ def _is_open(number: int, cfg: AutoLoopConfig) -> bool:
     return result.stdout.strip().lower() != "closed"
 
 
+def find_overlaps(prs: list[dict]) -> dict[int, list[int]]:
+    """Map each PR number to the other PRs that change at least one of the same files.
+
+    PRs that share no file with another PR are left out.
+    """
+    files = {pr["number"]: {f.get("path", "") for f in pr.get("files") or []} for pr in prs}
+    overlaps: dict[int, list[int]] = {}
+    for number, paths in files.items():
+        others = sorted(n for n, p in files.items() if n != number and paths & p)
+        if others:
+            overlaps[number] = others
+    return overlaps
+
+
 def build_open_rows(prs: list[dict], cfg: AutoLoopConfig) -> list[dict]:
     """Classify each open PR and return rows ordered by state, priority, then PR number.
 
     State precedence is draft > blocked > needs update > ready. The first ``ready`` row
-    whose CI is not pending gets ``next=True``.
+    whose CI is not pending gets ``next=True``. A PR sharing a changed file with another
+    open PR gets an ``overlaps #N`` note, which does not affect its state.
     """
     open_pr_numbers = {pr["number"] for pr in prs}
+    overlaps = find_overlaps(prs)
     open_cache: dict[int, bool] = {}
 
     def dep_is_open(number: int) -> bool:
@@ -435,6 +477,8 @@ def build_open_rows(prs: list[dict], cfg: AutoLoopConfig) -> list[dict]:
                 state = "ready"
                 if mergeable == "UNKNOWN":
                     notes.append("merge status pending")
+        if number in overlaps:
+            notes.append("overlaps " + ", ".join(f"#{n}" for n in overlaps[number]))
 
         rows.append(
             {
@@ -475,6 +519,30 @@ def format_open_table(rows: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def format_done_table(closed_prs: list[dict]) -> str:
+    """Return the Done markdown table of the most recently closed PRs, newest first.
+
+    Built only from *closed_prs*, never from a previous body, and capped at ``DONE_LIMIT``.
+    """
+    latest = sorted(closed_prs, key=lambda pr: pr.get("closedAt") or "", reverse=True)
+    latest = latest[:DONE_LIMIT]
+    if not latest:
+        return "_None yet._"
+    lines = [
+        "| PR | Issue | Title | Result |",
+        "| --- | --- | --- | --- |",
+    ]
+    for pr in latest:
+        issue_number = parse_closes_number(pr.get("body", "") or "")
+        issue = f"#{issue_number}" if issue_number is not None else "-"
+        merged_at = pr.get("mergedAt")
+        result = f"merged {merged_at[:10]}" if merged_at else "closed, not merged"
+        lines.append(
+            f"| #{pr['number']} | {issue} | {escape_cell(pr.get('title', ''))} | {result} |"
+        )
+    return "\n".join(lines)
+
+
 def _section_markers(name: str) -> tuple[str, str]:
     return f"<!-- review-queue:{name}:start -->", f"<!-- review-queue:{name}:end -->"
 
@@ -503,8 +571,9 @@ def build_queue_body(open_table: str, done: str) -> str:
 def refresh_review_queue(cfg: AutoLoopConfig) -> None:
     """Rebuild the review-queue issue body from live PR state.
 
-    Does nothing when no review-queue issue exists. The Done section of the current
-    body is carried over unchanged.
+    Does nothing when no review-queue issue exists. The Done section is recomputed from
+    the most recently closed PRs on every refresh, even when no PRs are open; the
+    current issue body is never read.
     """
     try:
         rq_number = find_review_queue_issue(cfg)
@@ -512,8 +581,8 @@ def refresh_review_queue(cfg: AutoLoopConfig) -> None:
         return None
 
     rows = build_open_rows(_list_open_prs(cfg), cfg)
-    done = read_section(_fetch_issue_body(rq_number, cfg), "done")
-    body = build_queue_body(format_open_table(rows), done if done is not None else "_None yet._")
+    done = format_done_table(_list_closed_prs(cfg))
+    body = build_queue_body(format_open_table(rows), done)
 
     fd, path = tempfile.mkstemp(prefix="review-queue-", suffix=".md")
     try:
