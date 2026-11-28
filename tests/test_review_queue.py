@@ -12,7 +12,9 @@ from autoloop.review_queue import (
     escape_cell,
     fetch_ci_status,
     fetch_gate_flags,
+    find_overlaps,
     find_review_queue_issue,
+    format_done_table,
     format_open_table,
     format_summary,
     order_by_dependencies,
@@ -409,7 +411,7 @@ def test_post_batch_summary_comment_contains_table(monkeypatch):
 # --- refresh_review_queue ---
 
 
-def _pr(number, title="Change", body="", draft=False, mergeable="MERGEABLE", labels=()):
+def _pr(number, title="Change", body="", draft=False, mergeable="MERGEABLE", labels=(), files=()):
     return {
         "number": number,
         "title": title,
@@ -417,6 +419,17 @@ def _pr(number, title="Change", body="", draft=False, mergeable="MERGEABLE", lab
         "isDraft": draft,
         "mergeable": mergeable,
         "labels": [{"name": n} for n in labels],
+        "files": [{"path": p, "additions": 1, "deletions": 0} for p in files],
+    }
+
+
+def _closed(number, closed_at, merged_at=None, title="Change", body=""):
+    return {
+        "number": number,
+        "title": title,
+        "body": body,
+        "closedAt": closed_at,
+        "mergedAt": merged_at,
     }
 
 
@@ -432,8 +445,10 @@ class FakeGh:
         mergeable_views=None,
         rq=99,
         rq_body="",
+        closed=None,
     ):
         self.prs = prs
+        self.closed = closed or []
         self.issues = issues or {}
         self.states = states or {}
         self.ci = ci or {}
@@ -448,7 +463,8 @@ class FakeGh:
         if cmd[1:3] == ["issue", "list"]:
             return _make_result(stdout=json.dumps([{"number": self.rq}] if self.rq else []))
         if cmd[1:3] == ["pr", "list"]:
-            return _make_result(stdout=json.dumps(self.prs))
+            state = cmd[cmd.index("--state") + 1]
+            return _make_result(stdout=json.dumps(self.closed if state == "closed" else self.prs))
         if cmd[1:3] == ["pr", "checks"]:
             bucket = self.ci.get(int(cmd[3]), "pass")
             return _make_result(stdout=json.dumps([{"bucket": bucket}]))
@@ -705,17 +721,150 @@ def test_refresh_escapes_title(monkeypatch):
     assert row["state"] == "ready"
 
 
-def test_refresh_preserves_done_section(monkeypatch):
-    previous = build_queue_body("old table", "- #3 merged")
-    fake = FakeGh([_pr(1)], rq_body=previous)
-    body = _refresh(monkeypatch, fake)
-    assert read_section(body, "done") == "- #3 merged"
-    assert "old table" not in body
-
-
 def test_refresh_empty_open_list(monkeypatch):
     body = _refresh(monkeypatch, FakeGh([]))
     assert read_section(body, "open") == "_No open PRs._"
+    assert read_section(body, "done") == "_None yet._"
+
+
+def _done_rows(body):
+    """Parse the Done table into a list of row dicts in display order."""
+    rows = []
+    for line in read_section(body, "done").splitlines()[2:]:
+        cells = [c.strip() for c in re.split(r"(?<!\\)\|", line)[1:-1]]
+        rows.append(
+            {
+                "pr": int(cells[0].lstrip("#")),
+                "issue": cells[1],
+                "title": cells[2],
+                "result": cells[3],
+            }
+        )
+    return rows
+
+
+def test_refresh_overlap_notes_name_other_prs(monkeypatch):
+    fake = FakeGh(
+        [
+            _pr(1, files=["src/a.py", "README.md"]),
+            _pr(2, files=["src/a.py"]),
+            _pr(3, files=["src/c.py"]),
+        ]
+    )
+    body = _refresh(monkeypatch, fake)
+    rows = {r["pr"]: r for r in _open_rows(body)}
+    assert rows[1]["notes"] == "overlaps #2"
+    assert rows[2]["notes"] == "overlaps #1"
+    assert "overlaps" not in rows[3]["notes"]
+    # Overlap is informational: all three stay ready.
+    assert {r["state"] for r in rows.values()} == {"ready"}
+
+
+def test_refresh_lists_files_for_open_prs(monkeypatch):
+    fake = FakeGh([_pr(1)])
+    _refresh(monkeypatch, fake)
+    pr_list = next(
+        c for c in fake.calls if c[1:3] == ["pr", "list"] and c[c.index("--state") + 1] == "open"
+    )
+    assert "files" in pr_list[pr_list.index("--json") + 1].split(",")
+
+
+def test_refresh_done_merged_and_closed_entries(monkeypatch):
+    fake = FakeGh(
+        [_pr(1)],
+        closed=[
+            _closed(41, "2026-01-15T10:00:00Z", "2026-01-15T10:00:00Z", body="Closes #40"),
+            _closed(42, "2026-01-16T10:00:00Z", title="Abandoned"),
+        ],
+    )
+    body = _refresh(monkeypatch, fake)
+    rows = {r["pr"]: r for r in _done_rows(body)}
+    assert rows[41]["result"] == "merged 2026-01-15"
+    assert rows[41]["issue"] == "#40"
+    assert rows[42]["result"] == "closed, not merged"
+    assert rows[42]["issue"] == "-"
+    pr_list = next(
+        c for c in fake.calls if c[1:3] == ["pr", "list"] and c[c.index("--state") + 1] == "closed"
+    )
+    assert set(pr_list[pr_list.index("--json") + 1].split(",")) >= {
+        "number",
+        "title",
+        "body",
+        "closedAt",
+        "mergedAt",
+    }
+
+
+def test_refresh_done_kept_when_no_prs_open(monkeypatch):
+    fake = FakeGh(
+        [],
+        closed=[
+            _closed(5, "2026-01-10T00:00:00Z", "2026-01-10T00:00:00Z"),
+            _closed(6, "2026-01-11T00:00:00Z", "2026-01-11T00:00:00Z", body="Closes #60"),
+        ],
+    )
+    body = _refresh(monkeypatch, fake)
+    assert read_section(body, "open") == "_No open PRs._"
+    rows = _done_rows(body)
+    assert [r["pr"] for r in rows] == [6, 5]
+    assert rows[0]["result"] == "merged 2026-01-11"
+
+
+def test_refresh_done_newest_first_capped_at_ten(monkeypatch):
+    closed = [
+        _closed(n, f"2026-02-{n:02d}T12:00:00Z", f"2026-02-{n:02d}T12:00:00Z") for n in range(1, 13)
+    ]
+    shuffled = [closed[i] for i in (4, 11, 0, 7, 2, 9, 5, 1, 10, 3, 8, 6)]
+    body = _refresh(monkeypatch, FakeGh([], closed=shuffled))
+    assert [r["pr"] for r in _done_rows(body)] == list(range(12, 2, -1))
+
+
+@pytest.mark.parametrize(
+    "rq_body",
+    ["Hand-written body with no markers", build_queue_body("old table", "| #3 | - | Stale | x |")],
+)
+def test_refresh_done_ignores_existing_body(monkeypatch, rq_body):
+    fake = FakeGh(
+        [_pr(1)],
+        rq_body=rq_body,
+        closed=[_closed(8, "2026-03-01T00:00:00Z", "2026-03-01T00:00:00Z")],
+    )
+    body = _refresh(monkeypatch, fake)
+    assert [r["pr"] for r in _done_rows(body)] == [8]
+    assert "Stale" not in body
+    assert "old table" not in body
+    expected = build_queue_body("", review_queue.format_done_table(fake.closed))
+    assert read_section(body, "done") == read_section(expected, "done")
+
+
+def test_refresh_done_escapes_title(monkeypatch):
+    fake = FakeGh(
+        [],
+        closed=[_closed(9, "2026-03-02T00:00:00Z", title="fix a | b\nsecond line cc @someuser")],
+    )
+    body = _refresh(monkeypatch, fake)
+    rows = _done_rows(body)
+    assert len(rows) == 1
+    assert "\\|" in rows[0]["title"]
+    assert "\n" not in rows[0]["title"]
+    assert "@someuser" not in body
+    assert rows[0]["result"] == "closed, not merged"
+
+
+def test_refresh_raises_and_skips_edit_when_closed_pr_list_fails(monkeypatch):
+    fake = FakeGh([_pr(1)])
+
+    def fake_run(cmd, **kw):
+        if cmd[1:3] == ["pr", "list"] and cmd[cmd.index("--state") + 1] == "closed":
+            fake.calls.append(cmd)
+            return _make_result(returncode=1, stderr="boom")
+        return fake(cmd, **kw)
+
+    monkeypatch.setattr(review_queue.subprocess, "run", fake_run)
+    monkeypatch.setattr(review_queue, "_sleep", lambda s: None)
+    with pytest.raises(RuntimeError, match="Failed to list closed PRs"):
+        refresh_review_queue(_test_cfg())
+    assert not fake.edits
 
 
 # --- helpers for refresh_review_queue ---
@@ -760,6 +909,28 @@ def test_format_open_table_marks_next():
         }
     ]
     assert "| next | #1 | #10 | A | ready | pass |  |" in format_open_table(rows)
+
+
+def test_find_overlaps():
+    prs = [
+        _pr(1, files=["a.py", "b.py"]),
+        _pr(2, files=["b.py"]),
+        _pr(3, files=["a.py"]),
+        _pr(4, files=["z.py"]),
+        _pr(5),
+    ]
+    assert find_overlaps(prs) == {1: [2, 3], 2: [1], 3: [1]}
+
+
+def test_format_done_table_empty():
+    assert format_done_table([]) == "_None yet._"
+
+
+def test_format_done_table_row():
+    table = format_done_table(
+        [_closed(4, "2026-01-15T09:00:00Z", "2026-01-15T09:00:00Z", "T", "Closes #3")]
+    )
+    assert "| #4 | #3 | T | merged 2026-01-15 |" in table
 
 
 def test_read_section_missing_returns_none():
